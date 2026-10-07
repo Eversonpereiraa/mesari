@@ -10,33 +10,141 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as CaixaRouteImport } from './routes/caixa'
+import { Route as CardapioRouteImport } from './routes/cardapio'
+import { Route as GarcomRouteImport } from './routes/garcom'
+import { Route as ImpressaoRouteImport } from './routes/impressao'
+import { Route as LayoutRouteImport } from './routes/layout'
+import { Route as RestauranteRouteImport } from './routes/restaurante'
+import { Route as MesaIdRouteImport } from './routes/mesa.$id'
+import { Route as PedidoIdRouteImport } from './routes/pedido.$id'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CaixaRoute = CaixaRouteImport.update({
+  id: '/caixa',
+  path: '/caixa',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CardapioRoute = CardapioRouteImport.update({
+  id: '/cardapio',
+  path: '/cardapio',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const GarcomRoute = GarcomRouteImport.update({
+  id: '/garcom',
+  path: '/garcom',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ImpressaoRoute = ImpressaoRouteImport.update({
+  id: '/impressao',
+  path: '/impressao',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LayoutRoute = LayoutRouteImport.update({
+  id: '/layout',
+  path: '/layout',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RestauranteRoute = RestauranteRouteImport.update({
+  id: '/restaurante',
+  path: '/restaurante',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MesaIdRoute = MesaIdRouteImport.update({
+  id: '/mesa/$id',
+  path: '/mesa/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PedidoIdRoute = PedidoIdRouteImport.update({
+  id: '/pedido/$id',
+  path: '/pedido/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/caixa': typeof CaixaRoute
+  '/cardapio': typeof CardapioRoute
+  '/garcom': typeof GarcomRoute
+  '/impressao': typeof ImpressaoRoute
+  '/layout': typeof LayoutRoute
+  '/restaurante': typeof RestauranteRoute
+  '/mesa/$id': typeof MesaIdRoute
+  '/pedido/$id': typeof PedidoIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/caixa': typeof CaixaRoute
+  '/cardapio': typeof CardapioRoute
+  '/garcom': typeof GarcomRoute
+  '/impressao': typeof ImpressaoRoute
+  '/layout': typeof LayoutRoute
+  '/restaurante': typeof RestauranteRoute
+  '/mesa/$id': typeof MesaIdRoute
+  '/pedido/$id': typeof PedidoIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/caixa': typeof CaixaRoute
+  '/cardapio': typeof CardapioRoute
+  '/garcom': typeof GarcomRoute
+  '/impressao': typeof ImpressaoRoute
+  '/layout': typeof LayoutRoute
+  '/restaurante': typeof RestauranteRoute
+  '/mesa/$id': typeof MesaIdRoute
+  '/pedido/$id': typeof PedidoIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/caixa'
+    | '/cardapio'
+    | '/garcom'
+    | '/impressao'
+    | '/layout'
+    | '/restaurante'
+    | '/mesa/$id'
+    | '/pedido/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/caixa'
+    | '/cardapio'
+    | '/garcom'
+    | '/impressao'
+    | '/layout'
+    | '/restaurante'
+    | '/mesa/$id'
+    | '/pedido/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/caixa'
+    | '/cardapio'
+    | '/garcom'
+    | '/impressao'
+    | '/layout'
+    | '/restaurante'
+    | '/mesa/$id'
+    | '/pedido/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  CaixaRoute: typeof CaixaRoute
+  CardapioRoute: typeof CardapioRoute
+  GarcomRoute: typeof GarcomRoute
+  ImpressaoRoute: typeof ImpressaoRoute
+  LayoutRoute: typeof LayoutRoute
+  RestauranteRoute: typeof RestauranteRoute
+  MesaIdRoute: typeof MesaIdRoute
+  PedidoIdRoute: typeof PedidoIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +156,75 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/caixa': {
+      id: '/caixa'
+      path: '/caixa'
+      fullPath: '/caixa'
+      preLoaderRoute: typeof CaixaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/cardapio': {
+      id: '/cardapio'
+      path: '/cardapio'
+      fullPath: '/cardapio'
+      preLoaderRoute: typeof CardapioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/garcom': {
+      id: '/garcom'
+      path: '/garcom'
+      fullPath: '/garcom'
+      preLoaderRoute: typeof GarcomRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/impressao': {
+      id: '/impressao'
+      path: '/impressao'
+      fullPath: '/impressao'
+      preLoaderRoute: typeof ImpressaoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/layout': {
+      id: '/layout'
+      path: '/layout'
+      fullPath: '/layout'
+      preLoaderRoute: typeof LayoutRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/restaurante': {
+      id: '/restaurante'
+      path: '/restaurante'
+      fullPath: '/restaurante'
+      preLoaderRoute: typeof RestauranteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/mesa/$id': {
+      id: '/mesa/$id'
+      path: '/mesa/$id'
+      fullPath: '/mesa/$id'
+      preLoaderRoute: typeof MesaIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/pedido/$id': {
+      id: '/pedido/$id'
+      path: '/pedido/$id'
+      fullPath: '/pedido/$id'
+      preLoaderRoute: typeof PedidoIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  CaixaRoute: CaixaRoute,
+  CardapioRoute: CardapioRoute,
+  GarcomRoute: GarcomRoute,
+  ImpressaoRoute: ImpressaoRoute,
+  LayoutRoute: LayoutRoute,
+  RestauranteRoute: RestauranteRoute,
+  MesaIdRoute: MesaIdRoute,
+  PedidoIdRoute: PedidoIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
