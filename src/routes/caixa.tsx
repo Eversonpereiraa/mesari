@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { actions, brl, count, tableStatus, total, useStore, type Status } from "@/lib/store";
 import { AppShell, Btn, StatusTag } from "@/components/ui-kit";
 import { MenuPicker } from "@/components/menu-picker";
-import { printBill } from "@/lib/print";
+import { BillViewer } from "@/components/bill-viewer";
 
 export const Route = createFileRoute("/caixa")({
   head: () => ({
@@ -30,6 +30,7 @@ function Caixa() {
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [spin, setSpin] = useState(false);
+  const [viewer, setViewer] = useState(false);
 
   const tables = [...s.tables].sort((a, b) => a.number - b.number).filter((t) => f === "todas" || tableStatus(s, t.id) === f);
   const sel = s.tables.find((t) => t.id === open);
@@ -119,7 +120,7 @@ function Caixa() {
                             <td className="px-4 py-2.5 text-ink">
                               {l.name}
                               {l.note && <div className="text-xs text-muted-foreground">Obs.: {l.note}</div>}
-                              <button className="hidden text-xs text-destructive group-hover:block" onClick={() => actions.removeLine(sel.id, l.id)}>remover</button>
+                              <button className="hidden text-xs text-destructive group-hover:block" onClick={() => { if (confirm(`Remover ${l.qty}x ${l.name}?`)) actions.removeLine(sel.id, l.id); }}>remover</button>
                             </td>
                             <td className="num py-2.5 text-right">{l.qty}</td>
                             <td className="num py-2.5 text-right text-muted-foreground">{brl(l.price)}</td>
@@ -142,7 +143,7 @@ function Caixa() {
                         onClick={() => { if (confirm(`Fechar conta da mesa ${sel.number} — ${brl(total(lines))}?`)) actions.closeBill(sel.id); }}>
                         Fechar Conta
                       </Btn>
-                      <Btn variant="neutral" disabled={!lines.length} onClick={() => printBill(s, sel.id)}>Imprimir</Btn>
+                      <Btn variant="neutral" disabled={!lines.length} onClick={() => setViewer(true)}>Imprimir a conta</Btn>
                     </div>
                   </div>
                 </div>
@@ -151,6 +152,7 @@ function Caixa() {
           </aside>
         )}
       </div>
+      {viewer && sel && <BillViewer s={s} tableId={sel.id} onClose={() => setViewer(false)} />}
     </AppShell>
   );
 }

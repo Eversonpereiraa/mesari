@@ -6,6 +6,7 @@ export type Category = { id: string; name: string };
 export type MenuItem = { id: string; name: string; categoryId: string; price: number; description: string; active: boolean };
 export type OrderLine = { id: string; itemId: string; name: string; qty: number; price: number; note: string; at: number; waiter: string };
 export type Status = "livre" | "ocupada" | "conta";
+export type Closing = { id: string; at: number; table: number; lines: OrderLine[]; total: number };
 
 export type State = {
   user: { name: string; role: "caixa" | "garcom" } | null;
@@ -15,6 +16,7 @@ export type State = {
   items: MenuItem[];
   orders: Record<string, OrderLine[]>;
   billRequested: Record<string, boolean>;
+  history: Closing[];
   print: {
     connected: boolean; printer: string;
     kitchen: boolean; bill: boolean;
@@ -58,6 +60,7 @@ function seed(): State {
       t11: [line(items[5], 1), line(items[10], 1)],
     },
     billRequested: { t7: true },
+    history: [],
     print: {
       connected: false, printer: "",
       kitchen: true, bill: true,
@@ -127,9 +130,12 @@ export const actions = {
   requestBill(tableId: string) { setState((s) => ({ ...s, billRequested: { ...s.billRequested, [tableId]: true } })); },
   closeBill(tableId: string) {
     setState((s) => {
+      const lines = s.orders[tableId] ?? [];
+      const t = s.tables.find((x) => x.id === tableId);
+      const rec: Closing = { id: uid(), at: Date.now(), table: t?.number ?? 0, lines, total: total(lines) };
       const orders = { ...s.orders }; delete orders[tableId];
       const br = { ...s.billRequested }; delete br[tableId];
-      return { ...s, orders, billRequested: br };
+      return { ...s, orders, billRequested: br, history: [rec, ...(s.history ?? [])] };
     });
   },
   saveTables(tables: Table[]) { setState((s) => ({ ...s, tables })); },
