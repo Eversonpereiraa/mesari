@@ -111,3 +111,10 @@
     linear-gradient(90deg, var(--color-grid) 1px, transparent 1px);
   background-size: 20px 20px;
 }
+
+@media print {
+  @page { size: 80mm auto; margin: 0; }
+  body * { visibility: hidden; }
+  #cupom, #cupom * { visibility: visible; }
+  #cupom { position: absolute; left: 0; top: 0; width: 80mm; padding: 2mm; }
+}
