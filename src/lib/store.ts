@@ -46,7 +46,7 @@ function seed(): State {
     mk("Pudim", "c4", 16), mk("Petit gâteau", "c4", 28), mk("Mousse de maracujá", "c4", 14),
   ];
   const line = (x: MenuItem | undefined, qty: number): OrderLine => { const it = x!; return (
-    ({ id: uid(), itemId: it.id, name: it.name, qty, price: it.price, note: "", at: Date.now(), waiter: "Carlos" }); };
+    ({ id: uid(), itemId: it.id, name: it.name, qty, price: it.price, note: "", at: Date.now(), waiter: "Carlos" })); };
   return {
     user: null,
     restaurant: { name: "Mesari", phone: "(11) 3333-4444", address: "Rua das Flores, 120 — São Paulo/SP", logo: "" },
