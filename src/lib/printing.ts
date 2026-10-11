@@ -156,6 +156,13 @@ const defaultStatus = (): PrinterStatus => ({
   productName: undefined,
 });
 
+const desktopStatus: PrinterStatus = {
+  supported: true,
+  connected: true,
+  name: "Windows",
+  error: null,
+};
+
 let status = defaultStatus();
 let selectedPort: SerialPort | null = null;
 let selectedDevice: UsbDevice | null = null;
@@ -265,7 +272,7 @@ export function getPrinterStatus() {
     window.mesariDesktop &&
     getPrintSettings().printerMode !== "direct"
   ) {
-    return { ...status, supported: true, connected: true, name: "Windows", error: null };
+    return desktopStatus;
   }
   return status;
 }

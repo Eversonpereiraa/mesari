@@ -4,6 +4,7 @@ import {
   connectUsbPrinter,
   disconnectPrinter,
   getDefaultPrintSettings,
+  getPrinterStatus,
   getPrintSettings,
   printReceipt,
   printReceiptOnce,
@@ -56,6 +57,23 @@ afterEach(() => {
 });
 
 describe("configurações da impressora", () => {
+  it("mantém estável o snapshot do driver Windows no desktop", () => {
+    Object.defineProperty(window, "mesariDesktop", {
+      configurable: true,
+      value: { isDesktop: true },
+    });
+
+    const first = getPrinterStatus();
+
+    expect(first).toMatchObject({
+      supported: true,
+      connected: true,
+      name: "Windows",
+      error: null,
+    });
+    expect(getPrinterStatus()).toBe(first);
+  });
+
   it("persiste localmente e aplica os valores padrão às preferências ausentes", () => {
     const settings: PrintSettings = {
       ...getDefaultPrintSettings(),
