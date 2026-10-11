@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mesari — Sem conexão</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        align-items: center;
+        background: #0e2a2b;
+        color: #fff;
+        display: flex;
+        font-family: Arial, sans-serif;
+        justify-content: center;
+        margin: 0;
+        min-height: 100vh;
+        text-align: center;
+      }
+      main {
+        padding: 32px;
+      }
+      img {
+        display: block;
+        height: auto;
+        margin: 0 auto 36px;
+        max-width: min(360px, 80vw);
+      }
+      h1 {
+        font-size: 24px;
+        margin: 0 0 24px;
+      }
+      button {
+        background: #fff;
+        border: 0;
+        border-radius: 6px;
+        color: #0e2a2b;
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 700;
+        padding: 12px 20px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <img src="public/logo-mesari-branco.png" alt="Mesari" />
+      <h1>Sem conexão com o sistema</h1>
+      <button id="retry" type="button">Tentar novamente</button>
+    </main>
+    <script>
+      const appUrl = new URLSearchParams(window.location.search).get("appUrl");
+      const retry = () => {
+        if (appUrl) window.location.replace(appUrl);
+      };
+      document.getElementById("retry").addEventListener("click", retry);
+      window.addEventListener("online", retry);
+      window.setInterval(retry, 10000);
+    </script>
+  </body>
+</html>

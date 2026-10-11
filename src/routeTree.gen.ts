@@ -12,10 +12,13 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as CaixaRouteImport } from './routes/caixa'
 import { Route as CardapioRouteImport } from './routes/cardapio'
+import { Route as CozinhaRouteImport } from './routes/cozinha'
 import { Route as GarcomRouteImport } from './routes/garcom'
 import { Route as ImpressaoRouteImport } from './routes/impressao'
 import { Route as LayoutRouteImport } from './routes/layout'
+import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
 import { Route as RestauranteRouteImport } from './routes/restaurante'
+import { Route as VendasRouteImport } from './routes/vendas'
 import { Route as MesaIdRouteImport } from './routes/mesa.$id'
 import { Route as PedidoIdRouteImport } from './routes/pedido.$id'
 
@@ -34,6 +37,11 @@ const CardapioRoute = CardapioRouteImport.update({
   path: '/cardapio',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CozinhaRoute = CozinhaRouteImport.update({
+  id: '/cozinha',
+  path: '/cozinha',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const GarcomRoute = GarcomRouteImport.update({
   id: '/garcom',
   path: '/garcom',
@@ -49,9 +57,19 @@ const LayoutRoute = LayoutRouteImport.update({
   path: '/layout',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ManifestDotwebmanifestRoute = ManifestDotwebmanifestRouteImport.update({
+  id: '/manifest.webmanifest',
+  path: '/manifest.webmanifest',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RestauranteRoute = RestauranteRouteImport.update({
   id: '/restaurante',
   path: '/restaurante',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const VendasRoute = VendasRouteImport.update({
+  id: '/vendas',
+  path: '/vendas',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MesaIdRoute = MesaIdRouteImport.update({
@@ -69,10 +87,13 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
+  '/cozinha': typeof CozinhaRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
+  '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -80,10 +101,13 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
+  '/cozinha': typeof CozinhaRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
+  '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -92,10 +116,13 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
+  '/cozinha': typeof CozinhaRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
+  '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
+  '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -105,10 +132,13 @@ export interface FileRouteTypes {
     | '/'
     | '/caixa'
     | '/cardapio'
+    | '/cozinha'
     | '/garcom'
     | '/impressao'
     | '/layout'
+    | '/manifest.webmanifest'
     | '/restaurante'
+    | '/vendas'
     | '/mesa/$id'
     | '/pedido/$id'
   fileRoutesByTo: FileRoutesByTo
@@ -116,10 +146,13 @@ export interface FileRouteTypes {
     | '/'
     | '/caixa'
     | '/cardapio'
+    | '/cozinha'
     | '/garcom'
     | '/impressao'
     | '/layout'
+    | '/manifest.webmanifest'
     | '/restaurante'
+    | '/vendas'
     | '/mesa/$id'
     | '/pedido/$id'
   id:
@@ -127,10 +160,13 @@ export interface FileRouteTypes {
     | '/'
     | '/caixa'
     | '/cardapio'
+    | '/cozinha'
     | '/garcom'
     | '/impressao'
     | '/layout'
+    | '/manifest.webmanifest'
     | '/restaurante'
+    | '/vendas'
     | '/mesa/$id'
     | '/pedido/$id'
   fileRoutesById: FileRoutesById
@@ -139,10 +175,13 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   CaixaRoute: typeof CaixaRoute
   CardapioRoute: typeof CardapioRoute
+  CozinhaRoute: typeof CozinhaRoute
   GarcomRoute: typeof GarcomRoute
   ImpressaoRoute: typeof ImpressaoRoute
   LayoutRoute: typeof LayoutRoute
+  ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
   RestauranteRoute: typeof RestauranteRoute
+  VendasRoute: typeof VendasRoute
   MesaIdRoute: typeof MesaIdRoute
   PedidoIdRoute: typeof PedidoIdRoute
 }
@@ -170,6 +209,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CardapioRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cozinha': {
+      id: '/cozinha'
+      path: '/cozinha'
+      fullPath: '/cozinha'
+      preLoaderRoute: typeof CozinhaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/garcom': {
       id: '/garcom'
       path: '/garcom'
@@ -191,11 +237,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LayoutRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/manifest.webmanifest': {
+      id: '/manifest.webmanifest'
+      path: '/manifest.webmanifest'
+      fullPath: '/manifest.webmanifest'
+      preLoaderRoute: typeof ManifestDotwebmanifestRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/restaurante': {
       id: '/restaurante'
       path: '/restaurante'
       fullPath: '/restaurante'
       preLoaderRoute: typeof RestauranteRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/vendas': {
+      id: '/vendas'
+      path: '/vendas'
+      fullPath: '/vendas'
+      preLoaderRoute: typeof VendasRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/mesa/$id': {
@@ -219,10 +279,13 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   CaixaRoute: CaixaRoute,
   CardapioRoute: CardapioRoute,
+  CozinhaRoute: CozinhaRoute,
   GarcomRoute: GarcomRoute,
   ImpressaoRoute: ImpressaoRoute,
   LayoutRoute: LayoutRoute,
+  ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
   RestauranteRoute: RestauranteRoute,
+  VendasRoute: VendasRoute,
   MesaIdRoute: MesaIdRoute,
   PedidoIdRoute: PedidoIdRoute,
 }

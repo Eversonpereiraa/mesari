@@ -1,0 +1,58 @@
+{
+  "name": "mesari-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Aplicativo desktop Windows do Mesari",
+  "main": "dist/main.js",
+  "scripts": {
+    "dev": "npm run build && electron .",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "dist": "npm run build && node scripts/dist.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1",
+    "electron": "44.7.0",
+    "electron-builder": "26.15.3",
+    "eslint": "9.39.1",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.56.1"
+  },
+  "build": {
+    "appId": "com.mesari.app",
+    "productName": "Mesari",
+    "artifactName": "Mesari-Setup-${version}.exe",
+    "directories": {
+      "buildResources": "build",
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "offline.html",
+      "config.json",
+      "public/**",
+      "build/icon.ico",
+      "build/icon.png"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true,
+      "deleteAppDataOnUninstall": false
+    }
+  }
+}

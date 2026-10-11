@@ -1,0 +1,44 @@
+name: Aplicativo desktop Windows
+
+on:
+  push:
+    tags:
+      - "desktop-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v4.2.2
+      - name: Configurar Node.js
+        uses: actions/setup-node@v4.3.0
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Instalar dependências
+        run: npm ci
+      - name: Compilar o aplicativo
+        run: npm run build
+      - name: Gerar instalador
+        run: npm run dist
+      - name: Enviar instalador como artefato
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: Mesari-Setup-Windows-x64
+          path: desktop/release/*.exe
+          if-no-files-found: error
+      - name: Publicar Release
+        if: startsWith(github.ref, 'refs/tags/desktop-v')
+        uses: softprops/action-gh-release@v2.2.2
+        with:
+          files: desktop/release/*.exe
+          generate_release_notes: true

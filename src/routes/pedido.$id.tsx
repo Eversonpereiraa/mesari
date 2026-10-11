@@ -1,8 +1,8 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { ChevronLeft } from "lucide-react";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { actions, useStore } from "@/lib/store";
 import { MobileFrame } from "@/components/mobile-frame";
 import { MenuPicker } from "@/components/menu-picker";
+import { isKitchenStationOnline } from "@/lib/kitchen-presence";
 
 export const Route = createFileRoute("/pedido/$id")({
   head: () => ({
@@ -19,18 +19,29 @@ export const Route = createFileRoute("/pedido/$id")({
 function Pedido() {
   const { id } = Route.useParams();
   const t = useStore((s) => s.tables.find((x) => x.id === id));
-  const user = useStore((s) => s.user);
+  const navigate = useNavigate();
   return (
     <MobileFrame
-      header={
-        <>
-          <Link to="/mesa/$id" params={{ id }} aria-label="Voltar" className="-ml-2 p-2 text-ink"><ChevronLeft className="h-5 w-5" /></Link>
-          <h1 className="font-semibold text-ink">Pedido · Mesa {String(t?.number ?? "").padStart(2, "0")}</h1>
-        </>
-      }
+      title={`Mesa ${String(t?.number ?? "").padStart(2, "0")}`}
+      subtitle="Novo pedido"
+      onBack={() => navigate({ to: "/mesa/$id", params: { id } })}
     >
       <div className="h-full">
-        <MenuPicker mobile onAdd={(i, q, n) => actions.addLine(id, i, q, n, user?.name ?? "Garçom")} />
+        <MenuPicker
+          mobile
+          onAdd={(item, quantity, note, print = true) =>
+            actions.addLine(id, item, quantity, note, print)
+          }
+          onSubmit={async (entries, print = true) => {
+            const stationOnline = isKitchenStationOnline();
+            await actions.addLines(id, entries, print);
+            sessionStorage.setItem(
+              "mesari-order-sent",
+              `${id}:${print && !stationOnline ? "offline" : "ok"}`,
+            );
+            navigate({ to: "/mesa/$id", params: { id } });
+          }}
+        />
       </div>
     </MobileFrame>
   );

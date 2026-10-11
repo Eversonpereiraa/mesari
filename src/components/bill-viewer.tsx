@@ -1,94 +1,286 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
+import { Link } from "@tanstack/react-router";
 import { Plug, Printer, X } from "lucide-react";
-import { brl, total, type State } from "@/lib/store";
+import { brl, paymentMethodLabel, type Closing, type State } from "@/lib/store";
+import {
+  getPrinterStatus,
+  initializePrinter,
+  printReceipt,
+  subscribePrinterStatus,
+} from "@/lib/printing";
 
-const PKEY = "mesari-printer";
-
-export function BillViewer({ s, tableId, onClose }: { s: State; tableId: string; onClose: () => void }) {
-  const t = s.tables.find((x) => x.id === tableId);
-  const lines = s.orders[tableId] ?? [];
-  const p = s.print;
-  const [qz, setQz] = useState<any>(null);
-  const [ok, setOk] = useState<boolean | null>(null);
-  const [printers, setPrinters] = useState<string[]>([]);
-  const [printer, setPrinter] = useState<string>("");
-  const [menu, setMenu] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  const now = useRef(new Date()).current;
+export function BillViewer({
+  s,
+  receipt,
+  onClose,
+  isReprint = false,
+}: {
+  s: State;
+  receipt: Closing;
+  onClose: () => void;
+  isReprint?: boolean;
+}) {
+  const lines = receipt.lines;
+  const restaurant = s.restaurant;
+  const [printCount, setPrintCount] = useState(0);
+  const [printError, setPrintError] = useState<string | null>(null);
+  const printerStatus = useSyncExternalStore(
+    subscribePrinterStatus,
+    getPrinterStatus,
+    getPrinterStatus,
+  );
+  const date = new Date(receipt.at);
+  const dateText = date.toLocaleString("pt-BR");
+  const waiters = [...new Set(lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—";
+  const subtotal = receipt.subtotal;
+  const serviceCharge = receipt.serviceCharge;
+  const saleTotal = receipt.total;
+  const saleNumber = String(receipt.saleNumber).padStart(4, "0");
 
   useEffect(() => {
-    setPrinter(localStorage.getItem(PKEY) ?? "");
-    let alive = true;
-    (async () => {
-      try {
-        const mod: any = (await import("qz-tray")).default;
-        if (!mod.websocket.isActive()) await mod.websocket.connect({ retries: 0 });
-        const list: string[] = await mod.printers.find();
-        if (!alive) return;
-        setQz(mod); setPrinters(list); setOk(true);
-      } catch { if (alive) setOk(false); }
-    })();
-    return () => { alive = false; };
+    void initializePrinter();
   }, []);
 
-  const pick = (n: string) => { setPrinter(n); localStorage.setItem(PKEY, n); setMenu(false); };
-
   const doPrint = async () => {
-    if (qz && ok && printer && ref.current) {
-      try {
-        const cfg = qz.configs.create(printer, { margins: 0, size: { width: 80, height: null }, units: "mm" });
-        const html = `<html><body style="margin:0;font-family:monospace;font-size:12px;width:72mm">${ref.current.innerHTML}</body></html>`;
-        await qz.print(cfg, [{ type: "pixel", format: "html", flavor: "plain", data: html }]);
-        return;
-      } catch { /* fall back */ }
+    setPrintError(null);
+    try {
+      const result = await printReceipt(
+        { ...receipt, reprint: isReprint || printCount > 0 },
+        restaurant,
+      );
+      if (result.method === "browser") {
+        setPrintError(
+          result.fallbackReason
+            ? `Impressora direta indisponível; usando a impressão do Windows. ${result.fallbackReason}`
+            : "Imprimindo pelo Windows (impressora padrão).",
+        );
+      }
+      setPrintCount((count) => count + 1);
+    } catch (error) {
+      setPrintError(error instanceof Error ? error.message : String(error));
     }
-    window.print();
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-foreground/30 print:static print:block print:bg-transparent">
-      <div className="flex max-h-[90vh] w-[380px] flex-col overflow-hidden rounded-md border bg-card shadow-xl print:max-h-none print:w-auto print:border-0 print:shadow-none">
-        <div className="flex h-8 items-center justify-between border-b px-3 text-xs text-ink print:hidden">
-          <span>Conta – Mesa {t?.number}</span>
-          <button aria-label="Fechar" onClick={onClose} className="rounded p-1 hover:bg-muted"><X className="h-3.5 w-3.5" /></button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 print:static print:block print:bg-transparent">
+      <div className="flex max-h-[90vh] w-[380px] flex-col overflow-hidden rounded-md border border-black/10 bg-white shadow-2xl print:max-h-none print:w-auto print:overflow-visible print:rounded-none print:border-0 print:shadow-none">
+        <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/10 bg-sidebar px-3 text-xs text-sidebar-foreground print:hidden">
+          <span>Conta – Mesa {receipt.table}</span>
+          <button
+            aria-label="Fechar"
+            onClick={onClose}
+            className="rounded p-1 text-sidebar-foreground hover:bg-white/10"
+          >
+            <X className="h-3.5 w-3.5" />
+          </button>
         </div>
-        <div className="relative flex h-7 items-center gap-1 border-b px-2 print:hidden">
-          <button title="Imprimir" onClick={doPrint} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-ink"><Printer className="h-3.5 w-3.5" /></button>
-          <button title="Conectar impressora" onClick={() => setMenu((m) => !m)} className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-ink"><Plug className="h-3.5 w-3.5" /></button>
-          <span className="ml-1 truncate text-[11px] text-muted-foreground">{printer || "Nenhuma impressora"}</span>
-          {menu && (
-            <div className="absolute left-2 top-7 z-10 min-w-48 rounded-md border bg-card py-1 text-xs shadow-lg">
-              {printers.length === 0 && <div className="px-3 py-1.5 text-muted-foreground">{ok === null ? "Procurando…" : "Nenhuma impressora encontrada"}</div>}
-              {printers.map((n) => (
-                <button key={n} onClick={() => pick(n)} className={`block w-full px-3 py-1.5 text-left hover:bg-muted ${n === printer ? "font-semibold text-ink" : "text-foreground"}`}>{n}</button>
+        <div className="relative z-10 flex h-9 shrink-0 items-center gap-1 border-b bg-card px-2">
+          <button
+            title="Imprimir"
+            aria-label="Imprimir nota"
+            onClick={doPrint}
+            className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-ink"
+          >
+            <Printer className="h-3.5 w-3.5" />
+          </button>
+          <Link
+            to="/impressao"
+            title="Conectar impressora"
+            aria-label="Conectar impressora"
+            className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-ink"
+          >
+            <Plug className="h-3.5 w-3.5" />
+          </Link>
+          <span className="ml-1 truncate text-[11px] text-muted-foreground">
+            {printerStatus.connected ? printerStatus.name : "Impressão pelo navegador"}
+          </span>
+        </div>
+        {printerStatus.error && (
+          <p role="status" className="px-3 py-1 text-xs text-muted-foreground">
+            Impressão direta indisponível: {printerStatus.error}
+          </p>
+        )}
+        {printError && (
+          <p role="alert" className="px-3 py-2 text-xs text-destructive">
+            Não foi possível imprimir: {printError}
+          </p>
+        )}
+        <div className="bill-viewer-scroll min-h-0 flex-1 overflow-y-auto p-5 print:overflow-visible print:bg-white print:p-0">
+          <div id="cupom" className="bill-paper">
+            {(isReprint || printCount > 0) && (
+              <div
+                className="bill-reprint"
+                style={{
+                  marginBottom: 10,
+                  padding: "5px 0",
+                  background: "#171717",
+                  color: "#fff",
+                  textAlign: "center",
+                  fontWeight: 700,
+                }}
+              >
+                2ª VIA · DATA ORIGINAL {dateText}
+              </div>
+            )}
+            <header style={{ textAlign: "center" }}>
+              {restaurant.logo && (
+                <img
+                  src={restaurant.logo}
+                  alt=""
+                  style={{
+                    display: "block",
+                    width: 48,
+                    height: 48,
+                    objectFit: "contain",
+                    margin: "0 auto 5px",
+                  }}
+                />
+              )}
+              <div style={{ fontSize: 16, fontWeight: 700, lineHeight: 1.2 }}>
+                {restaurant.name}
+              </div>
+              {restaurant.address && (
+                <div style={{ marginTop: 4, fontSize: 10 }}>{restaurant.address}</div>
+              )}
+              {restaurant.phone && <div style={{ fontSize: 10 }}>{restaurant.phone}</div>}
+              {restaurant.cnpj && <div style={{ fontSize: 10 }}>CNPJ: {restaurant.cnpj}</div>}
+            </header>
+
+            <div className="bill-dash" />
+            <div style={{ textAlign: "center" }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>CONTA DE CONSUMO</div>
+              <div style={{ fontSize: 10 }}>Não é documento fiscal</div>
+            </div>
+
+            <div className="bill-dash" />
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                alignItems: "start",
+                gap: 8,
+              }}
+            >
+              <strong style={{ fontSize: 15 }}>
+                Mesa {String(receipt.table).padStart(2, "0")}
+              </strong>
+              <time style={{ textAlign: "right", fontSize: 10 }}>{dateText}</time>
+            </div>
+            <div style={{ marginTop: 5, fontSize: 10 }}>Atendido por: {waiters}</div>
+            <div style={{ fontSize: 10 }}>Nº da venda: {saleNumber}</div>
+
+            <div className="bill-dash" />
+            <div
+              className="bill-item-grid"
+              style={{
+                display: "grid",
+                gridTemplateColumns: "27px minmax(0, 1fr) 48px 56px",
+                gap: 3,
+                fontSize: 9,
+                fontWeight: 700,
+              }}
+            >
+              <span>QTD</span>
+              <span>DESCRIÇÃO</span>
+              <span style={{ textAlign: "right" }}>UNIT.</span>
+              <span style={{ textAlign: "right" }}>TOTAL</span>
+            </div>
+            <div style={{ marginTop: 4 }}>
+              {lines.map((line) => (
+                <div
+                  key={line.id}
+                  className="bill-item bill-item-grid"
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "27px minmax(0, 1fr) 48px 56px",
+                    gap: 3,
+                    alignItems: "start",
+                    padding: "6px 0",
+                    fontSize: 10,
+                  }}
+                >
+                  <span>{line.qty}</span>
+                  <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{line.name}</span>
+                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    {brl(line.price)}
+                  </span>
+                  <span style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                    {brl(line.qty * line.price)}
+                  </span>
+                </div>
               ))}
             </div>
-          )}
-        </div>
-        {ok === false && (
-          <div className="border-b bg-muted px-3 py-1 text-[11px] text-muted-foreground print:hidden">
-            Instale o QZ Tray para listar impressoras —{" "}
-            <a href="https://qz.io/download" target="_blank" rel="noreferrer" className="underline">qz.io/download</a>
-          </div>
-        )}
-        <div className="overflow-y-auto bg-muted p-4 print:overflow-visible print:bg-transparent print:p-0">
-          <div id="cupom" ref={ref} className="mx-auto w-[302px] bg-background p-3 font-mono text-[12px] leading-snug text-ink shadow-sm print:w-[80mm] print:shadow-none">
-            {p.bName && (<div style={{ textAlign: "center" }}><div style={{ fontWeight: 700, fontSize: 14 }}>{s.restaurant.name}</div><div>{s.restaurant.address}</div></div>)}
-            <div style={{ borderTop: "1px dashed", margin: "6px 0" }} />
-            <div>Mesa {String(t?.number ?? "").padStart(2, "0")}</div>
-            {p.bDate && <div>{now.toLocaleString("pt-BR")}</div>}
-            <div style={{ borderTop: "1px dashed", margin: "6px 0" }} />
-            {p.bItems && lines.map((l) => (
-              <div key={l.id} style={{ marginBottom: 4 }}>
-                <div>{l.qty} x {l.name}</div>
-                <div style={{ display: "flex", justifyContent: "space-between" }}><span>{brl(l.price)}</span><span>{brl(l.qty * l.price)}</span></div>
-                {l.note && <div>Obs.: {l.note}</div>}
+
+            <div className="bill-dash" />
+            <div
+              className="bill-totals"
+              style={{ display: "grid", gap: 4, justifyItems: "end", fontSize: 10 }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                <span>Subtotal</span>
+                <span>{brl(subtotal)}</span>
               </div>
-            ))}
-            {p.bTotal && (<><div style={{ borderTop: "1px dashed", margin: "6px 0" }} />
-              <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700, fontSize: 16 }}><span>TOTAL</span><span>{brl(total(lines))}</span></div></>)}
-            <div style={{ borderTop: "1px dashed", margin: "6px 0" }} />
-            <div style={{ textAlign: "center" }}>{p.footer}</div>
+              {serviceCharge > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                  <span>Taxa de serviço</span>
+                  <span>{brl(serviceCharge)}</span>
+                </div>
+              )}
+              <div
+                className="bill-total"
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  width: "100%",
+                  marginTop: 5,
+                  padding: "8px 7px",
+                  background: "#111",
+                  color: "#fff",
+                  fontSize: 16,
+                  fontWeight: 700,
+                }}
+              >
+                <span>TOTAL</span>
+                <span>{brl(saleTotal)}</span>
+              </div>
+              {receipt.payments.length > 0 && (
+                <div className="mt-2 w-full space-y-1 text-left">
+                  {receipt.payments.map((payment, index) => (
+                    <div key={`${payment.forma}-${index}`}>
+                      <div className="flex justify-between">
+                        <span>{paymentMethodLabel[payment.forma]}</span>
+                        <span>{brl(payment.valor)}</span>
+                      </div>
+                      {payment.forma === "dinheiro" && payment.recebido !== undefined && (
+                        <>
+                          <div className="flex justify-between pl-2">
+                            <span>Recebido</span>
+                            <span>{brl(payment.recebido)}</span>
+                          </div>
+                          {payment.troco !== undefined && payment.troco > 0 && (
+                            <div className="flex justify-between pl-2">
+                              <span>Troco</span>
+                              <span>{brl(payment.troco)}</span>
+                            </div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bill-dash" />
+            <footer style={{ textAlign: "center", fontSize: 11 }}>
+              <div style={{ fontWeight: 700 }}>Obrigado pela preferência!</div>
+              <div style={{ fontSize: 10 }}>Volte sempre</div>
+              {(restaurant.instagram || restaurant.phone) && (
+                <div style={{ marginTop: 4, fontSize: 10 }}>
+                  {restaurant.instagram || restaurant.phone}
+                </div>
+              )}
+            </footer>
           </div>
         </div>
       </div>
