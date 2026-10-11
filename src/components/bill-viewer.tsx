@@ -36,6 +36,12 @@ export function BillViewer({
   const serviceCharge = receipt.serviceCharge;
   const saleTotal = receipt.total;
   const saleNumber = String(receipt.saleNumber).padStart(4, "0");
+  const receiptOrigin =
+    receipt.origin === "entrega" || receipt.origin === "retirada" ? receipt.origin : "mesa";
+  const receiptLocation =
+    receiptOrigin === "mesa"
+      ? `Mesa ${String(receipt.table).padStart(2, "0")}`
+      : `${receiptOrigin === "entrega" ? "Entrega" : "Retirada"}${receipt.customerName ? ` - ${receipt.customerName}` : ""}`;
 
   useEffect(() => {
     void initializePrinter();
@@ -65,7 +71,7 @@ export function BillViewer({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 print:static print:block print:bg-transparent">
       <div className="flex max-h-[90vh] w-[380px] flex-col overflow-hidden rounded-md border border-black/10 bg-white shadow-2xl print:max-h-none print:w-auto print:overflow-visible print:rounded-none print:border-0 print:shadow-none">
         <div className="flex h-9 shrink-0 items-center justify-between border-b border-white/10 bg-sidebar px-3 text-xs text-sidebar-foreground print:hidden">
-          <span>Conta – Mesa {receipt.table}</span>
+          <span>Conta – {receiptLocation}</span>
           <button
             aria-label="Fechar"
             onClick={onClose}
@@ -161,9 +167,7 @@ export function BillViewer({
                 gap: 8,
               }}
             >
-              <strong style={{ fontSize: 15 }}>
-                Mesa {String(receipt.table).padStart(2, "0")}
-              </strong>
+              <strong style={{ fontSize: 15 }}>{receiptLocation}</strong>
               <time style={{ textAlign: "right", fontSize: 10 }}>{dateText}</time>
             </div>
             <div style={{ marginTop: 5, fontSize: 10 }}>Atendido por: {waiters}</div>
@@ -224,6 +228,12 @@ export function BillViewer({
                 <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
                   <span>Taxa de serviço</span>
                   <span>{brl(serviceCharge)}</span>
+                </div>
+              )}
+              {receiptOrigin === "entrega" && (receipt.deliveryFee ?? 0) > 0 && (
+                <div style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                  <span>Taxa de entrega</span>
+                  <span>{brl(receipt.deliveryFee ?? 0)}</span>
                 </div>
               )}
               <div

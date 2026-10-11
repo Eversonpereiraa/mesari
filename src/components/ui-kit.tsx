@@ -3,6 +3,7 @@ import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import {
   BookOpen,
+  Bike,
   ChevronLeft,
   ChevronRight,
   LayoutGrid,
@@ -17,6 +18,7 @@ import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
 import { getPrintSettings } from "@/lib/printing";
+import { KitchenPrintStation } from "@/components/kitchen-print-station";
 
 export const btn = cva(
   "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
@@ -163,6 +165,7 @@ export function StoreErrorBanner() {
 
 const nav = [
   { to: "/caixa", label: "Mesas", Icon: LayoutGrid },
+  { to: "/delivery", label: "Delivery", Icon: Bike },
   { to: "/vendas", label: "Vendas", Icon: ReceiptText },
   { to: "/garcom", label: "App do garçom", Icon: Smartphone },
   { to: "/cardapio", label: "Cardápio", Icon: BookOpen },
@@ -220,7 +223,8 @@ export function AppShell({
           {nav
             .filter(
               (item) =>
-                (item.to !== "/vendas" && item.to !== "/impressao") || user?.role === "caixa",
+                (item.to !== "/vendas" && item.to !== "/impressao" && item.to !== "/delivery") ||
+                user?.role === "caixa",
             )
             .map(({ Icon, ...item }) => (
               <Link
@@ -292,6 +296,7 @@ export function AppShell({
         </header>
         <main className="flex-1">
           <StoreErrorBanner />
+          {user?.role === "caixa" && <KitchenPrintStation />}
           {children}
         </main>
       </div>

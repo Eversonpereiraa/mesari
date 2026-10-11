@@ -53,6 +53,11 @@ export type PaymentInput = {
   recebido?: number;
 };
 export type PaymentSummary = { forma: PaymentMethod; total: number; contas: number };
+export type OriginSummary = {
+  origem: "mesa" | "entrega" | "retirada";
+  total: number;
+  quantidade: number;
+};
 export const paymentMethodLabel: Record<PaymentMethod, string> = {
   dinheiro: "Dinheiro",
   pix: "Pix",
@@ -70,6 +75,9 @@ export type Closing = {
   serviceCharge: number;
   total: number;
   payments: Payment[];
+  origin?: "mesa" | "entrega" | "retirada" | "balcao";
+  customerName?: string;
+  deliveryFee?: number;
 };
 
 export type State = {
@@ -89,6 +97,7 @@ export type State = {
     logo: string;
     serviceChargeEnabled: boolean;
     serviceChargePercent: number;
+    deliveryFee: number;
   };
   tables: Table[];
   categories: Category[];
@@ -114,6 +123,7 @@ const emptyState = (): State => ({
     logo: "",
     serviceChargeEnabled: false,
     serviceChargePercent: 0,
+    deliveryFee: 0,
   },
   tables: [],
   categories: [],
@@ -238,16 +248,24 @@ const mapSaleLine = (value: unknown): OrderLine => {
 
 const mapClosing = (value: unknown): Closing => {
   const row = asRow(value);
+  const origin = row["origem"];
   return {
     id: stringValue(row.id),
     at: new Date(stringValue(row.fechada_em)).getTime(),
-    table: Number(row.mesa_numero),
+    table: Number(row.mesa_numero ?? 0),
     saleNumber: Number(row.numero),
     lines: Array.isArray(row.itens) ? row.itens.map(mapSaleLine) : [],
     subtotal: Number(row.subtotal),
     serviceCharge: Number(row.taxa_servico),
     total: Number(row.total),
     payments: mapPayments(row.pagamentos),
+    ...(origin === "mesa" || origin === "entrega" || origin === "retirada" || origin === "balcao"
+      ? { origin }
+      : {}),
+    ...(typeof row["cliente_nome"] === "string" ? { customerName: row["cliente_nome"] } : {}),
+    ...(Number.isFinite(Number(row["taxa_entrega"]))
+      ? { deliveryFee: Number(row["taxa_entrega"]) }
+      : {}),
   };
 };
 
@@ -307,14 +325,14 @@ async function loadRemoteData() {
     supabase
       .from("vendas")
       .select(
-        "id,numero,mesa_numero,itens,subtotal,taxa_servico,total,pagamentos,garcom_nome,fechado_por,fechado_por_nome,fechada_em",
+        "id,numero,mesa_numero,itens,subtotal,taxa_servico,taxa_entrega,total,pagamentos,garcom_nome,fechado_por,fechado_por_nome,fechada_em,origem,cliente_nome",
       )
       .order("fechada_em", { ascending: false })
       .limit(200),
     supabase
       .from("restaurante")
       .select(
-        "id,nome,endereco,telefone,cnpj,instagram,logo_url,taxa_servico_ativa,taxa_servico_percentual",
+        "id,nome,endereco,telefone,cnpj,instagram,logo_url,taxa_servico_ativa,taxa_servico_percentual,taxa_entrega",
       )
       .eq("id", 1)
       .maybeSingle(),
@@ -379,6 +397,7 @@ async function loadRemoteData() {
       logo: stringValue(restaurant.logo_url),
       serviceChargeEnabled: restaurant.taxa_servico_ativa === true,
       serviceChargePercent: Number(restaurant.taxa_servico_percentual),
+      deliveryFee: Number(restaurant["taxa_entrega"] ?? 0),
     },
     tables: (tablesRes.data ?? []).map(mapTable),
     categories: (categoriesRes.data ?? []).map((value: unknown) => {
@@ -652,6 +671,45 @@ export const actions = {
       }
       return { forma: form, total: Number(row.total), contas: Number(row.contas) };
     });
+  },
+  async originSummary(start: string, end: string): Promise<OriginSummary[]> {
+    const totals = new Map<OriginSummary["origem"], { cents: number; count: number }>([
+      ["mesa", { cents: 0, count: 0 }],
+      ["entrega", { cents: 0, count: 0 }],
+      ["retirada", { cents: 0, count: 0 }],
+    ]);
+    let from = 0;
+    while (true) {
+      const { data, error } = await supabase
+        .from("vendas")
+        .select("origem,total")
+        .gte("fechada_em", start)
+        .lte("fechada_em", end)
+        .order("fechada_em", { ascending: true })
+        .range(from, from + 499);
+      if (error) throw error;
+      for (const value of data ?? []) {
+        const row = asRow(value);
+        if (
+          row["origem"] !== "mesa" &&
+          row["origem"] !== "entrega" &&
+          row["origem"] !== "retirada"
+        ) {
+          continue;
+        }
+        const origin = row["origem"];
+        const current = totals.get(origin)!;
+        current.cents += Math.round(Number(row["total"]) * 100);
+        current.count += 1;
+      }
+      if (!data || data.length < 500) break;
+      from += 500;
+    }
+    return [...totals].map(([origem, value]) => ({
+      origem,
+      total: value.cents / 100,
+      quantidade: value.count,
+    }));
   },
   async saveTables(tables: Table[]) {
     return writeRemote(async () => {

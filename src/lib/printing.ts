@@ -41,6 +41,9 @@ export type PrintReceipt = {
   }[];
   partial?: boolean;
   reprint?: boolean;
+  origin?: "mesa" | "entrega" | "retirada" | "balcao";
+  customerName?: string;
+  deliveryFee?: number;
 };
 
 export type PrintRestaurant = {
@@ -54,12 +57,25 @@ export type PrintRestaurant = {
 export type KitchenTicket = {
   id: string;
   number: number;
-  table: number;
+  table: number | null;
   sector: "cozinha" | "bar";
   waiter: string;
   additional: boolean;
   createdAt: number;
   items: { product: string; quantity: number; note: string; unitPrice?: number }[];
+  external?: {
+    origin: "entrega" | "retirada";
+    dayNumber: number;
+    channel: "whatsapp" | "telefone" | "papel" | string;
+    customerName: string;
+    phone: string;
+    address: string;
+    observation: string;
+    subtotal: number;
+    deliveryFee: number;
+    total: number;
+    payment: { forma: string | null; pago: boolean; trocoPara: number | null };
+  };
 };
 
 export type PrinterStatus = {
@@ -168,14 +184,16 @@ export function isDirectPrintSupported() {
   return (
     typeof navigator !== "undefined" &&
     typeof window !== "undefined" &&
-    !window.mesariDesktop &&
     window.isSecureContext &&
     (Boolean(serialApi()) || Boolean(usbApi()))
   );
 }
 
 export function getDefaultPrintSettings(): PrintSettings {
-  return { ...DEFAULT_SETTINGS };
+  return {
+    ...DEFAULT_SETTINGS,
+    printerMode: typeof window !== "undefined" && window.mesariDesktop ? "browser" : "direct",
+  };
 }
 
 export function getPrintSettings(): PrintSettings {
@@ -188,6 +206,13 @@ export function getPrintSettings(): PrintSettings {
     throw new Error("As configurações locais de impressão estão inválidas.");
   }
   const settings = value as Partial<PrintSettings>;
+  const hasSavedDirectDevice = Boolean(settings.connectionType || settings.printerDeviceId);
+  const printerMode =
+    settings.printerMode === "browser"
+      ? "browser"
+      : hasSavedDirectDevice
+        ? "direct"
+        : getDefaultPrintSettings().printerMode;
   return {
     ...DEFAULT_SETTINGS,
     ...settings,
@@ -217,7 +242,7 @@ export function getPrintSettings(): PrintSettings {
       settings.baudRate === 115200
         ? settings.baudRate
         : 9600,
-    printerMode: settings.printerMode === "browser" ? "browser" : "direct",
+    printerMode,
     printerConnected: false,
   };
 }
@@ -235,7 +260,11 @@ export function subscribePrinterStatus(listener: () => void) {
 }
 
 export function getPrinterStatus() {
-  if (typeof window !== "undefined" && window.mesariDesktop && !status.connected) {
+  if (
+    typeof window !== "undefined" &&
+    window.mesariDesktop &&
+    getPrintSettings().printerMode !== "direct"
+  ) {
     return { ...status, supported: true, connected: true, name: "Windows", error: null };
   }
   return status;
@@ -287,6 +316,7 @@ function storeConnectedSettings(
   }
   savePrintSettings({
     ...settings,
+    printerMode: "direct",
     printerConnected: true,
     printerName: name,
     printerDeviceId: id,
@@ -426,11 +456,15 @@ async function findAuthorizedDevice() {
 export function initializePrinter() {
   if (initialization) return initialization;
   initialization = (async () => {
-    if (typeof window !== "undefined" && window.mesariDesktop) {
-      publishStatus({ supported: true, connected: true, name: "Windows", error: null });
+    listenForDeviceChanges();
+    if (
+      typeof window !== "undefined" &&
+      window.mesariDesktop &&
+      getPrintSettings().printerMode !== "direct"
+    ) {
+      publishStatus({ supported: isDirectPrintSupported(), connected: false, error: null });
       return;
     }
-    listenForDeviceChanges();
     if (!isDirectPrintSupported()) {
       publishStatus({ supported: false, connected: false, name: "", error: null });
       return;
@@ -515,6 +549,13 @@ export async function connectUsbPrinter(showAll = false) {
 }
 
 export async function reconnectPrinter() {
+  if (
+    typeof window !== "undefined" &&
+    window.mesariDesktop &&
+    getPrintSettings().printerMode !== "direct"
+  ) {
+    return;
+  }
   if (!isDirectPrintSupported()) {
     const message = "Este navegador não oferece suporte à conexão direta da impressora.";
     publishStatus({ supported: false, connected: false, error: message });
@@ -559,12 +600,17 @@ export async function disconnectPrinter() {
 
 export async function forgetPrinter() {
   const settings = getPrintSettings();
+  const connectionType = settings.connectionType;
   const port = selectedPort;
   const device = selectedDevice;
   await disconnectPrinter();
   if (port && "forget" in port && typeof port.forget === "function") await port.forget();
   if (device?.forget) await device.forget();
+  if (connectionType && window.mesariDesktop) {
+    await window.mesariDesktop.forgetDirectDevice(connectionType);
+  }
   const updatedSettings = { ...settings, printerConnected: false };
+  if (window.mesariDesktop) updatedSettings.printerMode = "browser";
   delete updatedSettings.printerDeviceId;
   delete updatedSettings.printerName;
   delete updatedSettings.connectionType;
@@ -665,6 +711,10 @@ function receiptLines(receipt: PrintReceipt, restaurant: PrintRestaurant, width:
   });
   const rightLine = (label: string, value: string) =>
     `${label}${" ".repeat(Math.max(1, width - label.length - value.length))}${value}`;
+  const place =
+    receipt.origin === "entrega" || receipt.origin === "retirada"
+      ? `${receipt.origin === "entrega" ? "Entrega" : "Retirada"}${receipt.customerName ? ` - ${receipt.customerName}` : ""}`
+      : `Mesa ${String(receipt.table).padStart(2, "0")}`;
   const lines = [
     ...(receipt.reprint ? [line("2ª VIA", 1, true)] : []),
     ...(restaurant.name ? [line(restaurant.name, 1, true)] : []),
@@ -674,7 +724,7 @@ function receiptLines(receipt: PrintReceipt, restaurant: PrintRestaurant, width:
     line("-".repeat(width)),
     line(receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO", 1, true),
     line("Não é documento fiscal", 1),
-    line(`Mesa ${String(receipt.table).padStart(2, "0")}`),
+    line(place),
     line(`Data: ${date}`),
     ...[...new Set(receipt.lines.map((item) => item.waiter).filter(Boolean))].map((waiter) =>
       line(`Atendido por: ${waiter}`),
@@ -700,6 +750,9 @@ function receiptLines(receipt: PrintReceipt, restaurant: PrintRestaurant, width:
     line(rightLine("Subtotal:", money(receipt.subtotal))),
     ...(receipt.serviceCharge
       ? [line(rightLine("Taxa de serviço:", money(receipt.serviceCharge)))]
+      : []),
+    ...(receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0
+      ? [line(rightLine("Taxa de entrega:", money(receipt.deliveryFee ?? 0)))]
       : []),
     line(rightLine("TOTAL:", money(receipt.total)), 2, true, 0x11),
     ...(receipt.payments ?? []).flatMap((payment) => [
@@ -881,9 +934,50 @@ function receiptHtml(
 ) {
   const width = settings.paperWidth;
   const fontSize = settings.fontSize === "small" ? 10 : settings.fontSize === "large" ? 16 : 12;
+  const receiptPlace =
+    receipt.origin === "entrega" || receipt.origin === "retirada"
+      ? `${receipt.origin === "entrega" ? "Entrega" : "Retirada"}${receipt.customerName ? ` - ${escapeHtml(receipt.customerName)}` : ""}`
+      : `Mesa ${String(receipt.table).padStart(2, "0")}`;
   const content = testPage
     ? `<h1>MESARI</h1><h2>TESTE DE IMPRESSÃO</h2><p>Impressora configurada com sucesso.</p><p>Papel: ${width} mm<br>Fonte: ${settings.fontSize === "small" ? "Pequena" : settings.fontSize === "large" ? "Grande" : "Normal"}</p><hr><p>Teste realizado em:<br>${escapeHtml(new Date().toLocaleString("pt-BR"))}</p><hr><strong>OK</strong>`
-    : `${receipt.reprint ? '<p class="center"><strong>2ª VIA</strong></p>' : ""}${restaurant.name ? `<h1>${escapeHtml(restaurant.name)}</h1>` : ""}<p>${escapeHtml(restaurant.address)}<br>${escapeHtml(restaurant.phone)}${restaurant.cnpj ? `<br>CNPJ: ${escapeHtml(restaurant.cnpj)}` : ""}</p><hr><h2>${receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO"}</h2><p class="center">Não é documento fiscal</p><p>Mesa ${String(receipt.table).padStart(2, "0")}<br>Data: ${escapeHtml(new Date(receipt.at).toLocaleString("pt-BR"))}<br>Atendido por: ${escapeHtml([...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—")}<br>Nº da venda: ${receipt.saleNumber}</p><hr><p><strong>QTD · DESCRIÇÃO · UNIT. · TOTAL</strong></p>${receipt.lines.map((line) => `<p>${line.qty}x ${escapeHtml(line.name)}<br>Unit.: ${money(line.price)}<br><span class="right">Total: ${money(line.qty * line.price)}</span></p>`).join("")}<hr><p>Subtotal: <span class="right">${money(receipt.subtotal)}</span></p>${receipt.serviceCharge ? `<p>Taxa de serviço: <span class="right">${money(receipt.serviceCharge)}</span></p>` : ""}<h2>TOTAL: <span class="right">${money(receipt.total)}</span></h2>${(receipt.payments ?? []).map((payment) => `<p>${paymentLabel[payment.forma]} <span class="right">${money(payment.valor)}</span></p>${payment.forma === "dinheiro" && payment.recebido !== undefined ? `<p>Recebido <span class="right">${money(payment.recebido)}</span></p>${payment.troco !== undefined && payment.troco > 0 ? `<p>Troco <span class="right">${money(payment.troco)}</span></p>` : ""}` : ""}`).join("")}<hr><p class="center">Obrigado pela preferência!</p>`;
+    : [
+        receipt.reprint ? '<p class="center"><strong>2ª VIA</strong></p>' : "",
+        restaurant.name ? `<h1>${escapeHtml(restaurant.name)}</h1>` : "",
+        `<p>${escapeHtml(restaurant.address)}<br>${escapeHtml(restaurant.phone)}${restaurant.cnpj ? `<br>CNPJ: ${escapeHtml(restaurant.cnpj)}` : ""}</p>`,
+        "<hr>",
+        `<h2>${receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO"}</h2>`,
+        '<p class="center">Não é documento fiscal</p>',
+        `<p>${receiptPlace}<br>Data: ${escapeHtml(new Date(receipt.at).toLocaleString("pt-BR"))}<br>Atendido por: ${escapeHtml([...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—")}<br>Nº da venda: ${receipt.saleNumber}</p>`,
+        "<hr>",
+        "<p><strong>QTD · DESCRIÇÃO · UNIT. · TOTAL</strong></p>",
+        ...receipt.lines.map(
+          (line) =>
+            `<p>${line.qty}x ${escapeHtml(line.name)}<br>Unit.: ${money(line.price)}<br><span class="right">Total: ${money(line.qty * line.price)}</span></p>`,
+        ),
+        "<hr>",
+        `<p>Subtotal: <span class="right">${money(receipt.subtotal)}</span></p>`,
+        ...(receipt.serviceCharge
+          ? [`<p>Taxa de serviço: <span class="right">${money(receipt.serviceCharge)}</span></p>`]
+          : []),
+        ...(receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0
+          ? [
+              `<p>Taxa de entrega: <span class="right">${money(receipt.deliveryFee ?? 0)}</span></p>`,
+            ]
+          : []),
+        `<h2>TOTAL: <span class="right">${money(receipt.total)}</span></h2>`,
+        ...(receipt.payments ?? []).flatMap((payment) => [
+          `<p>${paymentLabel[payment.forma]} <span class="right">${money(payment.valor)}</span></p>`,
+          ...(payment.forma === "dinheiro" && payment.recebido !== undefined
+            ? [
+                `<p>Recebido <span class="right">${money(payment.recebido)}</span></p>`,
+                ...(payment.troco !== undefined && payment.troco > 0
+                  ? [`<p>Troco <span class="right">${money(payment.troco)}</span></p>`]
+                  : []),
+              ]
+            : []),
+        ]),
+        '<hr><p class="center">Obrigado pela preferência!</p>',
+      ].join("");
   const copies = Array.from(
     { length: settings.copies },
     () => `<article>${content}</article>`,
@@ -892,6 +986,7 @@ function receiptHtml(
 }
 
 function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
+  if (ticket.external) return externalKitchenTicketHtml(ticket, settings);
   const fontSize = settings.fontSize === "small" ? 11 : settings.fontSize === "large" ? 18 : 14;
   const canShowPrices =
     settings.showKitchenPrices &&
@@ -908,10 +1003,43 @@ function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
     ? ticket.items.reduce((sum, item) => sum + item.quantity * (item.unitPrice ?? 0), 0)
     : null;
   const barLabel = ticket.sector === "bar" ? '<div class="sector">BAR</div>' : "";
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize + 3}px}.sector{text-align:center;font-size:${fontSize - 2}px;font-weight:700}.table{margin:4mm 0;text-align:center;font-weight:900;font-size:${fontSize * 2}px}.flag{padding:2mm;text-align:center;font-weight:900;border:1px solid #000}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize + 1}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item strong{font-weight:900}.subtotal{white-space:nowrap}.unit-price{font-size:${fontSize - 2}px;margin-top:1mm}.total{font-size:${fontSize + 2}px;font-weight:900}.note{margin:1mm 0 0 4mm;padding:1mm;font-size:${fontSize}px;font-weight:800;background:#eee}.cut{height:12mm}</style></head><body><main><header class="header">PEDIDO #${ticket.number}</header>${barLabel}<div class="table">MESA ${String(ticket.table).padStart(2, "0")}</div>${ticket.additional ? '<div class="flag">** ADICIONAL **</div>' : ""}<div class="meta">${escapeHtml(new Date(ticket.createdAt).toLocaleString("pt-BR"))}</div><div class="meta">Garçom: ${escapeHtml(ticket.waiter)}</div><div class="dash"></div>${items}${total === null ? "" : `<div class="dash"></div><div class="total">TOTAL DO PEDIDO ${escapeHtml(money(total))}</div>`}<div class="cut"></div></main></body></html>`;
+  const tableLabel =
+    ticket.table === null
+      ? ""
+      : `<div class="table">MESA ${String(ticket.table).padStart(2, "0")}</div>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize + 3}px}.sector{text-align:center;font-size:${fontSize - 2}px;font-weight:700}.table{margin:4mm 0;text-align:center;font-weight:900;font-size:${fontSize * 2}px}.flag{padding:2mm;text-align:center;font-weight:900;border:1px solid #000}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize + 1}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item strong{font-weight:900}.subtotal{white-space:nowrap}.unit-price{font-size:${fontSize - 2}px;margin-top:1mm}.total{font-size:${fontSize + 2}px;font-weight:900}.note{margin:1mm 0 0 4mm;padding:1mm;font-size:${fontSize}px;font-weight:800;background:#eee}.cut{height:12mm}</style></head><body><main><header class="header">PEDIDO #${ticket.number}</header>${barLabel}${tableLabel}${ticket.additional ? '<div class="flag">** ADICIONAL **</div>' : ""}<div class="meta">${escapeHtml(new Date(ticket.createdAt).toLocaleString("pt-BR"))}</div><div class="meta">Garçom: ${escapeHtml(ticket.waiter)}</div><div class="dash"></div>${items}${total === null ? "" : `<div class="dash"></div><div class="total">TOTAL DO PEDIDO ${escapeHtml(money(total))}</div>`}<div class="cut"></div></main></body></html>`;
+}
+
+const deliveryChannelLabel = (channel: string) =>
+  ({ whatsapp: "WhatsApp", telefone: "Telefone", papel: "Papel" })[channel] ?? channel;
+
+function expectedPaymentLabel(payment: NonNullable<KitchenTicket["external"]>["payment"]) {
+  if (payment.pago) return "JÁ PAGO";
+  if (payment.forma === "pix") return "PIX";
+  if (payment.forma === "credito" || payment.forma === "debito") return "CARTÃO NA ENTREGA";
+  if (payment.forma === "dinheiro") {
+    return payment.trocoPara !== null
+      ? `DINHEIRO - TROCO PARA ${money(payment.trocoPara)}`
+      : "DINHEIRO";
+  }
+  return "PAGAMENTO NÃO INFORMADO";
+}
+
+function externalKitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
+  const external = ticket.external!;
+  const fontSize = settings.fontSize === "small" ? 11 : settings.fontSize === "large" ? 18 : 14;
+  const items = ticket.items
+    .map(
+      (item) =>
+        `<section class="item"><div class="item-main"><strong>${item.quantity}x ${escapeHtml(item.product)}</strong><strong>${escapeHtml(money(item.quantity * (item.unitPrice ?? 0)))}</strong></div>${item.note ? `<div class="note">&gt;&gt; ${escapeHtml(item.note)}</div>` : ""}</section>`,
+    )
+    .join("");
+  const title = external.origin === "entrega" ? "ENTREGA" : "RETIRADA";
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize * 1.7}px}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.client{margin-top:3mm;font-weight:800}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item-main strong:last-child{white-space:nowrap}.note,.observation{margin:1mm 0 0 3mm;padding:1mm;font-weight:800;background:#eee}.totals p{display:flex;justify-content:space-between;margin:1mm 0}.total{font-size:${fontSize + 3}px;font-weight:900}.payment{margin-top:2mm;font-weight:900}.footer{text-align:center;font-size:${fontSize - 2}px}.cut{height:12mm}</style></head><body><main><header class="header">${title}<br>#${external.dayNumber}</header><div class="meta center">${escapeHtml(deliveryChannelLabel(external.channel))} · ${escapeHtml(new Date(ticket.createdAt).toLocaleTimeString("pt-BR"))}</div><div class="client">${escapeHtml(external.customerName)}</div>${external.phone ? `<div>Telefone: ${escapeHtml(external.phone)}</div>` : ""}${external.origin === "entrega" && external.address ? `<div>Endereço: ${escapeHtml(external.address)}</div>` : ""}<div class="dash"></div>${items}${external.observation ? `<div class="observation">OBSERVAÇÃO: ${escapeHtml(external.observation)}</div>` : ""}<div class="dash"></div><div class="totals"><p><span>Subtotal</span><strong>${escapeHtml(money(external.subtotal))}</strong></p>${external.origin === "entrega" ? `<p><span>Taxa de entrega</span><strong>${escapeHtml(money(external.deliveryFee))}</strong></p>` : ""}<p class="total"><span>TOTAL</span><strong>${escapeHtml(money(external.total))}</strong></p></div><div class="payment">${escapeHtml(expectedPaymentLabel(external.payment))}</div><div class="dash"></div><footer class="footer">Não é documento fiscal</footer><div class="cut"></div></main></body></html>`;
 }
 
 function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
+  if (ticket.external) return escPosExternalKitchenTicket(ticket, settings);
   const width = settings.columns;
   const canShowPrices =
     settings.showKitchenPrices &&
@@ -927,7 +1055,7 @@ function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
   };
   text(`PEDIDO #${ticket.number}`, 1, true);
   if (ticket.sector === "bar") text("BAR", 1);
-  text(`MESA ${String(ticket.table).padStart(2, "0")}`, 1, true, 0x11);
+  if (ticket.table !== null) text(`MESA ${String(ticket.table).padStart(2, "0")}`, 1, true, 0x11);
   if (ticket.additional) text("** ADICIONAL **", 1, true);
   text(new Date(ticket.createdAt).toLocaleString("pt-BR"));
   text(`Garçom: ${ticket.waiter || "—"}`);
@@ -960,15 +1088,63 @@ function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
   return new Uint8Array(commands);
 }
 
+function escPosExternalKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
+  const external = ticket.external!;
+  const width = settings.columns;
+  const commands: number[] = [0x1b, 0x40, 0x1b, 0x74, codePageSelector[settings.characterTable]];
+  const text = (value: string, align = 0, bold = false, size = 0) => {
+    commands.push(0x1b, 0x61, align, 0x1b, 0x45, bold ? 1 : 0, 0x1d, 0x21, size);
+    for (const fragment of wrapWords(value, Math.max(8, size ? Math.floor(width / 2) : width))) {
+      commands.push(...encodeText(fragment, settings.characterTable), 0x0a);
+    }
+  };
+  const rightLine = (label: string, value: number) =>
+    `${label}${" ".repeat(Math.max(1, width - label.length - money(value).length))}${money(value)}`;
+  text(external.origin === "entrega" ? "ENTREGA" : "RETIRADA", 1, true, 0x11);
+  text(`#${external.dayNumber}`, 1, true, 0x11);
+  text(
+    `${deliveryChannelLabel(external.channel)} · ${new Date(ticket.createdAt).toLocaleTimeString("pt-BR")}`,
+    1,
+  );
+  text(external.customerName, 0, true);
+  if (external.phone) text(`Telefone: ${external.phone}`);
+  if (external.origin === "entrega" && external.address)
+    text(`Endereço: ${external.address}`, 0, true);
+  text("-".repeat(width));
+  for (const item of ticket.items) {
+    const label = `${item.quantity}x ${item.product}`;
+    text(rightLine(label, item.quantity * (item.unitPrice ?? 0)), 0, true);
+    if (item.note) text(`  >> ${item.note}`, 0, true);
+  }
+  if (external.observation) {
+    text("-".repeat(width));
+    text(`OBSERVAÇÃO: ${external.observation}`, 0, true);
+  }
+  text("-".repeat(width));
+  text(rightLine("Subtotal", external.subtotal));
+  if (external.origin === "entrega") text(rightLine("Taxa de entrega", external.deliveryFee));
+  text(rightLine("TOTAL", external.total), 2, true, 0x11);
+  text(expectedPaymentLabel(external.payment), 1, true);
+  text("-".repeat(width));
+  text("Não é documento fiscal", 1);
+  commands.push(0x1b, 0x64, 3);
+  if (settings.cutPaper) commands.push(0x1d, 0x56, 66, 3);
+  return new Uint8Array(commands);
+}
+
 export async function printKitchenTicket(
   ticket: KitchenTicket,
   settings = getPrintSettings(),
   allowBrowserFallback = true,
 ) {
   return enqueuePrint(async () => {
-    if (typeof window !== "undefined" && window.mesariDesktop) {
-      const desktopSettings = await window.mesariDesktop.getSettings();
-      const result = await window.mesariDesktop.print({
+    const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
+    const directSelected =
+      settings.printerMode === "direct" &&
+      Boolean(settings.connectionType || settings.printerDeviceId);
+    if (desktop && !directSelected) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.print({
         html: kitchenTicketHtml(ticket, settings),
         printerName: desktopSettings.printerComanda,
         widthMm: settings.paperWidth,
@@ -979,8 +1155,22 @@ export async function printKitchenTicket(
       return { method: "desktop" as const };
     }
     if (settings.printerMode === "direct") {
-      await printDirectWithRetry(escPosKitchenTicket(ticket, settings));
-      return { method: "direct" as const };
+      try {
+        await printDirectWithRetry(escPosKitchenTicket(ticket, settings));
+        return { method: "direct" as const };
+      } catch (cause) {
+        if (!desktop || !allowBrowserFallback) throw cause;
+        const desktopSettings = await desktop.getSettings();
+        const result = await desktop.print({
+          html: kitchenTicketHtml(ticket, settings),
+          printerName: desktopSettings.printerComanda,
+          widthMm: settings.paperWidth,
+          copies: 1,
+        });
+        if (!result.ok)
+          throw new Error(result.error || "O Windows não concluiu a impressão da comanda.");
+        return { method: "desktop" as const, fallbackReason: errorMessage(cause) };
+      }
     }
     if (!allowBrowserFallback) {
       throw new Error("Impressora térmica desconectada. Comanda mantida na lista de pendências.");
@@ -1037,9 +1227,13 @@ export async function printReceipt(
   settings = getPrintSettings(),
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
-    if (typeof window !== "undefined" && window.mesariDesktop) {
-      const desktopSettings = await window.mesariDesktop.getSettings();
-      const result = await window.mesariDesktop.print({
+    const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
+    const directSelected =
+      settings.printerMode === "direct" &&
+      Boolean(settings.connectionType || settings.printerDeviceId);
+    if (desktop && !directSelected) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.print({
         html: receiptHtml(receipt, restaurant, { ...settings, copies: 1 }),
         printerName: desktopSettings.printerNota,
         widthMm: settings.paperWidth,
@@ -1064,6 +1258,20 @@ export async function printReceipt(
         directError = "Nenhuma impressora direta autorizada está conectada.";
       }
     }
+    if (desktop) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.print({
+        html: receiptHtml(receipt, restaurant, { ...settings, copies: 1 }),
+        printerName: desktopSettings.printerNota,
+        widthMm: settings.paperWidth,
+        copies: settings.copies,
+      });
+      if (!result.ok)
+        throw new Error(result.error || "O Windows não concluiu a impressão da nota.");
+      return directError
+        ? { method: "desktop", fallbackReason: directError }
+        : { method: "desktop" };
+    }
     await printInHiddenFrame(receiptHtml(receipt, restaurant, settings));
     return directError ? { method: "browser", fallbackReason: directError } : { method: "browser" };
   });
@@ -1087,9 +1295,13 @@ export async function printTestPage(
   restaurantName = "Mesari",
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
-    if (typeof window !== "undefined" && window.mesariDesktop) {
-      const desktopSettings = await window.mesariDesktop.getSettings();
-      const result = await window.mesariDesktop.testPrint(
+    const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
+    const directSelected =
+      settings.printerMode === "direct" &&
+      Boolean(settings.connectionType || settings.printerDeviceId);
+    if (desktop && !directSelected) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.testPrint(
         desktopSettings.printerNota,
         settings.paperWidth,
         restaurantName,
@@ -1146,6 +1358,16 @@ export async function printTestPage(
       } else {
         directError = "Nenhuma impressora direta autorizada está conectada.";
       }
+    }
+    if (desktop) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.testPrint(
+        desktopSettings.printerNota,
+        settings.paperWidth,
+        restaurantName,
+      );
+      if (!result.ok) throw new Error(result.error || "O Windows não concluiu a página de teste.");
+      return { method: "desktop", ...(directError ? { fallbackReason: directError } : {}) };
     }
     const emptyReceipt: PrintReceipt = {
       id: "test",

@@ -24,6 +24,7 @@ interface Window {
     }): Promise<{ ok: boolean; error?: string }>;
     getSettings(): Promise<MesariDesktopSettings>;
     setSettings(settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings>;
+    forgetDirectDevice(type: "serial" | "usb"): Promise<{ ok: true }>;
     testPrint(
       printerName: string,
       widthMm: number,

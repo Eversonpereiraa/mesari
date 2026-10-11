@@ -46,11 +46,13 @@ export function PaymentDialog({
   totalCents,
   onClose,
   onConfirm,
+  title,
 }: {
   table: number;
   totalCents: number;
   onClose: () => void;
   onConfirm: (payments: PaymentInput[]) => Promise<void>;
+  title?: string;
 }) {
   const [payments, setPayments] = useState<PaymentLine[]>([]);
   const [split, setSplit] = useState(false);
@@ -134,7 +136,7 @@ export function PaymentDialog({
         <header className="flex items-start justify-between">
           <div>
             <h2 id="payment-title" className="font-display text-xl font-bold text-ink">
-              Pagamento – Mesa {table}
+              {title ?? `Pagamento – Mesa ${table}`}
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">Selecione uma ou mais formas.</p>
           </div>

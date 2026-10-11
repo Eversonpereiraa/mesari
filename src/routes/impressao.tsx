@@ -94,7 +94,11 @@ function Impressao() {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
     if (window.mesariDesktop) {
-      void Promise.all([window.mesariDesktop.getSettings(), window.mesariDesktop.listPrinters()])
+      void Promise.all([
+        window.mesariDesktop.getSettings(),
+        window.mesariDesktop.listPrinters(),
+        initializePrinter(),
+      ])
         .then(([nativeSettings, nativePrinters]) => {
           if (!active) return;
           setDesktopSettings(nativeSettings);
@@ -125,7 +129,9 @@ function Impressao() {
     const loadRecent = async () => {
       const { data, error: loadError } = await supabase
         .from("pedidos_cozinha")
-        .select("id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em")
+        .select(
+          "id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em,origem,dados",
+        )
         .order("criado_em", { ascending: false })
         .limit(30);
       if (loadError) throw loadError;
@@ -133,17 +139,36 @@ function Impressao() {
       setRecentTickets(
         (data ?? []).map((value) => {
           const row = value as Record<string, unknown>;
+          const origin = row["origem"];
+          const external = origin === "entrega" || origin === "retirada";
           if (
-            (row["setor"] !== "cozinha" && row["setor"] !== "bar") ||
+            (!external && row["setor"] !== "cozinha" && row["setor"] !== "bar") ||
             !Array.isArray(row["itens"])
           ) {
             throw new Error("O histórico retornou uma comanda em formato inválido.");
           }
+          const details =
+            typeof row["dados"] === "object" &&
+            row["dados"] !== null &&
+            !Array.isArray(row["dados"])
+              ? (row["dados"] as Record<string, unknown>)
+              : {};
+          const paymentValue = details["pagamento_previsto"];
+          const payment =
+            typeof paymentValue === "object" &&
+            paymentValue !== null &&
+            !Array.isArray(paymentValue)
+              ? (paymentValue as Record<string, unknown>)
+              : {};
+          const number = Number(details["numero_dia"] ?? row["numero"]);
           return {
             id: String(row["id"]),
-            number: Number(row["numero"]),
-            table: Number(row["mesa_numero"]),
-            sector: row["setor"],
+            number,
+            table:
+              row["mesa_numero"] === null || row["mesa_numero"] === undefined
+                ? null
+                : Number(row["mesa_numero"]),
+            sector: row["setor"] === "bar" ? "bar" : "cozinha",
             waiter: typeof row["garcom_nome"] === "string" ? row["garcom_nome"] : "",
             additional: row["adicional"] === true,
             createdAt: new Date(String(row["criado_em"])).getTime(),
@@ -162,6 +187,30 @@ function Impressao() {
                   : {}),
               };
             }),
+            ...(external
+              ? {
+                  external: {
+                    origin,
+                    dayNumber: number,
+                    channel: String(details["canal"] ?? ""),
+                    customerName: String(details["cliente_nome"] ?? ""),
+                    phone: String(details["telefone"] ?? ""),
+                    address: String(details["endereco"] ?? ""),
+                    observation: String(details["observacao"] ?? ""),
+                    subtotal: Number(details["subtotal"] ?? 0),
+                    deliveryFee: Number(details["taxa_entrega"] ?? 0),
+                    total: Number(details["total"] ?? 0),
+                    payment: {
+                      forma: typeof payment["forma"] === "string" ? payment["forma"] : null,
+                      pago: payment["pago"] === true,
+                      trocoPara:
+                        payment["troco_para"] === null || payment["troco_para"] === undefined
+                          ? null
+                          : Number(payment["troco_para"]),
+                    },
+                  },
+                }
+              : {}),
           };
         }),
       );
@@ -240,7 +289,11 @@ function Impressao() {
   };
 
   const statusText = desktop
-    ? `Windows · ${printers.length} impressora(s)`
+    ? settings.printerMode === "direct"
+      ? printer.connected
+        ? `Conexão direta · ${printer.name}`
+        : "Conexão direta · desconectada"
+      : `Driver do Windows · ${printers.length} impressora(s)`
     : printer.connected
       ? `Conectada: ${printer.name}`
       : "Não conectada";
@@ -253,18 +306,101 @@ function Impressao() {
           {desktop && (
             <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
               <div>
-                <div className="text-xs text-muted-foreground">Driver do Windows</div>
-                <h2 className="font-semibold text-ink">Impressoras</h2>
+                <div className="text-xs text-muted-foreground">Método ativo</div>
+                <h2 className="font-semibold text-ink">
+                  {settings.printerMode === "direct" ? "USB ou Bluetooth/COM" : "Driver do Windows"}
+                </h2>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Escolha o método. A impressora direta autorizada fica salva para reconectar e
+                  atende notas e comandas neste computador.
+                </p>
               </div>
               <div className="grid gap-4 sm:grid-cols-2">
+                <div className="flex flex-wrap gap-2 sm:col-span-2">
+                  <Btn
+                    variant={settings.printerMode === "browser" ? "neutral" : "outline"}
+                    disabled={busy}
+                    onClick={() => updateSettings({ printerMode: "browser" })}
+                  >
+                    Usar driver do Windows
+                  </Btn>
+                  <Btn
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void runPrinterAction(async () => {
+                        await connectSerialPrinter();
+                        setSettings(getPrintSettings());
+                      })
+                    }
+                  >
+                    {busy ? "Conectando..." : "Bluetooth / porta COM"}
+                  </Btn>
+                  <Btn
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() =>
+                      void runPrinterAction(async () => {
+                        await connectUsbPrinter(showAllUsb);
+                        setSettings(getPrintSettings());
+                      })
+                    }
+                  >
+                    {busy ? "Conectando..." : "Conectar por USB"}
+                  </Btn>
+                </div>
+                <div className="text-xs text-muted-foreground sm:col-span-2">
+                  {settings.printerMode === "direct" ? (
+                    <>
+                      {printer.connected
+                        ? `Conectada: ${printer.name}`
+                        : "Nenhuma impressora direta conectada."}
+                      {" · "}
+                      Emparelhe impressoras Bluetooth no Windows e escolha a porta COM aqui.
+                    </>
+                  ) : (
+                    "As impressoras configuradas abaixo são usadas para a nota e as comandas."
+                  )}
+                </div>
+                {settings.printerMode === "direct" && (
+                  <div className="flex flex-wrap gap-2 sm:col-span-2">
+                    <Btn
+                      variant="outline"
+                      disabled={busy || !printer.connected}
+                      onClick={() => void runPrinterAction(disconnectPrinter)}
+                    >
+                      Desconectar
+                    </Btn>
+                    <Btn
+                      variant="outline"
+                      disabled={
+                        busy ||
+                        (!getPrintSettings().printerDeviceId && !getPrintSettings().connectionType)
+                      }
+                      onClick={() => void runPrinterAction(forgetPrinter)}
+                    >
+                      Esquecer impressora
+                    </Btn>
+                    <button
+                      type="button"
+                      className="self-center text-xs text-primary underline"
+                      onClick={() => setShowAllUsb((current) => !current)}
+                    >
+                      {showAllUsb
+                        ? "Usar impressoras térmicas USB"
+                        : "Mostrar todos os dispositivos USB"}
+                    </button>
+                  </div>
+                )}
                 <Field label="Impressora da nota">
                   <select
                     className="field"
                     value={desktopSettings.printerNota}
                     disabled={busy}
-                    onChange={(event) =>
-                      void updateDesktopSettings({ printerNota: event.target.value })
-                    }
+                    onChange={(event) => {
+                      void updateDesktopSettings({ printerNota: event.target.value });
+                      updateSettings({ printerMode: "browser" });
+                    }}
                   >
                     <option value="">Impressora padrão do Windows</option>
                     {printers.map((item) => (
@@ -280,9 +416,10 @@ function Impressao() {
                     className="field"
                     value={desktopSettings.printerComanda}
                     disabled={busy}
-                    onChange={(event) =>
-                      void updateDesktopSettings({ printerComanda: event.target.value })
-                    }
+                    onChange={(event) => {
+                      void updateDesktopSettings({ printerComanda: event.target.value });
+                      updateSettings({ printerMode: "browser" });
+                    }}
                   >
                     <option value="">Impressora padrão do Windows</option>
                     {printers.map((item) => (
@@ -334,7 +471,7 @@ function Impressao() {
               </div>
             </section>
           )}
-          {!desktop && (
+          {(!desktop || settings.printerMode === "direct") && (
             <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
               <div>
                 <div className="text-xs text-muted-foreground">Conexão</div>
@@ -647,8 +784,11 @@ function Impressao() {
                   className="flex flex-wrap items-center justify-between gap-2 border-b pb-2"
                 >
                   <span>
-                    #{ticket.number} · Mesa {String(ticket.table).padStart(2, "0")} ·{" "}
-                    {ticket.printedAt ? "Impresso" : "Aguardando"}
+                    #{ticket.number} ·{" "}
+                    {ticket.external
+                      ? `${ticket.external.origin === "entrega" ? "Entrega" : "Retirada"} · ${ticket.external.customerName}`
+                      : `Mesa ${String(ticket.table ?? "—").padStart(2, "0")}`}{" "}
+                    · {ticket.printedAt ? "Impresso" : "Aguardando"}
                   </span>
                   <Btn
                     size="sm"

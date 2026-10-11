@@ -22,15 +22,37 @@ function mapTicket(value: unknown): TicketRow {
     throw new Error("O Supabase retornou uma comanda em formato inválido.");
   }
   const row = value as Record<string, unknown>;
-  if (row["setor"] !== "cozinha" && row["setor"] !== "bar") {
+  const origin = row["origem"];
+  const externalOrder = origin === "entrega" || origin === "retirada";
+  if (!externalOrder && row["setor"] !== "cozinha" && row["setor"] !== "bar") {
     throw new Error(`Setor inválido na comanda: ${String(row["setor"])}.`);
   }
   if (!Array.isArray(row["itens"])) throw new Error("A comanda não contém itens válidos.");
+  const details =
+    typeof row["dados"] === "object" && row["dados"] !== null && !Array.isArray(row["dados"])
+      ? (row["dados"] as Record<string, unknown>)
+      : {};
+  const paymentValue = details["pagamento_previsto"];
+  const payment =
+    typeof paymentValue === "object" && paymentValue !== null && !Array.isArray(paymentValue)
+      ? (paymentValue as Record<string, unknown>)
+      : {};
+  const getText = (key: string) => {
+    const value = details[key];
+    return typeof value === "string" ? value : "";
+  };
+  const getNumber = (key: string, fallback = 0) => {
+    const value = Number(details[key]);
+    return Number.isFinite(value) ? value : fallback;
+  };
   return {
     id: String(row["id"]),
-    number: Number(row["numero"]),
-    table: Number(row["mesa_numero"]),
-    sector: row["setor"],
+    number: externalOrder ? getNumber("numero_dia", Number(row["numero"])) : Number(row["numero"]),
+    table:
+      row["mesa_numero"] === null || row["mesa_numero"] === undefined
+        ? null
+        : Number(row["mesa_numero"]),
+    sector: row["setor"] === "bar" ? "bar" : "cozinha",
     waiter: typeof row["garcom_nome"] === "string" ? row["garcom_nome"] : "",
     additional: row["adicional"] === true,
     createdAt: new Date(String(row["criado_em"])).getTime(),
@@ -49,6 +71,31 @@ function mapTicket(value: unknown): TicketRow {
           : {}),
       };
     }),
+    ...(externalOrder
+      ? {
+          external: {
+            origin,
+            dayNumber: getNumber("numero_dia", Number(row["numero"])),
+            channel: getText("canal"),
+            customerName:
+              typeof details["cliente_nome"] === "string" ? details["cliente_nome"] : "",
+            phone: getText("telefone"),
+            address: getText("endereco"),
+            observation: getText("observacao"),
+            subtotal: getNumber("subtotal"),
+            deliveryFee: getNumber("taxa_entrega"),
+            total: getNumber("total"),
+            payment: {
+              forma: typeof payment["forma"] === "string" ? payment["forma"] : null,
+              pago: payment["pago"] === true,
+              trocoPara:
+                payment["troco_para"] === null || payment["troco_para"] === undefined
+                  ? null
+                  : Number(payment["troco_para"]),
+            },
+          },
+        }
+      : {}),
   };
 }
 
@@ -62,6 +109,13 @@ function readFailed(): TicketRow[] {
 
 function writeFailed(tickets: TicketRow[]) {
   localStorage.setItem(FAILED_KEY, JSON.stringify(tickets));
+}
+
+function ticketLocation(ticket: TicketRow) {
+  if (ticket.external) {
+    return `${ticket.external.origin === "entrega" ? "Entrega" : "Retirada"} · ${ticket.external.customerName}`;
+  }
+  return ticket.table === null ? "Mesa —" : `Mesa ${String(ticket.table).padStart(2, "0")}`;
 }
 
 async function playNotice() {
@@ -184,7 +238,9 @@ export function KitchenPrintStation() {
       while (true) {
         const { data, error } = await supabase
           .from("pedidos_cozinha")
-          .select("id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em")
+          .select(
+            "id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em,origem,dados",
+          )
           .is("impresso_em", null)
           .gte("criado_em", cutoff)
           .order("criado_em", { ascending: true })
@@ -381,7 +437,7 @@ export function KitchenPrintStation() {
           role="alert"
           className="flex flex-wrap items-center justify-center gap-3 bg-amber-100 px-4 py-2 text-sm text-amber-950"
         >
-          Comanda #{warning.number} da Mesa {String(warning.table).padStart(2, "0")} não imprimiu.
+          Comanda #{warning.number} · {ticketLocation(warning)} não imprimiu.
           <Btn size="sm" onClick={() => void printReserved(warning)} disabled={!printer.connected}>
             Tentar de novo
           </Btn>
@@ -399,7 +455,7 @@ export function KitchenPrintStation() {
             {failed.map((ticket) => (
               <li key={ticket.id} className="flex items-center justify-between gap-3">
                 <span>
-                  Comanda #{ticket.number} · Mesa {String(ticket.table).padStart(2, "0")}
+                  Comanda #{ticket.number} · {ticketLocation(ticket)}
                 </span>
                 <Btn size="sm" variant="outline" onClick={() => void printReserved(ticket)}>
                   Tentar de novo
@@ -433,7 +489,7 @@ export function KitchenPrintStation() {
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1">
             {recent.slice(0, 30).map((ticket) => (
               <span key={ticket.id}>
-                #{ticket.number} · Mesa {String(ticket.table).padStart(2, "0")}
+                #{ticket.number} · {ticketLocation(ticket)}
               </span>
             ))}
           </div>

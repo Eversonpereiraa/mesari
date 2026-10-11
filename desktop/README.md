@@ -38,7 +38,9 @@ O workflow compila o instalador em `windows-latest`, publica o `.exe` como artef
 
 ## Uso
 
-Instale o arquivo `Mesari-Setup-*.exe` e abra o Mesari pelo atalho. Entre com as credenciais do caixa e abra **Impressão** para escolher a impressora da nota e a das comandas, definir a largura (58 ou 80 mm), habilitar a impressão das comandas e imprimir uma página de teste. O login fica salvo na sessão persistente do aplicativo.
+Instale o arquivo `Mesari-Setup-*.exe` e abra o Mesari pelo atalho. Entre com as credenciais do caixa e abra **Impressão**. Escolha entre o driver do Windows (com uma impressora para notas e outra para comandas), USB direto ou Bluetooth/porta COM. No modo direto, uma impressora autorizada atende notas e comandas neste computador; o Mesari salva a permissão e tenta reconectá-la automaticamente nas próximas aberturas. A largura pode ser definida como 58 ou 80 mm; também é possível habilitar a impressão de comandas e imprimir uma página de teste. O login fica salvo na sessão persistente do aplicativo.
+
+Para usar uma impressora Bluetooth térmica, emparelhe-a primeiro nas configurações Bluetooth do Windows e, se o modelo oferecer perfil de porta serial (SPP), selecione a porta COM correspondente em **Bluetooth / porta COM**. Impressoras Bluetooth BLE que não disponibilizam uma porta COM não são compatíveis com essa conexão direta; nesse caso, use o driver do Windows.
 
 O ícone da bandeja oferece **Abrir Mesari**, **Imprimir página de teste**, **Abrir pasta de logs** e **Sair**. Com **manter em segundo plano** habilitado, fechar a janela apenas a oculta. O padrão mantém a suspensão do aplicativo bloqueada e inicia o Mesari com o Windows; essas três opções podem ser alteradas em **Impressão**.
 
@@ -58,4 +60,6 @@ Os logs ficam em `%APPDATA%\Mesari\logs\mesari.log`, com rotação limitada e c�
 - A largura e a altura de bobina personalizadas dependem do suporte do driver da impressora. Alguns drivers ignoram o tamanho de papel enviado pelo Electron/Windows e podem imprimir em página maior, cortar de modo diferente ou acrescentar espaço em branco.
 - Não há atualização automática do aplicativo desktop. O conteúdo web, por outro lado, já acompanha automaticamente as publicações do sistema.
 - O instalador não possui assinatura digital. O Windows SmartScreen pode exibir um aviso; para prosseguir, selecione **Mais informações > Executar assim mesmo** somente se confiar no instalador que baixou.
-- A impressão direta usa o driver instalado no Windows; o modelo, o tamanho de bobina e a qualidade de impressão dependem da configuração desse driver.
+- USB direto requer uma impressora térmica compatível com ESC/POS e interface USB de impressão. Impressoras que exigem protocolo ou driver proprietário podem não funcionar nesse modo; use o driver do Windows.
+- Bluetooth direto utiliza uma porta COM/serial disponibilizada pelo Windows após o pareamento. Bluetooth BLE sem porta COM não é compatível com a conexão direta.
+- No modo de driver, o modelo, o tamanho da bobina e a qualidade dependem da configuração do driver do Windows; alguns drivers ignoram o tamanho personalizado enviado pelo aplicativo.

@@ -13,6 +13,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as CaixaRouteImport } from './routes/caixa'
 import { Route as CardapioRouteImport } from './routes/cardapio'
 import { Route as CozinhaRouteImport } from './routes/cozinha'
+import { Route as DeliveryRouteImport } from './routes/delivery'
 import { Route as GarcomRouteImport } from './routes/garcom'
 import { Route as ImpressaoRouteImport } from './routes/impressao'
 import { Route as LayoutRouteImport } from './routes/layout'
@@ -40,6 +41,11 @@ const CardapioRoute = CardapioRouteImport.update({
 const CozinhaRoute = CozinhaRouteImport.update({
   id: '/cozinha',
   path: '/cozinha',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DeliveryRoute = DeliveryRouteImport.update({
+  id: '/delivery',
+  path: '/delivery',
   getParentRoute: () => rootRouteImport,
 } as any)
 const GarcomRoute = GarcomRouteImport.update({
@@ -88,6 +94,7 @@ export interface FileRoutesByFullPath {
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
   '/cozinha': typeof CozinhaRoute
+  '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
@@ -102,6 +109,7 @@ export interface FileRoutesByTo {
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
   '/cozinha': typeof CozinhaRoute
+  '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
@@ -117,6 +125,7 @@ export interface FileRoutesById {
   '/caixa': typeof CaixaRoute
   '/cardapio': typeof CardapioRoute
   '/cozinha': typeof CozinhaRoute
+  '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
@@ -133,6 +142,7 @@ export interface FileRouteTypes {
     | '/caixa'
     | '/cardapio'
     | '/cozinha'
+    | '/delivery'
     | '/garcom'
     | '/impressao'
     | '/layout'
@@ -147,6 +157,7 @@ export interface FileRouteTypes {
     | '/caixa'
     | '/cardapio'
     | '/cozinha'
+    | '/delivery'
     | '/garcom'
     | '/impressao'
     | '/layout'
@@ -161,6 +172,7 @@ export interface FileRouteTypes {
     | '/caixa'
     | '/cardapio'
     | '/cozinha'
+    | '/delivery'
     | '/garcom'
     | '/impressao'
     | '/layout'
@@ -176,6 +188,7 @@ export interface RootRouteChildren {
   CaixaRoute: typeof CaixaRoute
   CardapioRoute: typeof CardapioRoute
   CozinhaRoute: typeof CozinhaRoute
+  DeliveryRoute: typeof DeliveryRoute
   GarcomRoute: typeof GarcomRoute
   ImpressaoRoute: typeof ImpressaoRoute
   LayoutRoute: typeof LayoutRoute
@@ -214,6 +227,13 @@ declare module '@tanstack/react-router' {
       path: '/cozinha'
       fullPath: '/cozinha'
       preLoaderRoute: typeof CozinhaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/delivery': {
+      id: '/delivery'
+      path: '/delivery'
+      fullPath: '/delivery'
+      preLoaderRoute: typeof DeliveryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/garcom': {
@@ -280,6 +300,7 @@ const rootRouteChildren: RootRouteChildren = {
   CaixaRoute: CaixaRoute,
   CardapioRoute: CardapioRoute,
   CozinhaRoute: CozinhaRoute,
+  DeliveryRoute: DeliveryRoute,
   GarcomRoute: GarcomRoute,
   ImpressaoRoute: ImpressaoRoute,
   LayoutRoute: LayoutRoute,

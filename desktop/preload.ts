@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("mesariDesktop", {
   getSettings: (): Promise<MesariDesktopSettings> => ipcRenderer.invoke("mesari:get-settings"),
   setSettings: (settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings> =>
     ipcRenderer.invoke("mesari:set-settings", settings),
+  forgetDirectDevice: (type: "serial" | "usb"): Promise<{ ok: true }> =>
+    ipcRenderer.invoke("mesari:forget-direct-device", type),
   testPrint: (
     printerName: string,
     widthMm: number,

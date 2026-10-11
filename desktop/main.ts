@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -36,6 +37,11 @@ type PrinterInfo = {
   isDefault: boolean;
 };
 
+type SavedDevicePermissions = {
+  serial: { portIds: string[]; instanceIds: string[] };
+  usb: string[];
+};
+
 const DEFAULT_SETTINGS: AppSettings = {
   printerNota: "",
   printerComanda: "",
@@ -62,6 +68,152 @@ let printQueue: Promise<void> = Promise.resolve();
 
 function userDataPath(name: string) {
   return path.join(app.getPath("userData"), name);
+}
+
+function readDevicePermissions(): SavedDevicePermissions {
+  const value = readJson<Partial<SavedDevicePermissions>>(userDataPath("device-permissions.json"));
+  return {
+    serial: {
+      portIds: Array.isArray(value?.serial?.portIds)
+        ? value.serial.portIds.filter((id): id is string => typeof id === "string")
+        : [],
+      instanceIds: Array.isArray(value?.serial?.instanceIds)
+        ? value.serial.instanceIds.filter((id): id is string => typeof id === "string")
+        : [],
+    },
+    usb: Array.isArray(value?.usb)
+      ? value.usb.filter((id): id is string => typeof id === "string")
+      : [],
+  };
+}
+
+function saveDevicePermission(
+  type: "serial" | "usb",
+  device: Electron.SerialPort | Electron.USBDevice,
+) {
+  const permissions = readDevicePermissions();
+  if (type === "serial") {
+    const port = device as Electron.SerialPort;
+    permissions.serial = {
+      portIds: [port.portId],
+      instanceIds: port.deviceInstanceId ? [port.deviceInstanceId] : [],
+    };
+  } else {
+    const usb = device as Electron.USBDevice;
+    permissions.usb = [usb.deviceId];
+  }
+  writeJson(userDataPath("device-permissions.json"), permissions);
+}
+
+function forgetDevicePermissions(type: "serial" | "usb") {
+  const permissions = readDevicePermissions();
+  if (type === "serial") {
+    permissions.serial = { portIds: [], instanceIds: [] };
+  } else {
+    permissions.usb = [];
+  }
+  writeJson(userDataPath("device-permissions.json"), permissions);
+}
+
+function isTrustedOrigin(url: string) {
+  try {
+    return new URL(url).origin === appOrigin;
+  } catch {
+    return false;
+  }
+}
+
+async function chooseDevice(title: string, devices: Array<{ id: string; label: string }>) {
+  if (devices.length === 0) return undefined;
+  const labels = devices.map((device) => device.label || device.id);
+  const options: Electron.MessageBoxOptions = {
+    type: "question",
+    title,
+    message: "Selecione o dispositivo que deseja conectar.",
+    buttons: [...labels, "Cancelar"],
+    cancelId: labels.length,
+    defaultId: 0,
+    noLink: true,
+  };
+  const result = mainWindow
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options);
+  return result.response < devices.length ? devices[result.response] : undefined;
+}
+
+function installDeviceHandlers() {
+  session.defaultSession.on("select-serial-port", (event, ports, sender, callback) => {
+    event.preventDefault();
+    if (sender !== mainWindow?.webContents || !isTrustedOrigin(sender.getURL())) {
+      callback("");
+      return;
+    }
+    void chooseDevice(
+      "Conectar impressora Bluetooth/COM",
+      ports.map((port) => ({
+        id: port.portId,
+        label: [port.displayName, port.portName].filter(Boolean).join(" · "),
+      })),
+    )
+      .then((selected) => {
+        if (!selected) {
+          callback("");
+          return;
+        }
+        const port = ports.find((item) => item.portId === selected.id);
+        if (!port) {
+          callback("");
+          return;
+        }
+        saveDevicePermission("serial", port);
+        callback(port.portId);
+      })
+      .catch((cause: unknown) => {
+        log("Falha ao selecionar a porta serial", cause);
+        callback("");
+      });
+  });
+  session.defaultSession.on("select-usb-device", (event, details, callback) => {
+    event.preventDefault();
+    if (
+      !details.frame ||
+      details.frame !== mainWindow?.webContents.mainFrame ||
+      !isTrustedOrigin(details.frame.url)
+    ) {
+      callback();
+      return;
+    }
+    void chooseDevice(
+      "Conectar impressora USB",
+      details.deviceList.map((device) => ({
+        id: device.deviceId,
+        label: [
+          device.productName,
+          device.manufacturerName,
+          `USB ${device.vendorId.toString(16)}:${device.productId.toString(16)}`,
+        ]
+          .filter(Boolean)
+          .join(" · "),
+      })),
+    )
+      .then((selected) => {
+        if (!selected) {
+          callback();
+          return;
+        }
+        const device = details.deviceList.find((item) => item.deviceId === selected.id);
+        if (!device) {
+          callback();
+          return;
+        }
+        saveDevicePermission("usb", device);
+        callback(device.deviceId);
+      })
+      .catch((cause: unknown) => {
+        log("Falha ao selecionar o dispositivo USB", cause);
+        callback();
+      });
+  });
 }
 
 function rotateLogsIfNeeded(filePath: string) {
@@ -597,6 +749,7 @@ function validateSettingsUpdate(value: unknown, current: AppSettings) {
 }
 
 function registerIpcHandlers() {
+  installDeviceHandlers();
   session.defaultSession.setPermissionRequestHandler(
     (_webContents, permission, callback, details) => {
       let allowedOrigin = false;
@@ -607,7 +760,10 @@ function registerIpcHandlers() {
       }
       callback(
         allowedOrigin &&
-          (permission === "notifications" || permission === "clipboard-sanitized-write"),
+          (permission === "notifications" ||
+            permission === "clipboard-sanitized-write" ||
+            permission === "serial" ||
+            permission === "usb"),
       );
     },
   );
@@ -615,11 +771,31 @@ function registerIpcHandlers() {
     try {
       return (
         new URL(origin).origin === appOrigin &&
-        (permission === "notifications" || permission === "clipboard-sanitized-write")
+        (permission === "notifications" ||
+          permission === "clipboard-sanitized-write" ||
+          permission === "serial" ||
+          permission === "usb")
       );
     } catch {
       return false;
     }
+  });
+  session.defaultSession.setDevicePermissionHandler(({ origin, deviceType, device }) => {
+    if (!isTrustedOrigin(origin)) return false;
+    const permissions = readDevicePermissions();
+    if (deviceType === "serial") {
+      const port = device as Electron.SerialPort;
+      return (
+        permissions.serial.portIds.includes(port.portId) ||
+        Boolean(
+          port.deviceInstanceId && permissions.serial.instanceIds.includes(port.deviceInstanceId),
+        )
+      );
+    }
+    if (deviceType === "usb") {
+      return permissions.usb.includes((device as Electron.USBDevice).deviceId);
+    }
+    return false;
   });
 
   registerHandler("mesari:list-printers", async () => {
@@ -643,6 +819,13 @@ function registerIpcHandlers() {
     updateSystemSettings(settings);
     log("Configurações do aplicativo atualizadas.");
     return settings;
+  });
+  registerHandler("mesari:forget-direct-device", (_event, value) => {
+    if (value !== "serial" && value !== "usb") {
+      throw new Error("Tipo de conexão direta inválido.");
+    }
+    forgetDevicePermissions(value);
+    return { ok: true };
   });
   registerHandler("mesari:print", async (_event, value) => {
     const validation = validatePrintRequest(value);

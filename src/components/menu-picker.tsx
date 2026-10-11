@@ -22,11 +22,17 @@ export function MenuPicker({
   onSubmit,
   mobile,
   showPrintOption,
+  externalCart,
+  onCartChange,
+  hideCartControls = false,
 }: {
   onAdd: (item: MenuItem, qty: number, note: string, print?: boolean) => Promise<void>;
   onSubmit?: (entries: MenuCartEntry[], print?: boolean) => Promise<void>;
   mobile?: boolean;
   showPrintOption?: boolean;
+  externalCart?: MenuCartEntry[];
+  onCartChange?: (entries: MenuCartEntry[]) => void;
+  hideCartControls?: boolean;
 }) {
   const cats = useStore((s) => s.categories);
   const items = useStore((s) => s.items);
@@ -35,7 +41,13 @@ export function MenuPicker({
   const [qty, setQty] = useState(1);
   const [note, setNote] = useState("");
   const [flash, setFlash] = useState("");
-  const [cart, setCart] = useState<MenuCartEntry[]>([]);
+  const [localCart, setLocalCart] = useState<MenuCartEntry[]>([]);
+  const cart = externalCart ?? localCart;
+  const setCart = (update: MenuCartEntry[] | ((current: MenuCartEntry[]) => MenuCartEntry[])) => {
+    const next = typeof update === "function" ? update(cart) : update;
+    if (onCartChange) onCartChange(next);
+    else setLocalCart(next);
+  };
   const [cartOpen, setCartOpen] = useState(false);
   const [submitError, setSubmitError] = useState("");
   const [sending, setSending] = useState(false);
@@ -99,7 +111,7 @@ export function MenuPicker({
 
   const addSelected = async () => {
     if (!selected) return;
-    if (onSubmit) {
+    if (onSubmit || onCartChange) {
       setCart((current) => {
         const existing = current.some((entry) => entry.item.id === selected.id);
         return existing
@@ -108,7 +120,6 @@ export function MenuPicker({
             )
           : [...current, { item: selected, qty, note: note.trim() }];
       });
-      setFlash(`${qty}× ${selected.name} adicionado ao pedido`);
       setSelected(null);
       return;
     }
@@ -180,6 +191,7 @@ export function MenuPicker({
         <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
           {cats.map((category) => (
             <button
+              type="button"
               key={category.id}
               onClick={() => jumpToCategory(category.id)}
               className={cn(
@@ -228,6 +240,7 @@ export function MenuPicker({
                 >
                   <div className="flex min-h-14 items-center gap-2 px-3">
                     <button
+                      type="button"
                       className="flex min-w-0 flex-1 items-center justify-between gap-3 py-3 text-left"
                       onClick={() => pick(item)}
                     >
@@ -243,10 +256,11 @@ export function MenuPicker({
                         {brl(item.price)}
                       </span>
                     </button>
-                    {(mobile || onSubmit) && (
+                    {(mobile || onSubmit || onCartChange) && (
                       <div className="flex shrink-0 items-center gap-1">
                         {entry && (
                           <button
+                            type="button"
                             aria-label={`Diminuir ${item.name}`}
                             onClick={() => adjustCart(item, -1)}
                             className="grid h-10 w-10 place-items-center rounded-full text-muted-foreground hover:bg-muted"
@@ -260,6 +274,7 @@ export function MenuPicker({
                           </span>
                         )}
                         <button
+                          type="button"
                           aria-label={`Adicionar ${item.name}`}
                           onClick={() => adjustCart(item, 1)}
                           className="grid h-10 w-10 place-items-center rounded-full bg-accent text-primary hover:bg-primary hover:text-white"
@@ -271,7 +286,7 @@ export function MenuPicker({
                   </div>
                   {selected?.id === item.id && (
                     <div className="space-y-3 px-4 pb-4">
-                      {!mobile && !onSubmit && (
+                      {!mobile && !onSubmit && !onCartChange && (
                         <div className="flex items-center gap-3">
                           <span className="text-sm font-medium text-ink">Quantidade</span>
                           <div className="ml-auto flex items-center">
@@ -280,6 +295,7 @@ export function MenuPicker({
                               size="lg"
                               className="h-12 w-12 rounded-r-none"
                               aria-label="Diminuir quantidade"
+                              type="button"
                               onClick={() => setQty(Math.max(1, qty - 1))}
                             >
                               <Minus className="h-4 w-4" />
@@ -292,6 +308,7 @@ export function MenuPicker({
                               size="lg"
                               className="h-12 w-12 rounded-l-none"
                               aria-label="Aumentar quantidade"
+                              type="button"
                               onClick={() => setQty(qty + 1)}
                             >
                               <Plus className="h-4 w-4" />
@@ -307,9 +324,15 @@ export function MenuPicker({
                         onChange={(event) => updateNote(event.target.value)}
                       />
                       {!mobile && (
-                        <Btn size="lg" className="w-full" disabled={sending} onClick={addSelected}>
+                        <Btn
+                          type="button"
+                          size="lg"
+                          className="w-full"
+                          disabled={sending}
+                          onClick={addSelected}
+                        >
                           <Check className="h-4 w-4" />
-                          {onSubmit
+                          {onSubmit || onCartChange
                             ? "Adicionar ao pedido"
                             : `Adicionar ${qty}× — ${brl(qty * item.price)}`}
                         </Btn>
@@ -332,7 +355,7 @@ export function MenuPicker({
           {flash}
         </div>
       )}
-      {(mobile || onSubmit) && (
+      {!hideCartControls && (mobile || onSubmit) && (
         <div className="shrink-0 border-t bg-card p-3">
           {showPrintOption && (
             <label className="mb-2 flex min-h-10 cursor-pointer items-center gap-2 px-2 text-sm font-medium text-ink">
@@ -346,6 +369,7 @@ export function MenuPicker({
             </label>
           )}
           <button
+            type="button"
             onClick={() => setCartOpen(true)}
             className="mb-2 flex min-h-11 w-full items-center gap-2 rounded-xl px-2 text-left text-sm font-semibold text-ink hover:bg-muted"
           >
@@ -356,6 +380,7 @@ export function MenuPicker({
             <ChevronDown className="ml-auto h-4 w-4 text-muted-foreground" />
           </button>
           <Btn
+            type="button"
             size="lg"
             variant={cartCount ? "success" : "neutral"}
             className="w-full"
@@ -372,7 +397,7 @@ export function MenuPicker({
         </div>
       )}
 
-      {(mobile || onSubmit) && cartOpen && (
+      {!hideCartControls && (mobile || onSubmit) && cartOpen && (
         <div
           className="fixed inset-0 z-50 flex items-end bg-black/45"
           onClick={() => setCartOpen(false)}
@@ -463,6 +488,7 @@ export function MenuPicker({
             </div>
             <div className="border-t p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               <Btn
+                type="button"
                 size="lg"
                 variant="success"
                 className="w-full"
@@ -479,6 +505,7 @@ export function MenuPicker({
                 </p>
               )}
               <Btn
+                type="button"
                 size="lg"
                 variant="outline"
                 className="mt-2 w-full"

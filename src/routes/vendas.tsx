@@ -9,6 +9,7 @@ import {
   errorMessage,
   paymentMethodLabel,
   type Closing,
+  type OriginSummary,
   type PaymentMethod,
   type PaymentSummary,
 } from "@/lib/store";
@@ -63,6 +64,8 @@ function Vendas() {
   const [selectedDate, setSelectedDate] = useState(todayValue);
   const [filter, setFilter] = useState<PaymentMethod | "todas">("todas");
   const [summary, setSummary] = useState<PaymentSummary[]>([]);
+  const [originSummary, setOriginSummary] = useState<OriginSummary[]>([]);
+  const [originError, setOriginError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedSale, setSelectedSale] = useState<Closing | null>(null);
@@ -79,6 +82,8 @@ function Vendas() {
     setLoading(true);
     setError("");
     setSummary([]);
+    setOriginSummary([]);
+    setOriginError("");
     actions
       .paymentSummary(range.start.toISOString(), range.end.toISOString())
       .then((result) => {
@@ -89,6 +94,14 @@ function Vendas() {
       })
       .finally(() => {
         if (active) setLoading(false);
+      });
+    actions
+      .originSummary(range.start.toISOString(), range.end.toISOString())
+      .then((result) => {
+        if (active) setOriginSummary(result);
+      })
+      .catch((cause: unknown) => {
+        if (active) setOriginError(errorMessage(cause));
       });
     return () => {
       active = false;
@@ -204,6 +217,23 @@ function Vendas() {
           })}
         </section>
 
+        <section aria-label="Resumo por origem" className="grid gap-3 sm:grid-cols-3">
+          {originError && <p className="text-sm text-destructive sm:col-span-3">{originError}</p>}
+          {originSummary.map(({ origem, quantidade, total }) => (
+            <article key={origem} className="rounded-xl border bg-card p-4 shadow-sm">
+              <div className="text-sm font-semibold text-muted-foreground">
+                {origem === "mesa" ? "Mesa" : origem === "entrega" ? "Entrega" : "Retirada"}
+              </div>
+              <div className="mt-2 font-display text-xl font-extrabold text-ink">
+                {loading ? "—" : brl(total)}
+              </div>
+              <div className="mt-1 text-xs text-muted-foreground">
+                {quantidade} {quantidade === 1 ? "venda" : "vendas"} no período
+              </div>
+            </article>
+          ))}
+        </section>
+
         <section className="overflow-hidden rounded-xl border bg-card shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 border-b p-4">
             <div>
@@ -249,12 +279,22 @@ function Vendas() {
                   >
                     <div>
                       <div className="font-semibold text-ink">
-                        Venda {String(sale.saleNumber).padStart(4, "0")} · Mesa {sale.table}
+                        Venda {String(sale.saleNumber).padStart(4, "0")} ·{" "}
+                        {sale.origin === "entrega" || sale.origin === "retirada"
+                          ? `${sale.origin === "entrega" ? "Entrega" : "Retirada"}${sale.customerName ? ` - ${sale.customerName}` : ""}`
+                          : `Mesa ${sale.table}`}
                       </div>
                       <time className="text-xs text-muted-foreground">
                         {new Date(sale.at).toLocaleString("pt-BR")}
                       </time>
                       <div className="mt-1 flex flex-wrap gap-1">
+                        {sale.origin && sale.origin !== "mesa" && (
+                          <span
+                            className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${sale.origin === "entrega" ? "bg-blue-100 text-blue-800" : "bg-purple-100 text-purple-800"}`}
+                          >
+                            {sale.origin === "entrega" ? "ENTREGA" : "RETIRADA"}
+                          </span>
+                        )}
                         {(forms.length ? forms : ["Não informado"]).map((form) => (
                           <span
                             key={form}

@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Pencil, Plus, Trash2, Users } from "lucide-react";
-import { actions, useStore, type StaffMember } from "@/lib/store";
+import { actions, refreshData, useStore, type StaffMember } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/restaurante")({
   head: () => ({
@@ -21,7 +22,9 @@ function Restaurante() {
   const staff = useStore((s) => s.staff);
   const role = useStore((s) => s.user?.role);
   const [f, setF] = useState(r);
+  const [deliveryFee, setDeliveryFee] = useState("0,00");
   const [ok, setOk] = useState(false);
+  const [saveError, setSaveError] = useState("");
   const [tab, setTab] = useState<"dados" | "equipe">("dados");
   const [staffDraft, setStaffDraft] = useState<Partial<StaffMember> | null>(null);
   const [staffError, setStaffError] = useState("");
@@ -29,6 +32,13 @@ function Restaurante() {
   const [passwordResetDraft, setPasswordResetDraft] = useState("");
   const [passwordResetError, setPasswordResetError] = useState("");
   useEffect(() => setF(r), [r]);
+  useEffect(() => {
+    setDeliveryFee(
+      Number(r.deliveryFee || 0)
+        .toFixed(2)
+        .replace(".", ","),
+    );
+  }, [r.deliveryFee]);
 
   const onLogo = (file?: File) => {
     if (!file) return;
@@ -122,9 +132,25 @@ function Restaurante() {
             className="space-y-4 rounded-lg border bg-card p-6"
             onSubmit={async (e) => {
               e.preventDefault();
-              await actions.updateRestaurant(f);
-              setOk(true);
-              setTimeout(() => setOk(false), 2000);
+              setSaveError("");
+              const normalizedFee = deliveryFee.trim().replace(",", ".");
+              const parsedFee = Number(normalizedFee);
+              if (!/^\d+(?:\.\d{1,2})?$/.test(normalizedFee) || !Number.isFinite(parsedFee)) {
+                setSaveError("Informe uma taxa de entrega válida, sem valor negativo.");
+                return;
+              }
+              try {
+                await actions.updateRestaurant(f);
+                const { error } = await supabase.rpc("definir_taxa_entrega", {
+                  p_valor: parsedFee,
+                });
+                if (error) throw error;
+                await refreshData();
+                setOk(true);
+                setTimeout(() => setOk(false), 2000);
+              } catch (cause) {
+                setSaveError(cause instanceof Error ? cause.message : String(cause));
+              }
             }}
           >
             <Field label="Nome do restaurante">
@@ -195,6 +221,18 @@ function Restaurante() {
                   />
                   <span className="absolute right-3 top-2.5 text-sm text-muted-foreground">%</span>
                 </div>
+                <Field
+                  label="Taxa de entrega (R$)"
+                  hint="Valor fixo somado a todos os pedidos de entrega. Retirada não paga taxa."
+                >
+                  <input
+                    className="field"
+                    inputMode="decimal"
+                    aria-label="Taxa de entrega"
+                    value={deliveryFee}
+                    onChange={(event) => setDeliveryFee(event.target.value)}
+                  />
+                </Field>
               </Field>
             </div>
             <Field label="Logo" hint="PNG ou JPG, até 1 MB.">
@@ -215,6 +253,11 @@ function Restaurante() {
               </div>
             </Field>
             <div className="flex items-center justify-end gap-3 border-t pt-4">
+              {saveError && (
+                <span role="alert" className="text-sm text-destructive">
+                  {saveError}
+                </span>
+              )}
               {ok && <span className="text-sm text-free">Dados salvos.</span>}
               <Btn type="submit" variant="success">
                 Salvar

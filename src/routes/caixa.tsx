@@ -24,6 +24,7 @@ import {
   total,
   useStore,
   type Closing,
+  type OriginSummary,
   type PaymentSummary,
   type PaymentInput,
   type PaymentMethod,
@@ -35,7 +36,6 @@ import { BillViewer } from "@/components/bill-viewer";
 import { getPrintSettings, printReceiptOnce } from "@/lib/printing";
 import { Toaster } from "@/components/ui/sonner";
 import { PaymentDialog } from "@/components/payment-dialog";
-import { KitchenPrintStation } from "@/components/kitchen-print-station";
 
 export const Route = createFileRoute("/caixa")({
   head: () => ({
@@ -182,7 +182,6 @@ function Caixa() {
         </Btn>
       }
     >
-      <KitchenPrintStation />
       <div className="flex min-w-0 flex-col xl:flex-row">
         <div className="min-w-0 flex-1 p-4 md:p-6">
           <section
@@ -453,6 +452,8 @@ function Caixa() {
 function TodaySalesCard({ refreshKey }: { refreshKey: number }) {
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState<PaymentSummary[] | null>(null);
+  const [originSummary, setOriginSummary] = useState<OriginSummary[]>([]);
+  const [originError, setOriginError] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -460,6 +461,7 @@ function TodaySalesCard({ refreshKey }: { refreshKey: number }) {
     let active = true;
     setLoading(true);
     setError("");
+    setOriginError("");
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const end = new Date(start);
@@ -474,6 +476,14 @@ function TodaySalesCard({ refreshKey }: { refreshKey: number }) {
       })
       .finally(() => {
         if (active) setLoading(false);
+      });
+    actions
+      .originSummary(start.toISOString(), end.toISOString())
+      .then((result) => {
+        if (active) setOriginSummary(result);
+      })
+      .catch((cause: unknown) => {
+        if (active) setOriginError(errorMessage(cause));
       });
     return () => {
       active = false;
@@ -502,7 +512,7 @@ function TodaySalesCard({ refreshKey }: { refreshKey: number }) {
       </button>
       <div
         className={cn(
-          "absolute right-0 top-full z-20 mt-2 hidden w-64 rounded-xl border bg-card p-3 shadow-xl group-hover:block",
+          "absolute right-0 top-full z-20 mt-2 hidden w-72 rounded-xl border bg-card p-3 shadow-xl group-hover:block",
           open && "!block",
         )}
       >
@@ -529,6 +539,25 @@ function TodaySalesCard({ refreshKey }: { refreshKey: number }) {
             })}
           </div>
         )}
+        <h3 className="mb-2 mt-4 border-t pt-3 text-sm font-bold text-ink">
+          Vendas de hoje por origem
+        </h3>
+        {originError && (
+          <p role="alert" className="text-xs text-destructive">
+            {originError}
+          </p>
+        )}
+        <div className="space-y-1.5">
+          {originSummary.map(({ origem, quantidade, total }) => (
+            <div key={origem} className="flex justify-between gap-2 text-xs">
+              <span className="text-muted-foreground">
+                {origem === "mesa" ? "Mesa" : origem === "entrega" ? "Entrega" : "Retirada"} ·{" "}
+                {quantidade}
+              </span>
+              <span className="font-semibold text-ink">{brl(total)}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
