@@ -1,6 +1,6 @@
 {
   "name": "mesari-desktop",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Aplicativo desktop Windows do Mesari",
   "main": "dist/main.js",
