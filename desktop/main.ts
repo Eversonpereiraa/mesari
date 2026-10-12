@@ -440,7 +440,7 @@ async function printHtml(request: PrintRequest) {
       "Tempo esgotado ao carregar o cupom.",
     );
     const contentHeight = (await printWindow.webContents.executeJavaScript(
-      "Math.max(document.documentElement.scrollHeight, document.body.scrollHeight)",
+      "Promise.all([document.fonts?.ready ?? Promise.resolve(), ...Array.from(document.images, image => image.decode().catch(() => undefined))]).then(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))",
     )) as number;
     const heightMicrons = Math.max(1000, Math.ceil(contentHeight * (25_400 / 96)));
     const printed = await timeout(
@@ -452,6 +452,7 @@ async function printHtml(request: PrintRequest) {
             printBackground: true,
             margins: { marginType: "none" },
             pageSize: { width: Math.round(request.widthMm * 1000), height: heightMicrons },
+            scaleFactor: 100,
             copies: request.copies,
           },
           (success, failureReason) => {

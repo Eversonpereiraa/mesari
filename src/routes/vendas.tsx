@@ -2,7 +2,16 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { Banknote, CalendarDays, CreditCard, QrCode, WalletCards } from "lucide-react";
 import { AppShell } from "@/components/ui-kit";
+import { AppSelect } from "@/components/app-select";
 import { BillViewer } from "@/components/bill-viewer";
+import {
+  dateKeyForPicker,
+  getShortcutRange,
+  ReportDatePicker,
+  reportDateRange,
+  saoPauloDateKey,
+  type DateShortcut,
+} from "@/components/report-date-picker";
 import {
   actions,
   brl,
@@ -26,7 +35,7 @@ export const Route = createFileRoute("/vendas")({
   component: Vendas,
 });
 
-type Period = "hoje" | "ontem" | "semana" | "mes" | "data";
+type Period = "hoje" | "ontem" | "semana" | "mes" | "7dias" | "data" | "intervalo";
 const methodIcons: Record<PaymentMethod, typeof Banknote> = {
   dinheiro: Banknote,
   pix: QrCode,
@@ -35,23 +44,37 @@ const methodIcons: Record<PaymentMethod, typeof Banknote> = {
   nao_informado: CalendarDays,
 };
 const methods: Exclude<PaymentMethod, "nao_informado">[] = ["dinheiro", "pix", "credito", "debito"];
-const todayValue = () => {
-  const today = new Date();
-  return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-};
+const todayValue = saoPauloDateKey;
 
-function periodRange(period: Period, selectedDate: string) {
-  const anchor = period === "data" ? new Date(`${selectedDate}T00:00:00`) : new Date();
-  const start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
-  const end = new Date(start);
-  if (period === "ontem") start.setDate(start.getDate() - 1);
-  if (period === "semana") start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
-  if (period === "mes") start.setDate(1);
-  end.setTime(start.getTime());
-  if (period === "semana") end.setDate(start.getDate() + 6);
-  else if (period === "mes") end.setMonth(start.getMonth() + 1, 0);
-  end.setHours(23, 59, 59, 999);
-  return { start, end };
+function addDateDays(value: string, days: number) {
+  const [year, month, day] = value.split("-").map(Number);
+  const date = new Date(year, month - 1, day + days, 12);
+  return dateKeyForPicker(date);
+}
+
+function periodRange(period: Period, selectedDate: string, selectedEndDate: string) {
+  const today = todayValue();
+  if (period === "data") return reportDateRange(selectedDate, selectedDate);
+  if (period === "intervalo") return reportDateRange(selectedDate, selectedEndDate);
+  if (period === "7dias") return reportDateRange(addDateDays(today, -6), today);
+  if (period === "ontem") {
+    const { start } = getShortcutRange("yesterday");
+    const date = dateKeyForPicker(start);
+    return reportDateRange(date, date);
+  }
+  if (period === "semana") {
+    const [year, month, day] = today.split("-").map(Number);
+    const start = new Date(year, month - 1, day, 12);
+    start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
+    const startValue = dateKeyForPicker(start);
+    const endValue = addDateDays(startValue, 6);
+    return reportDateRange(startValue, endValue > today ? today : endValue);
+  }
+  if (period === "mes") {
+    const start = `${today.slice(0, 7)}-01`;
+    return reportDateRange(start, today);
+  }
+  return reportDateRange(today, today);
 }
 
 function Vendas() {
@@ -62,6 +85,7 @@ function Vendas() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("hoje");
   const [selectedDate, setSelectedDate] = useState(todayValue);
+  const [selectedEndDate, setSelectedEndDate] = useState("");
   const [filter, setFilter] = useState<PaymentMethod | "todas">("todas");
   const [summary, setSummary] = useState<PaymentSummary[]>([]);
   const [originSummary, setOriginSummary] = useState<OriginSummary[]>([]);
@@ -69,7 +93,10 @@ function Vendas() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedSale, setSelectedSale] = useState<Closing | null>(null);
-  const range = useMemo(() => periodRange(period, selectedDate), [period, selectedDate]);
+  const range = useMemo(
+    () => periodRange(period, selectedDate, selectedEndDate),
+    [period, selectedDate, selectedEndDate],
+  );
 
   useEffect(() => {
     if (!authLoading && !user) void navigate({ to: "/", replace: true });
@@ -144,7 +171,8 @@ function Vendas() {
                 ["ontem", "Ontem"],
                 ["semana", "Semana"],
                 ["mes", "Mês"],
-                ["data", "Data escolhida"],
+                ["7dias", "Últimos 7 dias"],
+                ["intervalo", "Intervalo de datas"],
               ] as const
             ).map(([value, label]) => (
               <button
@@ -162,13 +190,29 @@ function Vendas() {
                 {label}
               </button>
             ))}
-            {period === "data" && (
-              <input
-                aria-label="Escolher data do relatório"
-                type="date"
-                value={selectedDate}
-                onChange={(event) => setSelectedDate(event.target.value)}
-                className="min-h-9 rounded-lg border bg-card px-3 text-sm"
+            {(period === "data" || period === "intervalo") && (
+              <ReportDatePicker
+                startValue={selectedDate}
+                endValue={selectedEndDate}
+                onChange={(start, end) => {
+                  setSelectedDate(start);
+                  setSelectedEndDate(end);
+                  setPeriod(end ? "intervalo" : "data");
+                }}
+                onShortcut={(shortcut: DateShortcut) => {
+                  const { start, end } = getShortcutRange(shortcut);
+                  setSelectedDate(dateKeyForPicker(start));
+                  setSelectedEndDate(dateKeyForPicker(end));
+                  setPeriod(
+                    shortcut === "today"
+                      ? "hoje"
+                      : shortcut === "yesterday"
+                        ? "ontem"
+                        : shortcut === "last7days"
+                          ? "7dias"
+                          : "mes",
+                  );
+                }}
               />
             )}
           </div>
@@ -244,22 +288,29 @@ function Vendas() {
             </div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink">
               Forma
-              <select
+              <AppSelect
                 aria-label="Filtrar vendas por forma de pagamento"
                 value={filter}
-                onChange={(event) => setFilter(event.target.value as PaymentMethod | "todas")}
-                className="min-h-10 rounded-lg border bg-background px-3"
-              >
-                <option value="todas">Todas</option>
-                {methods.map((forma) => (
-                  <option key={forma} value={forma}>
-                    {paymentMethodLabel[forma]}
-                  </option>
-                ))}
-                {summary.some((row) => row.forma === "nao_informado") && (
-                  <option value="nao_informado">Não informado</option>
-                )}
-              </select>
+                onValueChange={(value) => setFilter(value as PaymentMethod | "todas")}
+                className="min-w-36"
+                options={[
+                  { value: "todas", label: "Todas" },
+                  ...methods.map((forma) => ({
+                    value: forma,
+                    label: paymentMethodLabel[forma],
+                    Icon: methodIcons[forma],
+                  })),
+                  ...(summary.some((row) => row.forma === "nao_informado")
+                    ? [
+                        {
+                          value: "nao_informado",
+                          label: "Não informado",
+                          Icon: methodIcons.nao_informado,
+                        },
+                      ]
+                    : []),
+                ]}
+              />
             </label>
           </div>
           {filteredSales.length === 0 ? (

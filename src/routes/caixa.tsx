@@ -34,8 +34,8 @@ import { AppShell, Btn, StatusTag } from "@/components/ui-kit";
 import { MenuPicker } from "@/components/menu-picker";
 import { BillViewer } from "@/components/bill-viewer";
 import { getPrintSettings, printReceiptOnce } from "@/lib/printing";
-import { Toaster } from "@/components/ui/sonner";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/caixa")({
   head: () => ({
@@ -72,6 +72,7 @@ const filterActive: Record<Filter, string> = {
 function Caixa() {
   const s = useStore((x) => x);
   const navigate = useNavigate();
+  const confirmar = useConfirm();
   const [f, setF] = useState<Filter>("todas");
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
@@ -103,6 +104,10 @@ function Caixa() {
     : 0;
   const amountDueCents = subtotalCents + serviceChargeCents;
   const amountDue = amountDueCents / 100;
+  const closeViewer = () => {
+    setViewer(false);
+    setReceipt(null);
+  };
   const statusCounts: Record<Status, number> = { livre: 0, ocupada: 0, conta: 0 };
   for (const table of s.tables) statusCounts[tableStatus(s, table.id)] += 1;
   const openTotal = s.tables.reduce((sum, table) => {
@@ -381,9 +386,17 @@ function Caixa() {
                               <button
                                 aria-label={`Remover ${l.qty}x ${l.name}`}
                                 className="mt-1 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-semibold text-destructive hover:bg-destructive/10"
-                                onClick={() => {
-                                  if (confirm(`Remover ${l.qty}x ${l.name}?`))
+                                onClick={async () => {
+                                  if (
+                                    await confirmar({
+                                      title: "Remover item?",
+                                      description: `Remover ${l.qty}x ${l.name} desta mesa?`,
+                                      confirmText: "Remover item",
+                                      variant: "danger",
+                                    })
+                                  ) {
                                     actions.removeLine(sel.id, l.id);
+                                  }
                                 }}
                               >
                                 <Trash2 className="h-3 w-3" /> Remover
@@ -435,7 +448,6 @@ function Caixa() {
           </aside>
         )}
       </div>
-      <Toaster position="top-right" />
       {paymentOpen && sel && (
         <PaymentDialog
           table={sel.number}
@@ -444,7 +456,7 @@ function Caixa() {
           onConfirm={closeAndPrint}
         />
       )}
-      {viewer && receipt && <BillViewer s={s} receipt={receipt} onClose={() => setViewer(false)} />}
+      {viewer && receipt && <BillViewer s={s} receipt={receipt} onClose={closeViewer} />}
     </AppShell>
   );
 }

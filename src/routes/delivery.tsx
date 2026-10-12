@@ -1,12 +1,27 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bike, Check, Clock3, PackageCheck, Plus, Printer, X } from "lucide-react";
+import {
+  Banknote,
+  Bike,
+  Check,
+  Clock3,
+  CreditCard,
+  PackageCheck,
+  Plus,
+  Printer,
+  QrCode,
+  WalletCards,
+  X,
+} from "lucide-react";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { AppSelect } from "@/components/app-select";
 import { MenuPicker, type MenuCartEntry } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { usePrompt } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
 import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/delivery")({
   head: () => ({
@@ -60,6 +75,12 @@ const paymentOptions: { value: Exclude<PaymentMethod, "nao_informado">; label: s
   { value: "credito", label: "Crédito" },
   { value: "debito", label: "Débito" },
 ];
+const paymentIcons = {
+  dinheiro: Banknote,
+  pix: QrCode,
+  credito: CreditCard,
+  debito: WalletCards,
+};
 
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -135,6 +156,7 @@ function paymentData(order: DeliveryOrder) {
 }
 
 function Delivery() {
+  const pedirTexto = usePrompt();
   const snapshot = useStore((state) => state);
   const navigate = useNavigate();
   const [orders, setOrders] = useState<DeliveryOrder[]>([]);
@@ -346,7 +368,7 @@ function Delivery() {
   const runOrderAction = async (
     order: DeliveryOrder,
     status: OrderStatus,
-    courier = "",
+    courier: string | null = "",
     reason: string | null = null,
   ) => {
     setBusy(true);
@@ -359,35 +381,64 @@ function Delivery() {
         p_motivo: reason,
       });
       if (error) throw error;
-      await loadOrders();
+      if (status === "cancelado") toast.success(`Pedido #${order.number} cancelado.`);
+      await loadOrders().catch((cause: unknown) => setListError(errorMessage(cause)));
     } catch (cause) {
       setListError(errorMessage(cause));
+      if (status === "cancelado") {
+        toast.error(`Não foi possível cancelar o pedido: ${errorMessage(cause)}`);
+      }
     } finally {
       setBusy(false);
     }
   };
 
-  const advanceOrder = (order: DeliveryOrder) => {
+  const advanceOrder = async (order: DeliveryOrder) => {
     const index = stageOrder.indexOf(order.status);
     const next = stageOrder[index + 1];
     if (!next) return;
-    let courier = "";
+    let courier: string | null = "";
     if (next === "saiu") {
-      const answer = window.prompt("Nome do entregador (opcional):");
+      const answer = await pedirTexto({
+        title: `Pedido #${order.number} saiu para entrega`,
+        description: "Informe o nome do entregador, se desejar.",
+        label: "Nome do entregador",
+        placeholder: "Opcional",
+        maxLength: 80,
+        confirmText: "Confirmar saída",
+      });
       if (answer === null) return;
       courier = answer.trim();
     }
     void runOrderAction(order, next, courier);
   };
 
-  const cancelOrder = (order: DeliveryOrder) => {
-    const reason = window.prompt("Informe o motivo do cancelamento:");
+  const cancelOrder = async (order: DeliveryOrder) => {
+    const reason = await pedirTexto({
+      title: `Cancelar pedido #${order.number}?`,
+      description: (
+        <span>
+          {order.customerName} · Total {brl(order.total)}
+        </span>
+      ),
+      label: "Motivo do cancelamento",
+      placeholder: "Descreva o motivo",
+      required: true,
+      maxLength: 300,
+      multiline: true,
+      quickOptions: [
+        "Cliente desistiu",
+        "Endereço não atendido",
+        "Sem estoque",
+        "Pedido duplicado",
+        "Outro",
+      ],
+      cancelText: "Voltar",
+      confirmText: "Cancelar pedido",
+      variant: "danger",
+    });
     if (reason === null) return;
-    if (!reason.trim()) {
-      setListError("O motivo do cancelamento é obrigatório.");
-      return;
-    }
-    void runOrderAction(order, "cancelado", "", reason.trim());
+    await runOrderAction(order, "cancelado", null, reason);
   };
 
   const completeOrder = async (payments: PaymentInput[]) => {
@@ -658,15 +709,16 @@ function Delivery() {
                       </button>
                     ))}
                     <Field label="Origem">
-                      <select
-                        className="field h-11 min-w-32"
+                      <AppSelect
+                        className="h-11 min-w-32"
                         value={channel}
-                        onChange={(event) => setChannel(event.target.value as Channel)}
-                      >
-                        <option value="whatsapp">WhatsApp</option>
-                        <option value="telefone">Telefone</option>
-                        <option value="papel">Papel</option>
-                      </select>
+                        onValueChange={(value) => setChannel(value as Channel)}
+                        options={[
+                          { value: "whatsapp", label: "WhatsApp" },
+                          { value: "telefone", label: "Telefone" },
+                          { value: "papel", label: "Papel" },
+                        ]}
+                      />
                     </Field>
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -785,18 +837,18 @@ function Delivery() {
               <aside className="space-y-4 rounded-xl border bg-card p-4">
                 <h2 className="font-display text-lg font-bold text-ink">Pagamento previsto</h2>
                 <Field label="Forma de pagamento">
-                  <select
+                  <AppSelect
                     className="field"
                     value={paymentForm}
-                    onChange={(event) => setPaymentForm(event.target.value as typeof paymentForm)}
-                  >
-                    <option value="">Não informado</option>
-                    {paymentOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={(value) => setPaymentForm(value as typeof paymentForm)}
+                    options={[
+                      { value: "", label: "Não informado" },
+                      ...paymentOptions.map((option) => ({
+                        ...option,
+                        Icon: paymentIcons[option.value],
+                      })),
+                    ]}
+                  />
                 </Field>
                 {paymentForm === "dinheiro" && (
                   <Field label="Troco para quanto?">

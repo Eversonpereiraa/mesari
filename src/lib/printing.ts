@@ -1,3 +1,11 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import receiptFontRegularUrl from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2?url";
+import receiptFontBoldUrl from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-700-normal.woff2?url";
+import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
+import receiptStyles from "@/components/receipt-content.css?inline";
+import { ReceiptContent } from "@/components/receipt-content";
+
 export type PrintSettings = {
   paperWidth: 58 | 80;
   columns: number;
@@ -43,7 +51,10 @@ export type PrintReceipt = {
   reprint?: boolean;
   origin?: "mesa" | "entrega" | "retirada" | "balcao";
   customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
   deliveryFee?: number;
+  discount?: number;
 };
 
 export type PrintRestaurant = {
@@ -52,6 +63,7 @@ export type PrintRestaurant = {
   phone: string;
   cnpj: string;
   instagram: string;
+  logo?: string;
 };
 
 export type KitchenTicket = {
@@ -700,86 +712,6 @@ function money(value: number) {
   return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-const paymentLabel: Record<NonNullable<PrintReceipt["payments"]>[number]["forma"], string> = {
-  dinheiro: "Dinheiro",
-  pix: "Pix",
-  credito: "Crédito",
-  debito: "Débito",
-  nao_informado: "Não informado",
-};
-
-function receiptLines(receipt: PrintReceipt, restaurant: PrintRestaurant, width: number) {
-  const date = new Date(receipt.at).toLocaleString("pt-BR");
-  const line = (text: string, align = 0, bold = false, size = 0) => ({
-    text,
-    align,
-    bold,
-    size,
-  });
-  const rightLine = (label: string, value: string) =>
-    `${label}${" ".repeat(Math.max(1, width - label.length - value.length))}${value}`;
-  const place =
-    receipt.origin === "entrega" || receipt.origin === "retirada"
-      ? `${receipt.origin === "entrega" ? "Entrega" : "Retirada"}${receipt.customerName ? ` - ${receipt.customerName}` : ""}`
-      : `Mesa ${String(receipt.table).padStart(2, "0")}`;
-  const lines = [
-    ...(receipt.reprint ? [line("2ª VIA", 1, true)] : []),
-    ...(restaurant.name ? [line(restaurant.name, 1, true)] : []),
-    ...(restaurant.address ? [line(restaurant.address, 1)] : []),
-    ...(restaurant.phone ? [line(restaurant.phone, 1)] : []),
-    ...(restaurant.cnpj ? [line(`CNPJ: ${restaurant.cnpj}`, 1)] : []),
-    line("-".repeat(width)),
-    line(receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO", 1, true),
-    line("Não é documento fiscal", 1),
-    line(place),
-    line(`Data: ${date}`),
-    ...[...new Set(receipt.lines.map((item) => item.waiter).filter(Boolean))].map((waiter) =>
-      line(`Atendido por: ${waiter}`),
-    ),
-    line(`Nº da venda: ${receipt.saleNumber}`),
-    line("-".repeat(width)),
-    line("QTD  DESCRICAO       UNIT.     TOTAL", 0, true),
-    ...receipt.lines.flatMap((item) => {
-      const qty = String(item.qty);
-      const unit = money(item.price);
-      const total = money(item.qty * item.price);
-      const descriptionWidth = Math.max(4, width - qty.length - unit.length - total.length - 5);
-      const description = wrapWords(item.name, descriptionWidth);
-      return description.map((part, index) =>
-        line(
-          index === 0
-            ? `${qty.padEnd(4)} ${part.padEnd(descriptionWidth)} ${unit.padStart(unit.length)} ${total}`
-            : `${" ".repeat(qty.length + 1)}${part}`,
-        ),
-      );
-    }),
-    line("-".repeat(width)),
-    line(rightLine("Subtotal:", money(receipt.subtotal))),
-    ...(receipt.serviceCharge
-      ? [line(rightLine("Taxa de serviço:", money(receipt.serviceCharge)))]
-      : []),
-    ...(receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0
-      ? [line(rightLine("Taxa de entrega:", money(receipt.deliveryFee ?? 0)))]
-      : []),
-    line(rightLine("TOTAL:", money(receipt.total)), 2, true, 0x11),
-    ...(receipt.payments ?? []).flatMap((payment) => [
-      line(rightLine(`${paymentLabel[payment.forma]}:`, money(payment.valor))),
-      ...(payment.forma === "dinheiro" && payment.recebido !== undefined
-        ? [
-            line(rightLine("Recebido:", money(payment.recebido))),
-            ...(payment.troco !== undefined && payment.troco > 0
-              ? [line(rightLine("Troco:", money(payment.troco)))]
-              : []),
-          ]
-        : []),
-    ]),
-    line("-".repeat(width)),
-    line("Obrigado pela preferência!", 1),
-    ...(restaurant.instagram ? [line(restaurant.instagram, 1)] : []),
-  ];
-  return lines;
-}
-
 function wrapWords(text: string, width: number) {
   const result: string[] = [];
   let current = "";
@@ -801,46 +733,6 @@ function wrapWords(text: string, width: number) {
   }
   if (current) result.push(current);
   return result.length ? result : [""];
-}
-
-function escPosReceipt(
-  receipt: PrintReceipt,
-  restaurant: PrintRestaurant,
-  settings: PrintSettings,
-) {
-  const baseWidth = settings.columns;
-  const width =
-    settings.fontSize === "large"
-      ? Math.floor(baseWidth / 2)
-      : settings.fontSize === "small"
-        ? Math.floor(baseWidth * 1.3)
-        : baseWidth;
-  const fontScale = settings.fontSize === "small" ? 0 : settings.fontSize === "large" ? 0x11 : 0;
-  const bytes = [0x1b, 0x40, 0x1b, 0x74, codePageSelector[settings.characterTable]];
-  for (const line of receiptLines(receipt, restaurant, width)) {
-    bytes.push(
-      0x1b,
-      0x61,
-      line.align,
-      0x1b,
-      0x45,
-      line.bold ? 1 : 0,
-      0x1b,
-      0x4d,
-      settings.fontSize === "small" ? 1 : 0,
-      0x1d,
-      0x21,
-      line.size || fontScale,
-    );
-    const wrapped = wrapWords(line.text, width);
-    for (const fragment of wrapped)
-      bytes.push(...encodeText(fragment, settings.characterTable), 0x0a);
-  }
-  bytes.push(0x1b, 0x64, 3);
-  if (settings.openCashDrawer) bytes.push(0x1b, 0x70, 0, 25, 250);
-  bytes.push(0x1b, 0x45, 0);
-  if (settings.cutPaper) bytes.push(0x1d, 0x56, 66, 3);
-  return new Uint8Array(bytes);
 }
 
 async function printDirect(data: Uint8Array) {
@@ -933,63 +825,39 @@ function escapeHtml(value: string) {
   });
 }
 
-function receiptHtml(
+async function assetDataUri(src: string) {
+  if (src.startsWith("data:")) return src;
+  const response = await fetch(new URL(src, window.location.href));
+  if (!response.ok)
+    throw new Error("Não foi possível carregar um recurso do recibo para impressão.");
+  const blob = await response.blob();
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+  }
+  return `data:${blob.type || "image/png"};base64,${btoa(binary)}`;
+}
+
+async function receiptHtml(
   receipt: PrintReceipt,
   restaurant: PrintRestaurant,
   settings: PrintSettings,
-  testPage = false,
 ) {
-  const width = settings.paperWidth;
-  const fontSize = settings.fontSize === "small" ? 10 : settings.fontSize === "large" ? 16 : 12;
-  const receiptPlace =
-    receipt.origin === "entrega" || receipt.origin === "retirada"
-      ? `${receipt.origin === "entrega" ? "Entrega" : "Retirada"}${receipt.customerName ? ` - ${escapeHtml(receipt.customerName)}` : ""}`
-      : `Mesa ${String(receipt.table).padStart(2, "0")}`;
-  const content = testPage
-    ? `<h1>MESARI</h1><h2>TESTE DE IMPRESSÃO</h2><p>Impressora configurada com sucesso.</p><p>Papel: ${width} mm<br>Fonte: ${settings.fontSize === "small" ? "Pequena" : settings.fontSize === "large" ? "Grande" : "Normal"}</p><hr><p>Teste realizado em:<br>${escapeHtml(new Date().toLocaleString("pt-BR"))}</p><hr><strong>OK</strong>`
-    : [
-        receipt.reprint ? '<p class="center"><strong>2ª VIA</strong></p>' : "",
-        restaurant.name ? `<h1>${escapeHtml(restaurant.name)}</h1>` : "",
-        `<p>${escapeHtml(restaurant.address)}<br>${escapeHtml(restaurant.phone)}${restaurant.cnpj ? `<br>CNPJ: ${escapeHtml(restaurant.cnpj)}` : ""}</p>`,
-        "<hr>",
-        `<h2>${receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO"}</h2>`,
-        '<p class="center">Não é documento fiscal</p>',
-        `<p>${receiptPlace}<br>Data: ${escapeHtml(new Date(receipt.at).toLocaleString("pt-BR"))}<br>Atendido por: ${escapeHtml([...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—")}<br>Nº da venda: ${receipt.saleNumber}</p>`,
-        "<hr>",
-        "<p><strong>QTD · DESCRIÇÃO · UNIT. · TOTAL</strong></p>",
-        ...receipt.lines.map(
-          (line) =>
-            `<p>${line.qty}x ${escapeHtml(line.name)}<br>Unit.: ${money(line.price)}<br><span class="right">Total: ${money(line.qty * line.price)}</span></p>`,
-        ),
-        "<hr>",
-        `<p>Subtotal: <span class="right">${money(receipt.subtotal)}</span></p>`,
-        ...(receipt.serviceCharge
-          ? [`<p>Taxa de serviço: <span class="right">${money(receipt.serviceCharge)}</span></p>`]
-          : []),
-        ...(receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0
-          ? [
-              `<p>Taxa de entrega: <span class="right">${money(receipt.deliveryFee ?? 0)}</span></p>`,
-            ]
-          : []),
-        `<h2>TOTAL: <span class="right">${money(receipt.total)}</span></h2>`,
-        ...(receipt.payments ?? []).flatMap((payment) => [
-          `<p>${paymentLabel[payment.forma]} <span class="right">${money(payment.valor)}</span></p>`,
-          ...(payment.forma === "dinheiro" && payment.recebido !== undefined
-            ? [
-                `<p>Recebido <span class="right">${money(payment.recebido)}</span></p>`,
-                ...(payment.troco !== undefined && payment.troco > 0
-                  ? [`<p>Troco <span class="right">${money(payment.troco)}</span></p>`]
-                  : []),
-              ]
-            : []),
-        ]),
-        '<hr><p class="center">Obrigado pela preferência!</p>',
-      ].join("");
-  const copies = Array.from(
-    { length: settings.copies },
-    () => `<article>${content}</article>`,
-  ).join('<div class="copy-break"></div>');
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${width}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${width}mm;margin:0;padding:0}body{font-family:monospace;font-size:${fontSize}px;line-height:1.35;color:#000}article{width:${width}mm;padding:3mm;overflow-wrap:anywhere}h1,h2,p{margin:2mm 0}h1,h2,.center{text-align:center}.right{float:right}hr{border:0;border-top:1px dashed #000}.copy-break{break-after:page}</style></head><body>${copies}</body></html>`;
+  const [logo, regularFont, boldFont] = await Promise.all([
+    assetDataUri(restaurant.logo || defaultReceiptLogo),
+    assetDataUri(receiptFontRegularUrl),
+    assetDataUri(receiptFontBoldUrl),
+  ]);
+  const body = renderToStaticMarkup(
+    createElement(ReceiptContent, {
+      receipt,
+      restaurant: { ...restaurant, logo },
+      via2: Boolean(receipt.reprint),
+      width: settings.paperWidth,
+    }),
+  );
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;src:url("${regularFont}") format("woff2")}@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:700;src:url("${boldFont}") format("woff2")}${receiptStyles}\n@page{size:${settings.paperWidth}mm auto;margin:0}html,body{width:${settings.paperWidth}mm;margin:0;padding:0;background:#fff;color:#000}.receipt-paper{width:${settings.paperWidth}mm!important;margin:0!important;padding:3mm!important;border:0!important;border-radius:0!important;background:#fff!important;color:#000!important;box-shadow:none!important;filter:none!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>${body}</body></html>`;
 }
 
 function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
@@ -1146,10 +1014,7 @@ export async function printKitchenTicket(
 ) {
   return enqueuePrint(async () => {
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
-    const directSelected =
-      settings.printerMode === "direct" &&
-      Boolean(settings.connectionType || settings.printerDeviceId);
-    if (desktop && !directSelected) {
+    if (desktop) {
       const desktopSettings = await desktop.getSettings();
       const result = await desktop.print({
         html: kitchenTicketHtml(ticket, settings),
@@ -1162,22 +1027,8 @@ export async function printKitchenTicket(
       return { method: "desktop" as const };
     }
     if (settings.printerMode === "direct") {
-      try {
-        await printDirectWithRetry(escPosKitchenTicket(ticket, settings));
-        return { method: "direct" as const };
-      } catch (cause) {
-        if (!desktop || !allowBrowserFallback) throw cause;
-        const desktopSettings = await desktop.getSettings();
-        const result = await desktop.print({
-          html: kitchenTicketHtml(ticket, settings),
-          printerName: desktopSettings.printerComanda,
-          widthMm: settings.paperWidth,
-          copies: 1,
-        });
-        if (!result.ok)
-          throw new Error(result.error || "O Windows não concluiu a impressão da comanda.");
-        return { method: "desktop" as const, fallbackReason: errorMessage(cause) };
-      }
+      await printDirectWithRetry(escPosKitchenTicket(ticket, settings));
+      return { method: "direct" as const };
     }
     if (!allowBrowserFallback) {
       throw new Error("Impressora térmica desconectada. Comanda mantida na lista de pendências.");
@@ -1187,45 +1038,49 @@ export async function printKitchenTicket(
   });
 }
 
-function printInHiddenFrame(html: string) {
+async function printInHiddenFrame(html: string) {
   if (typeof document === "undefined")
     throw new Error("A impressão pelo navegador requer uma página aberta.");
-  return new Promise<void>((resolve, reject) => {
-    const frame = document.createElement("iframe");
-    frame.setAttribute("aria-hidden", "true");
-    frame.title = "Impressão Mesari";
-    frame.style.position = "fixed";
-    frame.style.width = "1px";
-    frame.style.height = "1px";
-    frame.style.opacity = "0";
-    frame.style.pointerEvents = "none";
-    frame.style.border = "0";
-    frame.onload = () => {
-      let timeoutId: number | undefined;
-      let finished = false;
-      const finish = () => {
-        if (finished) return;
-        finished = true;
-        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-        frame.remove();
-        resolve();
+  const frame = document.createElement("iframe");
+  let loadTimeout: number | undefined;
+  let printTimeout: number | undefined;
+  frame.setAttribute("aria-hidden", "true");
+  frame.title = "Impressão Mesari";
+  frame.style.position = "fixed";
+  frame.style.width = "1px";
+  frame.style.height = "1px";
+  frame.style.opacity = "0";
+  frame.style.pointerEvents = "none";
+  frame.style.zIndex = "-1";
+  frame.style.border = "0";
+
+  try {
+    await new Promise<void>((resolve, reject) => {
+      loadTimeout = window.setTimeout(
+        () => reject(new Error("Não foi possível carregar a impressão pelo navegador.")),
+        15000,
+      );
+      frame.onload = () => {
+        if (loadTimeout !== undefined) window.clearTimeout(loadTimeout);
+        try {
+          const frameWindow = frame.contentWindow;
+          if (!frameWindow) throw new Error("Não foi possível iniciar a impressão pelo navegador.");
+          frameWindow.onafterprint = () => resolve();
+          frameWindow.focus();
+          printTimeout = window.setTimeout(resolve, 60000);
+          frameWindow.print();
+        } catch (error) {
+          reject(error);
+        }
       };
-      try {
-        const frameWindow = frame.contentWindow;
-        if (!frameWindow) throw new Error("Não foi possível iniciar a impressão pelo navegador.");
-        frameWindow.onafterprint = finish;
-        frameWindow.focus();
-        timeoutId = window.setTimeout(finish, 60000);
-        frameWindow.print();
-      } catch (error) {
-        if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-        frame.remove();
-        reject(error);
-      }
-    };
-    frame.srcdoc = html;
-    document.body.append(frame);
-  });
+      frame.srcdoc = html;
+      document.body.append(frame);
+    });
+  } finally {
+    if (loadTimeout !== undefined) window.clearTimeout(loadTimeout);
+    if (printTimeout !== undefined) window.clearTimeout(printTimeout);
+    frame.remove();
+  }
 }
 
 export async function printReceipt(
@@ -1235,52 +1090,28 @@ export async function printReceipt(
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
-    const directSelected =
-      settings.printerMode === "direct" &&
-      Boolean(settings.connectionType || settings.printerDeviceId);
-    if (desktop && !directSelected) {
-      const desktopSettings = await desktop.getSettings();
-      const result = await desktop.print({
-        html: receiptHtml(receipt, restaurant, { ...settings, copies: 1 }),
-        printerName: desktopSettings.printerNota,
-        widthMm: settings.paperWidth,
-        copies: settings.copies,
-      });
-      if (!result.ok)
-        throw new Error(result.error || "O Windows não concluiu a impressão da nota.");
-      return { method: "desktop" };
-    }
-    let directError: string | undefined;
-    if (settings.printerMode === "direct") {
-      if (!selectedPort && !selectedDevice) await initializePrinter();
-      if (selectedPort || selectedDevice) {
-        try {
-          const bytes = escPosReceipt(receipt, restaurant, settings);
-          for (let copy = 0; copy < settings.copies; copy += 1) await printDirectWithRetry(bytes);
-          return { method: "direct" };
-        } catch (error) {
-          directError = errorMessage(error);
+    const desktopSettings = desktop ? await desktop.getSettings() : null;
+    for (let copy = 0; copy < settings.copies; copy += 1) {
+      const printableReceipt = {
+        ...receipt,
+        reprint: Boolean(receipt.reprint) || copy > 0,
+      };
+      const html = await receiptHtml(printableReceipt, restaurant, settings);
+      if (desktop && desktopSettings) {
+        const result = await desktop.print({
+          html,
+          printerName: desktopSettings.printerNota,
+          widthMm: settings.paperWidth,
+          copies: 1,
+        });
+        if (!result.ok) {
+          throw new Error(result.error || `O Windows não concluiu a impressão da via ${copy + 1}.`);
         }
       } else {
-        directError = "Nenhuma impressora direta autorizada está conectada.";
+        await printInHiddenFrame(html);
       }
     }
-    if (desktop) {
-      const desktopSettings = await desktop.getSettings();
-      const result = await desktop.print({
-        html: receiptHtml(receipt, restaurant, { ...settings, copies: 1 }),
-        printerName: desktopSettings.printerNota,
-        widthMm: settings.paperWidth,
-        copies: settings.copies,
-      });
-      if (!result.ok)
-        throw new Error(result.error || "O Windows não concluiu a impressão da nota.");
-      return directError
-        ? { method: "desktop", fallbackReason: directError }
-        : { method: "desktop" };
-    }
-    await printInHiddenFrame(receiptHtml(receipt, restaurant, settings));
-    return directError ? { method: "browser", fallbackReason: directError } : { method: "browser" };
+    return { method: desktop ? "desktop" : "browser" };
   });
 }
 
@@ -1303,10 +1134,7 @@ export async function printTestPage(
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
-    const directSelected =
-      settings.printerMode === "direct" &&
-      Boolean(settings.connectionType || settings.printerDeviceId);
-    if (desktop && !directSelected) {
+    if (desktop) {
       const desktopSettings = await desktop.getSettings();
       const result = await desktop.testPrint(
         desktopSettings.printerNota,
@@ -1366,34 +1194,9 @@ export async function printTestPage(
         directError = "Nenhuma impressora direta autorizada está conectada.";
       }
     }
-    if (desktop) {
-      const desktopSettings = await desktop.getSettings();
-      const result = await desktop.testPrint(
-        desktopSettings.printerNota,
-        settings.paperWidth,
-        restaurantName,
-      );
-      if (!result.ok) throw new Error(result.error || "O Windows não concluiu a página de teste.");
-      return { method: "desktop", ...(directError ? { fallbackReason: directError } : {}) };
-    }
-    const emptyReceipt: PrintReceipt = {
-      id: "test",
-      at: Date.now(),
-      table: 0,
-      saleNumber: 0,
-      lines: [],
-      subtotal: 0,
-      serviceCharge: 0,
-      total: 0,
-    };
-    await printInHiddenFrame(
-      receiptHtml(
-        emptyReceipt,
-        { name: "MESARI", address: "", phone: "", cnpj: "", instagram: "" },
-        settings,
-        true,
-      ),
-    );
+    const width = settings.paperWidth;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${width}mm auto;margin:0}html,body{width:${width}mm;margin:0;padding:0}body{box-sizing:border-box;padding:3mm;font:12px monospace;text-align:center;color:#000}.dash{border-top:1px dashed #000;margin:3mm 0}</style></head><body><strong>MESARI</strong><div class="dash"></div><h2>TESTE DE IMPRESSÃO</h2><p>Impressora configurada com sucesso.</p><div class="dash"></div><p>${escapeHtml(new Date().toLocaleString("pt-BR"))}</p><strong>OK</strong></body></html>`;
+    await printInHiddenFrame(html);
     return directError ? { method: "browser", fallbackReason: directError } : { method: "browser" };
   });
 }

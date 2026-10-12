@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   connectPrinter,
   connectUsbPrinter,
@@ -54,6 +54,23 @@ afterEach(() => {
   Reflect.deleteProperty(navigator, "serial");
   Reflect.deleteProperty(navigator, "usb");
   Reflect.deleteProperty(window, "mesariDesktop");
+});
+
+beforeEach(() => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      const type = url.endsWith(".woff2") ? "font/woff2" : "image/png";
+      return {
+        ok: true,
+        blob: async () => ({
+          type,
+          arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+        }),
+      };
+    }),
+  );
 });
 
 describe("configurações da impressora", () => {
@@ -134,19 +151,26 @@ describe("configurações da impressora", () => {
 
     expect(receiptResult).toEqual({ method: "desktop" });
     expect(ticketResult).toEqual({ method: "desktop" });
-    expect(nativePrint).toHaveBeenCalledTimes(2);
+    expect(nativePrint).toHaveBeenCalledTimes(3);
     expect(nativePrint.mock.calls[0]?.[0]).toMatchObject({
       printerName: "Elgin Nota",
       widthMm: 80,
-      copies: 2,
+      copies: 1,
     });
-    expect(nativePrint.mock.calls[0]?.[0].html.match(/<article>/g)).toHaveLength(1);
+    expect(nativePrint.mock.calls[0]?.[0].html).toContain("receipt-paper");
+    expect(nativePrint.mock.calls[0]?.[0].html).not.toContain("2ª VIA");
+    expect(nativePrint.mock.calls[1]?.[0].html).toContain("2ª VIA · DATA ORIGINAL");
     expect(nativePrint.mock.calls[1]?.[0]).toMatchObject({
+      printerName: "Elgin Nota",
+      widthMm: 80,
+      copies: 1,
+    });
+    expect(nativePrint.mock.calls[2]?.[0]).toMatchObject({
       printerName: "Elgin Cozinha",
       widthMm: 58,
       copies: 1,
     });
-    expect(nativePrint.mock.calls[1]?.[0].html).toContain("PEDIDO #7");
+    expect(nativePrint.mock.calls[2]?.[0].html).toContain("PEDIDO #7");
 
     nativePrint.mockResolvedValueOnce({ ok: false, error: "Falha do driver" });
     await expect(printKitchenTicket(ticket, getDefaultPrintSettings(), false)).rejects.toThrow(
@@ -154,56 +178,62 @@ describe("configurações da impressora", () => {
     );
   });
 
-  it("envia ESC/POS direto e evita duplicar a mesma impressão automática", async () => {
-    const written: Uint8Array[] = [];
-    const writable = new WritableStream<Uint8Array>({
-      write(chunk) {
-        written.push(chunk);
-      },
+  it("remove o iframe quando a impressão pelo navegador falha", async () => {
+    let frameElement: HTMLIFrameElement | undefined;
+    let removeFrame: ReturnType<typeof vi.spyOn> | undefined;
+    const append = vi.spyOn(document.body, "append").mockImplementation((...nodes) => {
+      const frame = nodes[0] as HTMLIFrameElement;
+      frameElement = frame;
+      removeFrame = vi.spyOn(frame, "remove");
+      Object.defineProperty(frame, "contentWindow", {
+        configurable: true,
+        value: {
+          focus: vi.fn(),
+          print: vi.fn(() => {
+            throw new Error("Falha na impressão");
+          }),
+        },
+      });
+      frame.onload?.(new Event("load"));
     });
-    const port: {
-      readable: ReadableStream<Uint8Array> | null;
-      writable: WritableStream<Uint8Array> | null;
-      open: () => Promise<void>;
-      close: () => Promise<void>;
-      getInfo: () => { usbVendorId: number; usbProductId: number };
-    } = {
-      readable: null,
-      writable: null,
-      open: async () => {
-        port.writable = writable;
-      },
-      close: async () => {
-        port.writable = null;
-      },
-      getInfo: () => ({ usbVendorId: 1234, usbProductId: 5678 }),
-    };
-    const serial = {
-      getPorts: vi.fn(async () => [port]),
-      requestPort: vi.fn(async () => port),
-      addEventListener: vi.fn(),
-    };
-    Object.defineProperty(window, "isSecureContext", { configurable: true, value: true });
-    Object.defineProperty(navigator, "serial", { configurable: true, value: serial });
-    savePrintSettings(getDefaultPrintSettings());
 
-    await connectPrinter();
+    await expect(
+      printReceipt(sampleReceipt(), restaurant, {
+        ...getDefaultPrintSettings(),
+        printerMode: "browser",
+      }),
+    ).rejects.toThrow("Falha na impressão");
+
+    expect(frameElement?.style.pointerEvents).toBe("none");
+    expect(frameElement?.style.zIndex).toBe("-1");
+    expect(removeFrame).toHaveBeenCalledOnce();
+    append.mockRestore();
+  });
+
+  it("usa o mesmo HTML do visualizador e evita duplicar a impressão automática", async () => {
+    let printedHtml = "";
+    const printed = vi.fn(function (this: { onafterprint: (() => void) | null }) {
+      this.onafterprint?.();
+    });
+    const append = vi.spyOn(document.body, "append").mockImplementation((...nodes) => {
+      const frame = nodes[0] as HTMLIFrameElement;
+      printedHtml = frame.srcdoc;
+      Object.defineProperty(frame, "contentWindow", {
+        configurable: true,
+        value: { focus: vi.fn(), print: printed, onafterprint: null },
+      });
+      frame.onload?.(new Event("load"));
+    });
     const receipt = sampleReceipt();
     await Promise.all([
       printReceiptOnce(receipt, restaurant),
       printReceiptOnce(receipt, restaurant),
     ]);
 
-    expect(written.length).toBeGreaterThan(1);
-    expect(written.every((chunk) => chunk.length <= 512)).toBe(true);
-    const receiptData = written.flatMap((chunk) => Array.from(chunk));
-    expect(receiptData).toContain(0x1d);
-    expect(receiptData).toContain(130);
-    expect(
-      receiptData.filter((byte, index) => byte === 0x1b && receiptData[index + 1] === 0x40),
-    ).toHaveLength(1);
-    expect(serial.requestPort).toHaveBeenCalledTimes(1);
-    await disconnectPrinter();
+    expect(printedHtml).toContain("receipt-paper");
+    expect(printedHtml).toContain("CONTA DE CONSUMO");
+    expect(printed).toHaveBeenCalledOnce();
+    append.mockRestore();
   });
 
   it("conecta pela interface USB classe 7 e envia ESC/POS em blocos de 512 bytes", async () => {
@@ -330,6 +360,43 @@ describe("configurações da impressora", () => {
 
     expect(printedHtml).toContain("Sabor da Roça");
     expect(printedHtml).not.toContain("MESARI");
+    append.mockRestore();
+  });
+
+  it("imprime a origem e os dados do cliente no mesmo layout da nota", async () => {
+    let printedHtml = "";
+    const printed = vi.fn(function (this: { onafterprint: (() => void) | null }) {
+      this.onafterprint?.();
+    });
+    const append = vi.spyOn(document.body, "append").mockImplementation((...nodes) => {
+      const frame = nodes[0] as HTMLIFrameElement;
+      printedHtml = frame.srcdoc;
+      Object.defineProperty(frame, "contentWindow", {
+        configurable: true,
+        value: { focus: vi.fn(), print: printed, onafterprint: null },
+      });
+      frame.onload?.(new Event("load"));
+    });
+
+    await printReceipt(
+      {
+        ...sampleReceipt("sale-delivery"),
+        reprint: true,
+        origin: "entrega",
+        customerName: "Joana",
+        customerPhone: "(11) 99999-0000",
+        customerAddress: "Rua das Flores, 10",
+      },
+      restaurant,
+      { ...getDefaultPrintSettings(), printerMode: "browser" },
+    );
+
+    expect(printedHtml).toContain("2ª VIA · DATA ORIGINAL");
+    expect(printedHtml).toContain("ENTREGA · Joana");
+    expect(printedHtml).toContain("Telefone: (11) 99999-0000");
+    expect(printedHtml).toContain("Endereço: Rua das Flores, 10");
+    expect(printedHtml).toContain("data:image/png;base64");
+    expect(printedHtml).toContain("data:font/woff2;base64");
     append.mockRestore();
   });
 

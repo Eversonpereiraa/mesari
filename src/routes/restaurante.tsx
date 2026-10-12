@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { Pencil, Plus, Trash2, Users } from "lucide-react";
 import { actions, refreshData, useStore, type StaffMember } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { useConfirm } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 
 export const Route = createFileRoute("/restaurante")({
@@ -18,6 +19,7 @@ export const Route = createFileRoute("/restaurante")({
 });
 
 function Restaurante() {
+  const confirmar = useConfirm();
   const r = useStore((s) => s.restaurant);
   const staff = useStore((s) => s.staff);
   const role = useStore((s) => s.user?.role);
@@ -323,10 +325,18 @@ function Restaurante() {
                   <button
                     type="button"
                     aria-label={`Excluir ${person.name}`}
-                    onClick={() =>
-                      confirm(`Excluir o acesso de ${person.name}?`) &&
-                      actions.deleteStaff(person.id)
-                    }
+                    onClick={async () => {
+                      if (
+                        await confirmar({
+                          title: "Excluir acesso?",
+                          description: `Remover o acesso de ${person.name}?`,
+                          confirmText: "Excluir acesso",
+                          variant: "danger",
+                        })
+                      ) {
+                        await actions.deleteStaff(person.id);
+                      }
+                    }}
                     className="grid h-10 w-10 place-items-center rounded-lg text-destructive hover:bg-destructive/10"
                   >
                     <Trash2 className="h-4 w-4" />

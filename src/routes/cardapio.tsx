@@ -4,6 +4,8 @@ import { BookOpen, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { AppSelect } from "@/components/app-select";
+import { useConfirm, usePrompt } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/cardapio")({
   head: () => ({
@@ -24,6 +26,8 @@ function Cardapio() {
   const items = useStore((s) => s.items);
   const role = useStore((s) => s.user?.role);
   const navigate = useNavigate();
+  const confirmar = useConfirm();
+  const pedirTexto = usePrompt();
   const [cat, setCat] = useState(cats[0]?.id ?? "");
   const [q, setQ] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
@@ -36,7 +40,15 @@ function Cardapio() {
   const list = items.filter((i) => (t ? i.name.toLowerCase().includes(t) : i.categoryId === cat));
 
   const newCat = async () => {
-    const n = prompt("Nome da nova categoria");
+    const n = await pedirTexto({
+      title: "Nova categoria",
+      description: "Informe o nome que será exibido no cardápio.",
+      label: "Nome da categoria",
+      placeholder: "Ex.: Bebidas",
+      required: true,
+      maxLength: 60,
+      confirmText: "Criar categoria",
+    });
     if (n?.trim()) setCat(await actions.addCategory(n.trim()));
   };
   const save = async () => {
@@ -107,12 +119,12 @@ function Cardapio() {
               {role === "caixa" && (
                 <label className="flex items-center justify-between gap-2 px-3 pb-2 text-xs text-muted-foreground">
                   Setor
-                  <select
+                  <AppSelect
                     aria-label={`Setor de ${c.name}`}
-                    className="max-w-32 rounded-md border bg-background px-2 py-1.5 text-xs text-ink"
+                    className="h-8 max-w-32 rounded-lg px-2 text-xs"
                     value={c.sector}
-                    onChange={async (event) => {
-                      const sector = event.target.value as typeof c.sector;
+                    onValueChange={async (value) => {
+                      const sector = value as typeof c.sector;
                       setCategoryError("");
                       try {
                         await actions.setCategorySector(c.id, sector);
@@ -120,11 +132,12 @@ function Cardapio() {
                         setCategoryError(errorMessage(cause));
                       }
                     }}
-                  >
-                    <option value="cozinha">Cozinha</option>
-                    <option value="bar">Bar</option>
-                    <option value="nenhum">Não imprimir</option>
-                  </select>
+                    options={[
+                      { value: "cozinha", label: "Cozinha" },
+                      { value: "bar", label: "Bar" },
+                      { value: "nenhum", label: "Não imprimir" },
+                    ]}
+                  />
                 </label>
               )}
             </div>
@@ -179,7 +192,18 @@ function Cardapio() {
                       <button
                         aria-label={`Excluir ${i.name}`}
                         className="inline-flex h-9 w-9 items-center justify-center rounded-lg text-destructive hover:bg-destructive/10"
-                        onClick={() => confirm(`Excluir "${i.name}"?`) && actions.deleteItem(i.id)}
+                        onClick={async () => {
+                          if (
+                            await confirmar({
+                              title: "Excluir item?",
+                              description: `Excluir "${i.name}" do cardápio?`,
+                              confirmText: "Excluir",
+                              variant: "danger",
+                            })
+                          ) {
+                            await actions.deleteItem(i.id);
+                          }
+                        }}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -223,17 +247,12 @@ function Cardapio() {
               </Field>
               <div className="grid grid-cols-2 gap-3">
                 <Field label="Categoria">
-                  <select
+                  <AppSelect
                     className="field"
                     value={draft.categoryId}
-                    onChange={(e) => setDraft({ ...draft, categoryId: e.target.value })}
-                  >
-                    {cats.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                    onValueChange={(value) => setDraft({ ...draft, categoryId: value })}
+                    options={cats.map((c) => ({ value: c.id, label: c.name }))}
+                  />
                 </Field>
                 <Field label="Preço (R$)">
                   <input
@@ -253,14 +272,15 @@ function Cardapio() {
                 />
               </Field>
               <Field label="Status">
-                <select
+                <AppSelect
                   className="field"
                   value={draft.active ? "1" : "0"}
-                  onChange={(e) => setDraft({ ...draft, active: e.target.value === "1" })}
-                >
-                  <option value="1">Ativo</option>
-                  <option value="0">Inativo</option>
-                </select>
+                  onValueChange={(value) => setDraft({ ...draft, active: value === "1" })}
+                  options={[
+                    { value: "1", label: "Ativo" },
+                    { value: "0", label: "Inativo" },
+                  ]}
+                />
               </Field>
             </div>
             <div className="flex justify-end gap-2 border-t px-5 py-3">

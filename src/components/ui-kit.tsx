@@ -19,6 +19,7 @@ import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
 import { getPrintSettings } from "@/lib/printing";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
+import { useConfirm } from "@/components/system-dialog-provider";
 
 export const btn = cva(
   "inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors disabled:opacity-50 disabled:pointer-events-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
@@ -108,6 +109,7 @@ export function Check({
 }
 
 export function useRequireAuth() {
+  const confirmar = useConfirm();
   const user = useStore((s) => s.user);
   const loading = useStore((s) => s.loading);
   const configured = useStore((s) => s.configured);
@@ -265,11 +267,16 @@ export function AppShell({
               "border-white/20 bg-white/5 text-sidebar-foreground hover:bg-white/10 hover:text-white",
               collapsed ? "w-full px-1" : "w-full",
             )}
-            onClick={() => {
+            onClick={async () => {
               if (
                 user?.role === "caixa" &&
                 getPrintSettings().printKitchenEnabled &&
-                !window.confirm("As comandas deixarão de imprimir. Deseja sair do sistema?")
+                !(await confirmar({
+                  title: "Sair do sistema?",
+                  description: "As comandas deixarão de imprimir. Deseja sair do sistema?",
+                  confirmText: "Sair",
+                  variant: "danger",
+                }))
               ) {
                 return;
               }

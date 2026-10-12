@@ -77,7 +77,10 @@ export type Closing = {
   payments: Payment[];
   origin?: "mesa" | "entrega" | "retirada" | "balcao";
   customerName?: string;
+  customerPhone?: string;
+  customerAddress?: string;
   deliveryFee?: number;
+  discount?: number;
 };
 
 export type State = {
@@ -263,9 +266,16 @@ const mapClosing = (value: unknown): Closing => {
       ? { origin }
       : {}),
     ...(typeof row["cliente_nome"] === "string" ? { customerName: row["cliente_nome"] } : {}),
+    ...(typeof row["cliente_telefone"] === "string"
+      ? { customerPhone: row["cliente_telefone"] }
+      : {}),
+    ...(typeof row["cliente_endereco"] === "string"
+      ? { customerAddress: row["cliente_endereco"] }
+      : {}),
     ...(Number.isFinite(Number(row["taxa_entrega"]))
       ? { deliveryFee: Number(row["taxa_entrega"]) }
       : {}),
+    ...(Number.isFinite(Number(row["desconto"])) ? { discount: Number(row["desconto"]) } : {}),
   };
 };
 

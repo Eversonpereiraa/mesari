@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { AppSelect } from "@/components/app-select";
 import {
   connectSerialPrinter,
   connectUsbPrinter,
@@ -393,55 +394,54 @@ function Impressao() {
                   </div>
                 )}
                 <Field label="Impressora da nota">
-                  <select
+                  <AppSelect
                     className="field"
                     value={desktopSettings.printerNota}
                     disabled={busy}
-                    onChange={(event) => {
-                      void updateDesktopSettings({ printerNota: event.target.value });
+                    onValueChange={(value) => {
+                      void updateDesktopSettings({ printerNota: value });
                       updateSettings({ printerMode: "browser" });
                     }}
-                  >
-                    <option value="">Impressora padrão do Windows</option>
-                    {printers.map((item) => (
-                      <option key={item.name} value={item.name}>
-                        {item.displayName || item.name}
-                        {item.isDefault ? " (padrão)" : ""}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: "Impressora padrão do Windows" },
+                      ...printers.map((item) => ({
+                        value: item.name,
+                        label: `${item.displayName || item.name}${item.isDefault ? " (padrão)" : ""}`,
+                      })),
+                    ]}
+                  />
                 </Field>
                 <Field label="Impressora das comandas">
-                  <select
+                  <AppSelect
                     className="field"
                     value={desktopSettings.printerComanda}
                     disabled={busy}
-                    onChange={(event) => {
-                      void updateDesktopSettings({ printerComanda: event.target.value });
+                    onValueChange={(value) => {
+                      void updateDesktopSettings({ printerComanda: value });
                       updateSettings({ printerMode: "browser" });
                     }}
-                  >
-                    <option value="">Impressora padrão do Windows</option>
-                    {printers.map((item) => (
-                      <option key={item.name} value={item.name}>
-                        {item.displayName || item.name}
-                        {item.isDefault ? " (padrão)" : ""}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: "Impressora padrão do Windows" },
+                      ...printers.map((item) => ({
+                        value: item.name,
+                        label: `${item.displayName || item.name}${item.isDefault ? " (padrão)" : ""}`,
+                      })),
+                    ]}
+                  />
                 </Field>
                 <Field label="Largura do papel">
-                  <select
+                  <AppSelect
                     className="field"
-                    value={settings.paperWidth}
-                    onChange={(event) => {
-                      const paperWidth = Number(event.target.value) as 58 | 80;
+                    value={String(settings.paperWidth)}
+                    onValueChange={(value) => {
+                      const paperWidth = Number(value) as 58 | 80;
                       updateSettings({ paperWidth, columns: paperWidth === 58 ? 32 : 48 });
                     }}
-                  >
-                    <option value={58}>58 mm</option>
-                    <option value={80}>80 mm</option>
-                  </select>
+                    options={[
+                      { value: "58", label: "58 mm" },
+                      { value: "80", label: "80 mm" },
+                    ]}
+                  />
                 </Field>
                 <div className="pt-5 text-xs text-muted-foreground">
                   {printers.length === 0
@@ -550,36 +550,35 @@ function Impressao() {
                 )}
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <Field label="Velocidade (baud)">
-                    <select
+                    <AppSelect
                       className="field"
-                      value={settings.baudRate}
-                      onChange={(event) =>
+                      value={String(settings.baudRate)}
+                      onValueChange={(value) =>
                         updateSettings({
-                          baudRate: Number(event.target.value) as PrintSettings["baudRate"],
+                          baudRate: Number(value) as PrintSettings["baudRate"],
                         })
                       }
-                    >
-                      {[9600, 19200, 38400, 57600, 115200].map((baud) => (
-                        <option key={baud} value={baud}>
-                          {baud}
-                        </option>
-                      ))}
-                    </select>
+                      options={[9600, 19200, 38400, 57600, 115200].map((baud) => ({
+                        value: String(baud),
+                        label: String(baud),
+                      }))}
+                    />
                   </Field>
                   <Field label="Tabela de caracteres">
-                    <select
+                    <AppSelect
                       className="field"
                       value={settings.characterTable}
-                      onChange={(event) =>
+                      onValueChange={(value) =>
                         updateSettings({
-                          characterTable: event.target.value as PrintSettings["characterTable"],
+                          characterTable: value as PrintSettings["characterTable"],
                         })
                       }
-                    >
-                      <option value="CP860">CP860 (padrão)</option>
-                      <option value="CP850">CP850</option>
-                      <option value="WPC1252">WPC1252</option>
-                    </select>
+                      options={[
+                        { value: "CP860", label: "CP860 (padrão)" },
+                        { value: "CP850", label: "CP850" },
+                        { value: "WPC1252", label: "WPC1252" },
+                      ]}
+                    />
                   </Field>
                 </div>
                 <p className="mt-2 text-xs text-muted-foreground">
@@ -600,17 +599,18 @@ function Impressao() {
             <div className="grid gap-4 sm:grid-cols-2">
               {!desktop && (
                 <Field label="Largura do papel">
-                  <select
+                  <AppSelect
                     className="field"
-                    value={settings.paperWidth}
-                    onChange={(event) => {
-                      const paperWidth = Number(event.target.value) as 58 | 80;
+                    value={String(settings.paperWidth)}
+                    onValueChange={(value) => {
+                      const paperWidth = Number(value) as 58 | 80;
                       updateSettings({ paperWidth, columns: paperWidth === 58 ? 32 : 48 });
                     }}
-                  >
-                    <option value={58}>58 mm</option>
-                    <option value={80}>80 mm</option>
-                  </select>
+                    options={[
+                      { value: "58", label: "58 mm" },
+                      { value: "80", label: "80 mm" },
+                    ]}
+                  />
                 </Field>
               )}
               <Field label="Colunas (avançado)">
@@ -628,16 +628,15 @@ function Impressao() {
                 />
               </Field>
               <Field label="Número de vias da nota">
-                <select
+                <AppSelect
                   className="field"
-                  value={settings.copies}
-                  onChange={(event) =>
-                    updateSettings({ copies: Number(event.target.value) as 1 | 2 })
-                  }
-                >
-                  <option value={1}>1 via</option>
-                  <option value={2}>2 vias</option>
-                </select>
+                  value={String(settings.copies)}
+                  onValueChange={(value) => updateSettings({ copies: Number(value) as 1 | 2 })}
+                  options={[
+                    { value: "1", label: "1 via" },
+                    { value: "2", label: "2 vias" },
+                  ]}
+                />
               </Field>
             </div>
             <div className="md:col-start-2">

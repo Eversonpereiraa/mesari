@@ -14,6 +14,8 @@ import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { initializeStore } from "@/lib/store";
 import { MESARI_BRAND } from "@/lib/branding";
+import { SystemDialogProvider } from "@/components/system-dialog-provider";
+import { Toaster } from "@/components/ui/sonner";
 
 function NotFoundComponent() {
   return (
@@ -128,8 +130,11 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <StoreBootstrap />
-      {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
-      <Outlet />
+      <SystemDialogProvider>
+        {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
+        <Outlet />
+        <Toaster position="top-right" />
+      </SystemDialogProvider>
     </QueryClientProvider>
   );
 }
