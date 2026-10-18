@@ -213,6 +213,7 @@ let simulatedStatus: PrinterStatus = {
 
 /** Modo demonstração (?demo=1): simula sem gravar nas configurações. */
 export function setDemoSimulation(enabled: boolean) {
+  if (demoSimulation === enabled) return;
   demoSimulation = enabled;
   refreshSimulatedStatus();
 }
@@ -316,7 +317,9 @@ export function getPrintSettings(): PrintSettings {
   const stored = localStorage.getItem(SETTINGS_KEY);
   if (!stored) {
     const defaults = getDefaultPrintSettings();
-    return demoSimulation ? { ...defaults, printerMode: "simulacao" } : defaults;
+    return demoSimulation
+      ? { ...defaults, printerMode: "simulacao", printKitchenEnabled: true }
+      : defaults;
   }
 
   const value: unknown = JSON.parse(stored);
@@ -347,7 +350,8 @@ export function getPrintSettings(): PrintSettings {
     copies: settings.copies === 2 ? 2 : 1,
     autoPrintOnClose: settings.autoPrintOnClose !== false,
     showKitchenPrices: settings.showKitchenPrices !== false,
-    printKitchenEnabled: settings.printKitchenEnabled === true,
+    // Na demonstração as comandas sempre "imprimem" (na impressora virtual).
+    printKitchenEnabled: demoSimulation || settings.printKitchenEnabled === true,
     cutPaper: settings.cutPaper !== false,
     openCashDrawer: settings.openCashDrawer === true,
     characterTable:
@@ -377,16 +381,16 @@ export function savePrintSettings(settings: PrintSettings) {
   let toSave = settings;
   if (demoSimulation && settings.printerMode === "simulacao") {
     // No modo demonstração a simulação é temporária: mantém o modo que estava salvo.
-    let storedMode: unknown;
+    let stored: { printerMode?: unknown; printKitchenEnabled?: unknown } = {};
     try {
-      storedMode = (
-        JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as { printerMode?: unknown }
-      ).printerMode;
+      stored = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as typeof stored;
     } catch {
-      storedMode = undefined;
+      stored = {};
     }
+    const storedMode = stored.printerMode;
     toSave = {
       ...settings,
+      printKitchenEnabled: stored.printKitchenEnabled === true,
       printerMode:
         storedMode === "direct" || storedMode === "browser" || storedMode === "simulacao"
           ? storedMode

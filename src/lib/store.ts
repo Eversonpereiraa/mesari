@@ -548,6 +548,16 @@ export function initializeStore() {
     );
 }
 
+/** Escuta mudanças do store fora do React (ex.: aplicar o modo demonstração). */
+export function onStoreChange(listener: (snapshot: State) => void) {
+  const notify = () => listener(state);
+  subs.add(notify);
+  notify();
+  return () => {
+    subs.delete(notify);
+  };
+}
+
 export function useStore<T>(select: (snapshot: State) => T): T {
   return useSyncExternalStore(
     (notify) => {

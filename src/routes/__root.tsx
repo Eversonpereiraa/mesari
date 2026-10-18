@@ -12,7 +12,8 @@ import { useEffect, type ReactNode } from "react";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
-import { initializeStore } from "@/lib/store";
+import { initializeStore, onStoreChange } from "@/lib/store";
+import { applyDemoMode, captureDemoFlag } from "@/lib/demo-mode";
 import { MESARI_BRAND } from "@/lib/branding";
 import { SystemDialogProvider } from "@/components/system-dialog-provider";
 import { Toaster } from "@/components/ui/sonner";
@@ -141,7 +142,11 @@ function RootComponent() {
 
 function StoreBootstrap() {
   useEffect(() => {
+    captureDemoFlag();
+    // Aplica o ?demo=1 assim que o perfil carrega, antes das telas do caixa imprimirem.
+    const stop = onStoreChange((snapshot) => applyDemoMode(snapshot.user?.role));
     initializeStore();
+    return stop;
   }, []);
   return null;
 }

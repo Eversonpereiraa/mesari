@@ -17,7 +17,12 @@ import {
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
-import { getPrintSettings } from "@/lib/printing";
+import { getPrintSettings, isDemoSimulation } from "@/lib/printing";
+import {
+  leaveDemoMode,
+  openVirtualPrinterWindow,
+  openVirtualPrinterWindowOnce,
+} from "@/lib/demo-mode";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
 
@@ -303,10 +308,51 @@ export function AppShell({
         </header>
         <main className="flex-1">
           <StoreErrorBanner />
+          {user?.role === "caixa" && <DemoModeBanner />}
           {user?.role === "caixa" && <KitchenPrintStation />}
           {children}
         </main>
       </div>
+    </div>
+  );
+}
+
+/** Faixa do modo demonstração (?demo=1): tudo imprime na impressora virtual. */
+function DemoModeBanner() {
+  const [active, setActive] = useState(isDemoSimulation);
+  const [blocked, setBlocked] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    // Não abre a janela lateral se esta já é a própria impressora virtual.
+    if (new URLSearchParams(window.location.search).get("janela") === "1") return;
+    setBlocked(!openVirtualPrinterWindowOnce());
+  }, [active]);
+  if (!active) return null;
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-2 border-b border-primary/30 bg-primary/10 px-4 py-2 text-sm text-ink"
+    >
+      <strong>Modo demonstração:</strong>
+      <span className="mr-auto">nada sai no papel, tudo aparece na impressora virtual.</span>
+      <Btn size="sm" onClick={() => setBlocked(!openVirtualPrinterWindow())}>
+        Abrir impressora virtual
+      </Btn>
+      <Btn
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          leaveDemoMode();
+          setActive(false);
+        }}
+      >
+        Sair da demonstração
+      </Btn>
+      {blocked && (
+        <span className="w-full text-xs text-muted-foreground">
+          O navegador bloqueou a janela. Clique em “Abrir impressora virtual” ou permita pop-ups.
+        </span>
+      )}
     </div>
   );
 }
