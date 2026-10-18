@@ -1,9 +1,10 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { ChevronLeft, LogOut, Repeat2 } from "lucide-react";
 import { actions, useStore } from "@/lib/store";
 import { ConnectionIndicator, StoreErrorBanner, useRequireAuth } from "./ui-kit";
 import { MesariLogo } from "@/components/mesari-logo";
+import { startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -27,6 +28,9 @@ export function MobileFrame({
   useRequireAuth();
   const user = useStore((s) => s.user);
   const navigate = useNavigate();
+  // Começa a ouvir a estação de impressão assim que o garçom entra, para que o
+  // estado já esteja sincronizado quando ele enviar o primeiro pedido.
+  useEffect(() => startKitchenPresenceObserver(), []);
   const switchUser = () => {
     actions.logout();
     navigate({ to: "/" });

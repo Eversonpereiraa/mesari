@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
-import { isKitchenStationOnline, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
+import { getKitchenStationStatus, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import { Btn } from "./ui-kit";
 
 export type MenuCartEntry = { item: MenuItem; qty: number; note: string };
@@ -125,14 +125,15 @@ export function MenuPicker({
     }
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    // "desconhecido" (canal ainda sincronizando) não é offline: sem aviso falso.
+    const stationOffline = getKitchenStationStatus() === "offline";
     try {
       await onAdd(selected, qty, note.trim(), true);
       setFlash(
         printOrders
-          ? stationOnline
-            ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa."
+          ? stationOffline
+            ? "Impressora desconectada. O pedido foi enviado, avise o caixa."
+            : "Pedido enviado para a cozinha"
           : "Pedido enviado para a mesa.",
       );
       setSelected(null);
@@ -148,7 +149,8 @@ export function MenuPicker({
     if (!cart.length || sending) return;
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    // "desconhecido" (canal ainda sincronizando) não é offline: sem aviso falso.
+    const stationOffline = getKitchenStationStatus() === "offline";
     try {
       if (onSubmit) await onSubmit(cart, printOrders);
       else for (const entry of cart) await onAdd(entry.item, entry.qty, entry.note, true);
@@ -158,9 +160,9 @@ export function MenuPicker({
       setFlash(
         !printOrders
           ? "Pedido enviado para a mesa."
-          : stationOnline
-            ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa.",
+          : stationOffline
+            ? "Impressora desconectada. O pedido foi enviado, avise o caixa."
+            : "Pedido enviado para a cozinha",
       );
       window.setTimeout(() => setFlash(""), 4000);
     } catch (cause) {

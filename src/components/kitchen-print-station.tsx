@@ -11,6 +11,7 @@ import {
   type KitchenTicket,
 } from "@/lib/printing";
 import { errorMessage, useStore } from "@/lib/store";
+import { trackKitchenStation, untrackKitchenStation } from "@/lib/kitchen-presence";
 import { Btn } from "@/components/ui-kit";
 
 type TicketRow = KitchenTicket & { printedAt: number | null };
@@ -149,7 +150,6 @@ export function KitchenPrintStation() {
   const busy = useRef(new Set<string>());
   const recovering = useRef(false);
   const channel = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const presence = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const reloadFailed = useCallback(() => {
     try {
@@ -280,8 +280,6 @@ export function KitchenPrintStation() {
       active.current = false;
       if (channel.current) void supabase.removeChannel(channel.current);
       channel.current = null;
-      if (presence.current) void supabase.removeChannel(presence.current);
-      presence.current = null;
     };
   }, [reloadFailed]);
 
@@ -357,41 +355,19 @@ export function KitchenPrintStation() {
 
   useEffect(() => {
     if (user?.role !== "caixa") return;
-    const station = supabase.channel("estacao-impressao", {
-      config: { presence: { key: user.id } },
-    });
-    presence.current = station;
-    station.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        void station
-          .track({
-            tipo: "estacao-impressao",
-            pronta: getPrinterStatus().connected,
-            usuario: user.username,
-          })
-          .catch((cause: unknown) =>
-            toast.error(`Não foi possível publicar o estado da impressora: ${errorMessage(cause)}`),
-          );
-      }
-    });
-    return () => {
-      if (presence.current === station) presence.current = null;
-      void supabase.removeChannel(station);
-    };
-  }, [user?.id, user?.role, user?.username]);
+    void trackKitchenStation({
+      tipo: "estacao-impressao",
+      pronta: printer.connected,
+      usuario: user.username,
+    }).catch((cause: unknown) =>
+      toast.error(`Não foi possível publicar o estado da impressora: ${errorMessage(cause)}`),
+    );
+  }, [printer.connected, user?.role, user?.username]);
 
   useEffect(() => {
-    if (!presence.current) return;
-    void presence.current
-      .track({
-        tipo: "estacao-impressao",
-        pronta: printer.connected,
-        usuario: user?.username ?? "",
-      })
-      .catch((cause: unknown) =>
-        toast.error(`Não foi possível atualizar o estado da impressora: ${errorMessage(cause)}`),
-      );
-  }, [printer.connected, user?.username]);
+    if (user?.role !== "caixa") return;
+    return () => untrackKitchenStation();
+  }, [user?.role]);
 
   useEffect(() => {
     if (user?.role !== "caixa" || !settings.printKitchenEnabled) return;

@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { actions, useStore } from "@/lib/store";
 import { MobileFrame } from "@/components/mobile-frame";
 import { MenuPicker } from "@/components/menu-picker";
-import { isKitchenStationOnline } from "@/lib/kitchen-presence";
+import { getKitchenStationStatus } from "@/lib/kitchen-presence";
 
 export const Route = createFileRoute("/pedido/$id")({
   head: () => ({
@@ -43,11 +43,11 @@ function Pedido() {
             actions.addLine(id, item, quantity, note, print)
           }
           onSubmit={async (entries, print = true) => {
-            const stationOnline = isKitchenStationOnline();
+            const stationOffline = getKitchenStationStatus() === "offline";
             await actions.addLines(id, entries, print);
             sessionStorage.setItem(
               "mesari-order-sent",
-              `${id}:${print && !stationOnline ? "offline" : "ok"}`,
+              `${id}:${print && stationOffline ? "offline" : "ok"}`,
             );
             navigate({ to: "/mesa/$id", params: { id } });
           }}
