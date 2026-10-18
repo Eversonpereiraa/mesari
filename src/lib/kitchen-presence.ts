@@ -23,8 +23,3 @@ export function isKitchenStationOnline() {
     entry.pronta === true;
   return Object.values(state).some((entries) => entries.some(isReadyStation));
 }
-
-
-
-
-
