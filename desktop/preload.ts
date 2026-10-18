@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld("mesariDesktop", {
     printerName: string;
     widthMm: number;
     copies: number;
+    tipo?: "comanda" | "recibo" | "teste";
   }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("mesari:print", request),
   getSettings: (): Promise<MesariDesktopSettings> => ipcRenderer.invoke("mesari:get-settings"),
   setSettings: (settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings> =>

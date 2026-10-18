@@ -21,6 +21,8 @@ interface Window {
       printerName: string;
       widthMm: number;
       copies: number;
+      /** Usado pela impressora virtual (PDF) do desktop para nomear o arquivo. */
+      tipo?: "comanda" | "recibo" | "teste";
     }): Promise<{ ok: boolean; error?: string }>;
     getSettings(): Promise<MesariDesktopSettings>;
     setSettings(settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings>;

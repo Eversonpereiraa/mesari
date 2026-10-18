@@ -1122,6 +1122,7 @@ export async function printKitchenTicket(
         printerName: desktopSettings.printerComanda,
         widthMm: settings.paperWidth,
         copies: 1,
+        tipo: "comanda",
       });
       if (!result.ok)
         throw new Error(result.error || "O Windows não concluiu a impressão da comanda.");
@@ -1220,6 +1221,7 @@ export async function printReceipt(
           printerName: desktopSettings.printerNota,
           widthMm: settings.paperWidth,
           copies: 1,
+          tipo: "recibo",
         });
         if (!result.ok) {
           throw new Error(result.error || `O Windows não concluiu a impressão da via ${copy + 1}.`);

@@ -42,7 +42,7 @@ Instale o arquivo `Mesari-Setup-*.exe` e abra o Mesari pelo atalho. Entre com as
 
 Para usar uma impressora Bluetooth térmica, emparelhe-a primeiro nas configurações Bluetooth do Windows e, se o modelo oferecer perfil de porta serial (SPP), selecione a porta COM correspondente em **Bluetooth / porta COM**. Impressoras Bluetooth BLE que não disponibilizam uma porta COM não são compatíveis com essa conexão direta; nesse caso, use o driver do Windows.
 
-O ícone da bandeja oferece **Abrir Mesari**, **Imprimir página de teste**, **Abrir pasta de logs** e **Sair**. Com **manter em segundo plano** habilitado, fechar a janela apenas a oculta. O padrão mantém a suspensão do aplicativo bloqueada e inicia o Mesari com o Windows; essas três opções podem ser alteradas em **Impressão**.
+O ícone da bandeja oferece **Abrir Mesari**, **Imprimir página de teste**, **Abrir pasta de logs**, **Abrir pasta de impressões** e **Sair**. Com **manter em segundo plano** habilitado, fechar a janela apenas a oculta. O padrão mantém a suspensão do aplicativo bloqueada e inicia o Mesari com o Windows; essas três opções podem ser alteradas em **Impressão**.
 
 O arquivo `config.json` dentro de `%APPDATA%\Mesari` pode conter, por exemplo:
 
@@ -53,6 +53,10 @@ O arquivo `config.json` dentro de `%APPDATA%\Mesari` pode conter, por exemplo:
 ```
 
 Os logs ficam em `%APPDATA%\Mesari\logs\mesari.log`, com rotação limitada e cópias antigas numeradas.
+
+## Testar sem impressora (impressora virtual em PDF)
+
+Na lista de impressoras do Windows aparece também **Mesari - Impressora virtual (PDF)**. Escolha-a como impressora da nota e/ou das comandas em **Impressão**: cada impressão vira um PDF na largura da bobina (58 ou 80 mm), salvo sem diálogo em `%APPDATA%\Mesari\impressoes\AAAA-MM-DD_HHmmss_<tipo>.pdf` (`comanda`, `recibo` ou `teste`). Use **Abrir pasta de impressões** na bandeja para ver os arquivos. Assim dá para testar o app exatamente como ele roda no restaurante.
 
 ## Limitações conhecidas
 
