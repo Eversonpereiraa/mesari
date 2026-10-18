@@ -109,7 +109,6 @@ export function Check({
 }
 
 export function useRequireAuth() {
-  const confirmar = useConfirm();
   const user = useStore((s) => s.user);
   const loading = useStore((s) => s.loading);
   const configured = useStore((s) => s.configured);
@@ -186,6 +185,7 @@ export function AppShell({
   right?: ReactNode;
 }) {
   const user = useRequireAuth();
+  const confirmar = useConfirm();
   const name = useStore((s) => s.restaurant.name);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const [collapsed, setCollapsed] = useState(false);

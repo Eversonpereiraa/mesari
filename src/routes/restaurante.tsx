@@ -6,6 +6,9 @@ import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { useConfirm } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 
+/** Rascunho do formulário de funcionário: a senha só existe aqui, nunca no perfil salvo. */
+type StaffDraft = Partial<StaffMember> & { password?: string };
+
 export const Route = createFileRoute("/restaurante")({
   head: () => ({
     meta: [
@@ -28,7 +31,7 @@ function Restaurante() {
   const [ok, setOk] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [tab, setTab] = useState<"dados" | "equipe">("dados");
-  const [staffDraft, setStaffDraft] = useState<Partial<StaffMember> | null>(null);
+  const [staffDraft, setStaffDraft] = useState<StaffDraft | null>(null);
   const [staffError, setStaffError] = useState("");
   const [passwordResetStaff, setPasswordResetStaff] = useState<StaffMember | null>(null);
   const [passwordResetDraft, setPasswordResetDraft] = useState("");
@@ -51,7 +54,8 @@ function Restaurante() {
 
   const saveStaff = async (event: React.FormEvent) => {
     event.preventDefault();
-    const name = staffDraft?.name?.trim() ?? "";
+    if (!staffDraft) return;
+    const name = staffDraft.name?.trim() ?? "";
     const username = staffDraft?.username ?? "";
     const password = staffDraft?.password ?? "";
     if (!name) {
@@ -73,7 +77,7 @@ function Restaurante() {
     }
     try {
       await actions.saveStaff({
-        id: staffDraft.id,
+        ...(staffDraft.id ? { id: staffDraft.id } : {}),
         name,
         username,
         password: staffDraft.id ? "" : password,

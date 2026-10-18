@@ -174,11 +174,11 @@ afterEach(() => {
 describe("integração do store com o schema existente", () => {
   it("carrega status direto de mesas e perfis de profiles", async () => {
     mocks.session = authenticatedSession;
-    mocks.rows.profiles = [
+    mocks.rows["profiles"] = [
       { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
       { id: "profile-2", usuario: "carlos", nome: "Carlos", papel: "garcom", ativo: true },
     ];
-    mocks.rows.mesas = [
+    mocks.rows["mesas"] = [
       {
         id: "table-1",
         numero: 16,
@@ -189,7 +189,7 @@ describe("integração do store com o schema existente", () => {
         pos_y: 30,
       },
     ];
-    mocks.rows.restaurante = [
+    mocks.rows["restaurante"] = [
       {
         id: 1,
         nome: "Mesari",
@@ -211,10 +211,10 @@ describe("integração do store com o schema existente", () => {
   });
 
   it("autentica usando usuario@mesari.local e escolhe papel do profile", async () => {
-    mocks.rows.profiles = [
+    mocks.rows["profiles"] = [
       { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
     ];
-    mocks.rows.restaurante = [{ id: 1, nome: "Mesari" }];
+    mocks.rows["restaurante"] = [{ id: 1, nome: "Mesari" }];
 
     await expect(actions.login("Caixa", "senha")).resolves.toBe("caixa");
 
@@ -377,7 +377,7 @@ describe("integração do store com o schema existente", () => {
   });
 
   it("não envia o status do cliente ao salvar posições das mesas", async () => {
-    mocks.rows.mesas = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
+    mocks.rows["mesas"] = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
     await act(async () => refreshData());
 
     await act(async () =>
@@ -409,7 +409,7 @@ describe("integração do store com o schema existente", () => {
 
   it("exibe o erro exato da API quando o perfil não está disponível", async () => {
     mocks.session = authenticatedSession;
-    mocks.errors.profiles = {
+    mocks.errors["profiles"] = {
       code: "PGRST205",
       message: "Could not find the table 'public.profiles' in the schema cache",
     };

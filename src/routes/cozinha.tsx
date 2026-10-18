@@ -27,30 +27,31 @@ function mapOrder(value: unknown): KitchenRow {
     throw new Error("O Supabase retornou uma comanda em formato inválido.");
   }
   const row = value as Record<string, unknown>;
-  if (row.setor !== "cozinha" && row.setor !== "bar") {
-    throw new Error(`Setor inválido recebido na comanda: ${String(row.setor)}.`);
+  if (row["setor"] !== "cozinha" && row["setor"] !== "bar") {
+    throw new Error(`Setor inválido recebido na comanda: ${String(row["setor"])}.`);
   }
-  if (!Array.isArray(row.itens)) throw new Error("A comanda não contém uma lista válida de itens.");
+  if (!Array.isArray(row["itens"]))
+    throw new Error("A comanda não contém uma lista válida de itens.");
   return {
-    id: String(row.id),
-    number: Number(row.numero),
-    table: Number(row.mesa_numero),
-    sector: row.setor,
-    waiter: typeof row.garcom_nome === "string" ? row.garcom_nome : "",
-    additional: row.adicional === true,
-    createdAt: new Date(String(row.criado_em)).getTime(),
-    printedAt: row.impresso_em ? new Date(String(row.impresso_em)).getTime() : null,
-    items: row.itens.map((value: unknown) => {
+    id: String(row["id"]),
+    number: Number(row["numero"]),
+    table: Number(row["mesa_numero"]),
+    sector: row["setor"],
+    waiter: typeof row["garcom_nome"] === "string" ? row["garcom_nome"] : "",
+    additional: row["adicional"] === true,
+    createdAt: new Date(String(row["criado_em"])).getTime(),
+    printedAt: row["impresso_em"] ? new Date(String(row["impresso_em"])).getTime() : null,
+    items: row["itens"].map((value: unknown) => {
       if (typeof value !== "object" || value === null || Array.isArray(value)) {
         throw new Error("Um item da comanda está em formato inválido.");
       }
       const item = value as Record<string, unknown>;
       return {
-        product: typeof item.produto === "string" ? item.produto : "",
-        quantity: Number(item.quantidade),
-        note: typeof item.observacao === "string" ? item.observacao : "",
-        ...(typeof item.valor_unitario === "number" && Number.isFinite(item.valor_unitario)
-          ? { unitPrice: item.valor_unitario }
+        product: typeof item["produto"] === "string" ? item["produto"] : "",
+        quantity: Number(item["quantidade"]),
+        note: typeof item["observacao"] === "string" ? item["observacao"] : "",
+        ...(typeof item["valor_unitario"] === "number" && Number.isFinite(item["valor_unitario"])
+          ? { unitPrice: item["valor_unitario"] }
           : {}),
       };
     }),

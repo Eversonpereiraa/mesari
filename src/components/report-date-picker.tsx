@@ -22,9 +22,27 @@ export function saoPauloDateKey(date = new Date()) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+/** Lê uma data "AAAA-MM-DD" e lança um erro claro se o formato for inválido. */
+export function parseDateKey(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  const [year, month, day] = match ? match.slice(1).map(Number) : [];
+  if (
+    year === undefined ||
+    month === undefined ||
+    day === undefined ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    throw new Error(`Data inválida: "${value}". Use o formato AAAA-MM-DD.`);
+  }
+  return { year, month, day };
+}
+
 function dateFromKey(value: string) {
   if (!value) return undefined;
-  const [year, month, day] = value.split("-").map(Number);
+  const { year, month, day } = parseDateKey(value);
   return new Date(year, month - 1, day, 12);
 }
 

@@ -7,6 +7,7 @@ import { BillViewer } from "@/components/bill-viewer";
 import {
   dateKeyForPicker,
   getShortcutRange,
+  parseDateKey,
   ReportDatePicker,
   reportDateRange,
   saoPauloDateKey,
@@ -47,7 +48,7 @@ const methods: Exclude<PaymentMethod, "nao_informado">[] = ["dinheiro", "pix", "
 const todayValue = saoPauloDateKey;
 
 function addDateDays(value: string, days: number) {
-  const [year, month, day] = value.split("-").map(Number);
+  const { year, month, day } = parseDateKey(value);
   const date = new Date(year, month - 1, day + days, 12);
   return dateKeyForPicker(date);
 }
@@ -63,7 +64,7 @@ function periodRange(period: Period, selectedDate: string, selectedEndDate: stri
     return reportDateRange(date, date);
   }
   if (period === "semana") {
-    const [year, month, day] = today.split("-").map(Number);
+    const { year, month, day } = parseDateKey(today);
     const start = new Date(year, month - 1, day, 12);
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     const startValue = dateKeyForPicker(start);

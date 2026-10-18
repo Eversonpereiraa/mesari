@@ -31,7 +31,7 @@ export type OrderLine = {
   note: string;
   at: number;
   waiter: string;
-  waiterId?: string;
+  waiterId?: string | undefined;
 };
 export type StaffMember = {
   id: string;
@@ -164,7 +164,7 @@ function mapPayments(value: unknown): Payment[] {
   if (!Array.isArray(value)) return [];
   return value.map((payment) => {
     const row = asRow(payment);
-    const form = row.forma;
+    const form = row["forma"];
     if (
       form !== "dinheiro" &&
       form !== "pix" &&
@@ -176,9 +176,9 @@ function mapPayments(value: unknown): Payment[] {
     }
     return {
       forma: form,
-      valor: Number(row.valor),
-      ...(row.recebido == null ? {} : { recebido: Number(row.recebido) }),
-      ...(row.troco == null ? {} : { troco: Number(row.troco) }),
+      valor: Number(row["valor"]),
+      ...(row["recebido"] == null ? {} : { recebido: Number(row["recebido"]) }),
+      ...(row["troco"] == null ? {} : { troco: Number(row["troco"]) }),
     };
   });
 }
@@ -203,49 +203,49 @@ export function errorMessage(error: unknown) {
 
 const mapTable = (value: unknown): Table => {
   const row = asRow(value);
-  const status = row.status;
+  const status = row["status"];
   if (status !== "livre" && status !== "ocupada" && status !== "conta") {
-    throw new Error(`Status inválido recebido para a mesa ${stringValue(row.id)}.`);
+    throw new Error(`Status inválido recebido para a mesa ${stringValue(row["id"])}.`);
   }
   return {
-    id: stringValue(row.id),
-    number: Number(row.numero),
-    seats: Number(row.lugares),
-    x: Number(row.pos_x ?? 0),
-    y: Number(row.pos_y ?? 0),
+    id: stringValue(row["id"]),
+    number: Number(row["numero"]),
+    seats: Number(row["lugares"]),
+    x: Number(row["pos_x"] ?? 0),
+    y: Number(row["pos_y"] ?? 0),
     status,
-    active: row.ativa === true,
+    active: row["ativa"] === true,
   };
 };
 
 const mapOrderLine = (value: unknown): OrderLine => {
   const row = asRow(value);
   return {
-    id: stringValue(row.id),
-    itemId: stringValue(row.produto_id),
-    name: stringValue(row.produto_nome),
-    qty: Number(row.quantidade),
-    price: Number(row.valor_unitario),
-    note: stringValue(row.observacao),
-    at: new Date(stringValue(row.criado_em)).getTime(),
-    waiter: stringValue(row.garcom_nome),
-    waiterId: stringValue(row.garcom_id) || undefined,
+    id: stringValue(row["id"]),
+    itemId: stringValue(row["produto_id"]),
+    name: stringValue(row["produto_nome"]),
+    qty: Number(row["quantidade"]),
+    price: Number(row["valor_unitario"]),
+    note: stringValue(row["observacao"]),
+    at: new Date(stringValue(row["criado_em"])).getTime(),
+    waiter: stringValue(row["garcom_nome"]),
+    waiterId: stringValue(row["garcom_id"]) || undefined,
   };
 };
 
 const mapSaleLine = (value: unknown): OrderLine => {
   const line = asRow(value);
-  const createdAt = stringValue(line.criado_em);
+  const createdAt = stringValue(line["criado_em"]);
   return {
-    id: stringValue(line.id),
-    itemId: stringValue(line.produto_id ?? line.itemId),
-    name: stringValue(line.produto_nome ?? line.name),
-    qty: Number(line.quantidade ?? line.qty),
-    price: Number(line.valor_unitario ?? line.price),
-    note: stringValue(line.observacao ?? line.note),
-    at: createdAt ? new Date(createdAt).getTime() : Number(line.at ?? 0),
-    waiter: stringValue(line.garcom_nome ?? line.waiter),
-    waiterId: stringValue(line.garcom_id ?? line.waiterId) || undefined,
+    id: stringValue(line["id"]),
+    itemId: stringValue(line["produto_id"] ?? line["itemId"]),
+    name: stringValue(line["produto_nome"] ?? line["name"]),
+    qty: Number(line["quantidade"] ?? line["qty"]),
+    price: Number(line["valor_unitario"] ?? line["price"]),
+    note: stringValue(line["observacao"] ?? line["note"]),
+    at: createdAt ? new Date(createdAt).getTime() : Number(line["at"] ?? 0),
+    waiter: stringValue(line["garcom_nome"] ?? line["waiter"]),
+    waiterId: stringValue(line["garcom_id"] ?? line["waiterId"]) || undefined,
   };
 };
 
@@ -253,15 +253,15 @@ const mapClosing = (value: unknown): Closing => {
   const row = asRow(value);
   const origin = row["origem"];
   return {
-    id: stringValue(row.id),
-    at: new Date(stringValue(row.fechada_em)).getTime(),
-    table: Number(row.mesa_numero ?? 0),
-    saleNumber: Number(row.numero),
-    lines: Array.isArray(row.itens) ? row.itens.map(mapSaleLine) : [],
-    subtotal: Number(row.subtotal),
-    serviceCharge: Number(row.taxa_servico),
-    total: Number(row.total),
-    payments: mapPayments(row.pagamentos),
+    id: stringValue(row["id"]),
+    at: new Date(stringValue(row["fechada_em"])).getTime(),
+    table: Number(row["mesa_numero"] ?? 0),
+    saleNumber: Number(row["numero"]),
+    lines: Array.isArray(row["itens"]) ? row["itens"].map(mapSaleLine) : [],
+    subtotal: Number(row["subtotal"]),
+    serviceCharge: Number(row["taxa_servico"]),
+    total: Number(row["total"]),
+    payments: mapPayments(row["pagamentos"]),
     ...(origin === "mesa" || origin === "entrega" || origin === "retirada" || origin === "balcao"
       ? { origin }
       : {}),
@@ -361,11 +361,15 @@ async function loadRemoteData() {
   if (failed?.error) throw failed.error;
 
   const profile = profileRes.data ? asRow(profileRes.data) : null;
-  if (!profile || profile.ativo !== true) {
+  if (!profile || profile["ativo"] !== true) {
     throw new Error("O usuário autenticado não possui um perfil ativo em public.profiles.");
   }
-  if (profile.papel !== "caixa" && profile.papel !== "garcom" && profile.papel !== "cozinha") {
-    throw new Error(`Papel inválido no perfil autenticado: ${String(profile.papel)}.`);
+  if (
+    profile["papel"] !== "caixa" &&
+    profile["papel"] !== "garcom" &&
+    profile["papel"] !== "cozinha"
+  ) {
+    throw new Error(`Papel inválido no perfil autenticado: ${String(profile["papel"])}.`);
   }
   if (!restaurantRes.data)
     throw new Error("Não foi encontrado o registro id=1 em public.restaurante.");
@@ -373,7 +377,7 @@ async function loadRemoteData() {
   const orders = (ordersRes.data ?? []).reduce<Record<string, OrderLine[]>>(
     (grouped, value: unknown) => {
       const row = asRow(value);
-      const tableId = stringValue(row.mesa_id);
+      const tableId = stringValue(row["mesa_id"]);
       (grouped[tableId] ??= []).push(mapOrderLine(row));
       return grouped;
     },
@@ -384,50 +388,50 @@ async function loadRemoteData() {
   publish({
     user: {
       id: session.user.id,
-      username: stringValue(profile.usuario),
-      name: stringValue(profile.nome),
-      role: profile.papel,
+      username: stringValue(profile["usuario"]),
+      name: stringValue(profile["nome"]),
+      role: profile["papel"],
     },
     staff: (staffRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
       return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        username: stringValue(row.usuario),
-        role: row.papel as "caixa" | "garcom",
-        active: row.ativo === true,
+        id: stringValue(row["id"]),
+        name: stringValue(row["nome"]),
+        username: stringValue(row["usuario"]),
+        role: row["papel"] as "caixa" | "garcom",
+        active: row["ativo"] === true,
       };
     }),
     restaurant: {
-      name: stringValue(restaurant.nome),
-      phone: stringValue(restaurant.telefone),
-      address: stringValue(restaurant.endereco),
-      cnpj: stringValue(restaurant.cnpj),
-      instagram: stringValue(restaurant.instagram),
-      logo: stringValue(restaurant.logo_url),
-      serviceChargeEnabled: restaurant.taxa_servico_ativa === true,
-      serviceChargePercent: Number(restaurant.taxa_servico_percentual),
+      name: stringValue(restaurant["nome"]),
+      phone: stringValue(restaurant["telefone"]),
+      address: stringValue(restaurant["endereco"]),
+      cnpj: stringValue(restaurant["cnpj"]),
+      instagram: stringValue(restaurant["instagram"]),
+      logo: stringValue(restaurant["logo_url"]),
+      serviceChargeEnabled: restaurant["taxa_servico_ativa"] === true,
+      serviceChargePercent: Number(restaurant["taxa_servico_percentual"]),
       deliveryFee: Number(restaurant["taxa_entrega"] ?? 0),
     },
     tables: (tablesRes.data ?? []).map(mapTable),
     categories: (categoriesRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
-      const sector = row.setor ?? "nenhum";
+      const sector = row["setor"] ?? "nenhum";
       if (sector !== "cozinha" && sector !== "bar" && sector !== "nenhum") {
-        throw new Error(`Setor inválido recebido para a categoria ${stringValue(row.nome)}.`);
+        throw new Error(`Setor inválido recebido para a categoria ${stringValue(row["nome"])}.`);
       }
-      return { id: stringValue(row.id), name: stringValue(row.nome), sector };
+      return { id: stringValue(row["id"]), name: stringValue(row["nome"]), sector };
     }),
     items: (productsRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
       return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        categoryId: stringValue(row.categoria_id),
-        price: Number(row.preco),
-        description: stringValue(row.descricao),
-        active: row.ativo === true,
-        order: Number(row.ordem),
+        id: stringValue(row["id"]),
+        name: stringValue(row["nome"]),
+        categoryId: stringValue(row["categoria_id"]),
+        price: Number(row["preco"]),
+        description: stringValue(row["descricao"]),
+        active: row["ativo"] === true,
+        order: Number(row["ordem"]),
       };
     }),
     orders,
@@ -669,7 +673,7 @@ export const actions = {
     }
     return data.map((value: unknown) => {
       const row = asRow(value);
-      const form = row.forma;
+      const form = row["forma"];
       if (
         form !== "dinheiro" &&
         form !== "pix" &&
@@ -679,7 +683,7 @@ export const actions = {
       ) {
         throw new Error(`Forma de pagamento inválida recebida no resumo: ${String(form)}.`);
       }
-      return { forma: form, total: Number(row.total), contas: Number(row.contas) };
+      return { forma: form, total: Number(row["total"]), contas: Number(row["contas"]) };
     });
   },
   async originSummary(start: string, end: string): Promise<OriginSummary[]> {
