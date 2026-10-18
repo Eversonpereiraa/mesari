@@ -15,6 +15,44 @@ import { brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
 import { getKitchenStationStatus, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import { Btn } from "./ui-kit";
 
+function sendErrorMessage(cause: unknown) {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const message = errorMessage(cause);
+  if (offline || /failed to fetch|network|fetch failed/i.test(message)) {
+    return "Sem internet: o pedido NÃO foi enviado. Os itens continuam no carrinho.";
+  }
+  return `O pedido NÃO foi enviado: ${message}. Os itens continuam no carrinho.`;
+}
+
+function SendErrorNotice({
+  message,
+  retrying,
+  onRetry,
+}: {
+  message: string;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="mt-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3"
+    >
+      <p className="text-center text-sm font-semibold text-destructive">{message}</p>
+      <Btn
+        type="button"
+        size="lg"
+        variant="outline"
+        className="mt-2 w-full"
+        disabled={retrying}
+        onClick={onRetry}
+      >
+        {retrying ? "Enviando..." : "Tentar de novo"}
+      </Btn>
+    </div>
+  );
+}
+
 export type MenuCartEntry = { item: MenuItem; qty: number; note: string };
 
 export function MenuPicker({
@@ -138,7 +176,7 @@ export function MenuPicker({
       );
       setSelected(null);
     } catch (cause) {
-      setSubmitError(errorMessage(cause));
+      setSubmitError(sendErrorMessage(cause));
     } finally {
       setSending(false);
     }
@@ -166,7 +204,7 @@ export function MenuPicker({
       );
       window.setTimeout(() => setFlash(""), 4000);
     } catch (cause) {
-      setSubmitError(errorMessage(cause));
+      setSubmitError(sendErrorMessage(cause));
     } finally {
       setSending(false);
     }
@@ -392,9 +430,11 @@ export function MenuPicker({
             {sending ? "Enviando..." : "Enviar pedido"}
           </Btn>
           {submitError && (
-            <p role="alert" className="mt-2 text-center text-xs text-destructive">
-              {submitError}
-            </p>
+            <SendErrorNotice
+              message={submitError}
+              retrying={sending}
+              onRetry={() => void sendCart()}
+            />
           )}
         </div>
       )}
@@ -502,9 +542,11 @@ export function MenuPicker({
                   : `Enviar ${cartCount} ${cartCount === 1 ? "item" : "itens"} — ${brl(cartTotal)}`}
               </Btn>
               {submitError && (
-                <p role="alert" className="mt-2 text-center text-xs text-destructive">
-                  {submitError}
-                </p>
+                <SendErrorNotice
+                  message={submitError}
+                  retrying={sending}
+                  onRetry={() => void sendCart()}
+                />
               )}
               <Btn
                 type="button"

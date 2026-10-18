@@ -450,7 +450,7 @@ export async function refreshData() {
       publish({
         loading: false,
         configured: true,
-        connection: "reconnecting",
+        connection: disconnectedStatus(),
         error: errorMessage(error),
       });
     })
@@ -458,6 +458,13 @@ export async function refreshData() {
       refreshPromise = null;
     });
   return refreshPromise;
+}
+
+/** Sem rede no aparelho é "offline"; com rede, mas sem resposta do servidor, é "reconectando". */
+function disconnectedStatus(): RealtimeStatus {
+  return typeof navigator !== "undefined" && navigator.onLine === false
+    ? "offline"
+    : "reconnecting";
 }
 
 function queueRefresh() {
@@ -483,7 +490,7 @@ function startRealtime() {
         queueRefresh();
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         publish({
-          connection: "reconnecting",
+          connection: disconnectedStatus(),
           error: error ? errorMessage(error) : `Falha na conexão Realtime do Supabase: ${status}.`,
         });
       }
@@ -501,6 +508,15 @@ export function initializeStore() {
       error: "Supabase não configurado. Defina VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.",
     });
     return;
+  }
+  if (typeof window !== "undefined") {
+    if (navigator.onLine === false) publish({ connection: "offline" });
+    window.addEventListener("offline", () => publish({ connection: "offline" }));
+    window.addEventListener("online", () => {
+      // Volta para "reconectando" até o Realtime confirmar SUBSCRIBED.
+      publish({ connection: "reconnecting" });
+      void refreshData();
+    });
   }
   const { data } = supabase.auth.onAuthStateChange((_event, session) => {
     window.setTimeout(() => {
