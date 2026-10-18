@@ -337,7 +337,7 @@ export function PaymentDialog({
               Cancelar
             </Btn>
             <Btn type="submit" variant="success" disabled={!canConfirm}>
-              {saving ? "Salvando..." : "Confirmar e imprimir"}
+              {saving ? "Salvando..." : "Confirmar pagamento"}
             </Btn>
           </div>
         </footer>

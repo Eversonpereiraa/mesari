@@ -3,7 +3,7 @@ import { useSyncExternalStore } from "react";
 /** Um "papel" que sairia da impressora no modo simulação. */
 export type VirtualPrintJob = {
   id: string;
-  tipo: "comanda" | "recibo" | "teste";
+  tipo: "comanda" | "recibo" | "conferencia" | "teste";
   criadoEm: number;
   html: string;
   escpos?: Uint8Array;

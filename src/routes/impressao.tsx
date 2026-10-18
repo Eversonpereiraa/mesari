@@ -757,6 +757,16 @@ function Impressao() {
               </label>
               <label className="flex items-center gap-3 py-2 text-sm text-ink">
                 <Switch
+                  aria-label="Imprimir conferência automaticamente quando o garçom pedir a conta"
+                  checked={settings.autoPrintConferenceOnRequest}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ autoPrintConferenceOnRequest: checked })
+                  }
+                />
+                Imprimir conferência automaticamente quando o garçom pedir a conta
+              </label>
+              <label className="flex items-center gap-3 py-2 text-sm text-ink">
+                <Switch
                   aria-label="Mostrar valores na comanda"
                   checked={settings.showKitchenPrices}
                   onCheckedChange={(checked) => updateSettings({ showKitchenPrices: checked })}

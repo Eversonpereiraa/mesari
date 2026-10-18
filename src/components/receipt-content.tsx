@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { brl, paymentMethodLabel } from "@/lib/store";
 import type { PrintReceipt, PrintRestaurant } from "@/lib/printing";
+import { splitShare } from "@/lib/split-share";
 import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
 
 export function ReceiptContent({
@@ -25,6 +26,9 @@ export function ReceiptContent({
   }).format(new Date(receipt.at));
   const waiters =
     [...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—";
+  const narrow = width === 58;
+  const isConference = receipt.kind === "conferencia";
+  const share = isConference ? splitShare(receipt.total, receipt.splitCount) : null;
   const isDelivery = receipt.origin === "entrega" || receipt.origin === "retirada";
   const originLabel = receipt.origin === "retirada" ? "RETIRADA" : "ENTREGA";
   const receiptLocation = isDelivery
@@ -61,7 +65,7 @@ export function ReceiptContent({
       <div className="receipt-dash" />
       <div className="receipt-center">
         <div className="receipt-title">
-          {receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO"}
+          {isConference ? "CONFERÊNCIA DE CONSUMO" : "CONTA DE CONSUMO"}
         </div>
         <div className="receipt-small">Não é documento fiscal</div>
       </div>
@@ -78,23 +82,31 @@ export function ReceiptContent({
         <div className="receipt-meta">Endereço: {receipt.customerAddress}</div>
       )}
       <div className="receipt-meta">Atendido por: {waiters}</div>
-      <div className="receipt-small">
-        Nº da venda: {String(receipt.saleNumber).padStart(4, "0")}
-      </div>
+      {!isConference && (
+        <div className="receipt-small">
+          Nº da venda: {String(receipt.saleNumber).padStart(4, "0")}
+        </div>
+      )}
 
       <div className="receipt-dash" />
-      <div className="receipt-items-heading">
-        <span>QTD</span>
-        <span>DESCRIÇÃO</span>
-        <span className="receipt-number">UNIT.</span>
-        <span className="receipt-number">TOTAL</span>
-      </div>
-      <div>
+      {/* Em 58mm não cabe a coluna UNIT.: o preço unitário vai abaixo do item. */}
+      <div className={narrow ? "receipt-items receipt-items-narrow" : "receipt-items"}>
+        <div className="receipt-items-heading">
+          <span>QTD</span>
+          <span>DESCRIÇÃO</span>
+          {!narrow && <span className="receipt-number">UNIT.</span>}
+          <span className="receipt-number">TOTAL</span>
+        </div>
         {receipt.lines.map((line) => (
           <div key={line.id} className="receipt-item">
             <span>{line.qty}</span>
-            <span className="receipt-description">{line.name}</span>
-            <span className="receipt-number">{brl(line.price)}</span>
+            <span className="receipt-description">
+              {line.name}
+              {narrow && line.qty > 1 && (
+                <span className="receipt-unit-price">{brl(line.price)} un.</span>
+              )}
+            </span>
+            {!narrow && <span className="receipt-number">{brl(line.price)}</span>}
             <span className="receipt-number">{brl(line.qty * line.price)}</span>
           </div>
         ))}
@@ -128,7 +140,12 @@ export function ReceiptContent({
           <span>TOTAL</span>
           <span>{brl(receipt.total)}</span>
         </div>
-        {(receipt.payments ?? []).length > 0 && (
+        {share && (
+          <div className="receipt-split">
+            Dividido por {share.people} pessoas: {brl(share.each)} cada
+          </div>
+        )}
+        {!isConference && (receipt.payments ?? []).length > 0 && (
           <div className="receipt-payments">
             {receipt.payments?.map((payment, index) => (
               <div key={`${payment.forma}-${index}`}>
@@ -158,10 +175,18 @@ export function ReceiptContent({
 
       <div className="receipt-dash" />
       <footer className="receipt-thanks">
-        <div>
-          <strong>Obrigado pela preferência!</strong>
-        </div>
-        <div className="receipt-thanks-small">Volte sempre</div>
+        {isConference ? (
+          <div>
+            <strong>Confira seu pedido antes de pagar</strong>
+          </div>
+        ) : (
+          <>
+            <div>
+              <strong>Obrigado pela preferência!</strong>
+            </div>
+            <div className="receipt-thanks-small">Volte sempre</div>
+          </>
+        )}
         <div className="receipt-thanks-small">{restaurant.instagram || "@mesari"}</div>
       </footer>
     </article>

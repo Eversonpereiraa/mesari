@@ -7,13 +7,15 @@ import receiptStyles from "@/components/receipt-content.css?inline";
 import { ReceiptContent } from "@/components/receipt-content";
 import { codePageSelector, encodeText, type CharacterTable } from "@/lib/escpos-codepages";
 import { addVirtualJob } from "@/lib/virtual-printer";
+import { splitShare } from "@/lib/split-share";
 
 export type PrintSettings = {
   paperWidth: 58 | 80;
   columns: number;
   fontSize: "small" | "normal" | "large";
   copies: 1 | 2;
-  autoPrintOnClose: boolean;
+  /** Estação do caixa imprime a conferência quando o garçom pede a conta. */
+  autoPrintConferenceOnRequest: boolean;
   showKitchenPrices: boolean;
   printKitchenEnabled: boolean;
   cutPaper: boolean;
@@ -53,7 +55,13 @@ export type PrintReceipt = {
     recebido?: number;
     troco?: number;
   }[];
-  partial?: boolean;
+  /**
+   * "conferencia": impressa antes do pagamento, sem número da venda nem pagamentos.
+   * "comprovante" (padrão): venda já fechada.
+   */
+  kind?: "conferencia" | "comprovante";
+  /** Só na conferência: divide o total por N pessoas (1 = não mostra a linha). */
+  splitCount?: number;
   reprint?: boolean;
   origin?: "mesa" | "entrega" | "retirada" | "balcao";
   customerName?: string;
@@ -152,7 +160,7 @@ const DEFAULT_SETTINGS: PrintSettings = {
   columns: 32,
   fontSize: "normal",
   copies: 1,
-  autoPrintOnClose: true,
+  autoPrintConferenceOnRequest: true,
   showKitchenPrices: true,
   printKitchenEnabled: false,
   cutPaper: true,
@@ -188,7 +196,6 @@ let selectedUsbEndpoint: { interfaceNumber: number; endpointNumber: number } | n
 const listeners = new Set<() => void>();
 let initialization: Promise<void> | null = null;
 let deviceListenersAdded = false;
-const automaticPrints = new Map<string, Promise<PrintResult>>();
 let printQueue: Promise<unknown> = Promise.resolve();
 let reconnectTimer: number | null = null;
 let intentionalDisconnect = false;
@@ -348,7 +355,7 @@ export function getPrintSettings(): PrintSettings {
     fontSize:
       settings.fontSize === "small" || settings.fontSize === "large" ? settings.fontSize : "normal",
     copies: settings.copies === 2 ? 2 : 1,
-    autoPrintOnClose: settings.autoPrintOnClose !== false,
+    autoPrintConferenceOnRequest: settings.autoPrintConferenceOnRequest !== false,
     showKitchenPrices: settings.showKitchenPrices !== false,
     // Na demonstração as comandas sempre "imprimem" (na impressora virtual).
     printKitchenEnabled: demoSimulation || settings.printKitchenEnabled === true,
@@ -1234,16 +1241,123 @@ export async function printReceipt(
   });
 }
 
-export function printReceiptOnce(
+/** Versão térmica (ESC/POS) da conferência de consumo. */
+export function escPosConference(
+  receipt: PrintReceipt,
+  restaurant: PrintRestaurant,
+  settings: PrintSettings,
+) {
+  const width = settings.columns;
+  const commands: number[] = [0x1b, 0x40, 0x1b, 0x74, codePageSelector[settings.characterTable]];
+  const style = (align: number, bold: boolean, size = 0) =>
+    commands.push(0x1b, 0x61, align, 0x1b, 0x45, bold ? 1 : 0, 0x1d, 0x21, size);
+  const raw = (value: string) => commands.push(...encodeText(value, settings.characterTable), 0x0a);
+  const text = (value: string, align = 0, bold = false, size = 0) => {
+    style(align, bold, size);
+    for (const fragment of wrapWords(value, Math.max(8, size ? Math.floor(width / 2) : width))) {
+      raw(fragment);
+    }
+  };
+  /** Texto à esquerda e valor alinhado à direita na última linha. */
+  const pair = (left: string, right: string, bold = false) => {
+    style(0, bold);
+    const fragments = wrapWords(left, width);
+    const last = fragments.pop() ?? "";
+    for (const fragment of fragments) raw(fragment);
+    if (last.length + right.length + 1 <= width) {
+      raw(`${last}${" ".repeat(width - last.length - right.length)}${right}`);
+    } else {
+      raw(last);
+      raw(right.padStart(width));
+    }
+  };
+  const dash = () => text("-".repeat(width));
+  const waiters =
+    [...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ") || "—";
+
+  text(restaurant.name || "Mesari", 1, true);
+  if (restaurant.address) text(restaurant.address, 1);
+  if (restaurant.phone) text(restaurant.phone, 1);
+  if (restaurant.cnpj) text(`CNPJ: ${restaurant.cnpj}`, 1);
+  dash();
+  text("CONFERÊNCIA DE CONSUMO", 1, true);
+  text("Não é documento fiscal", 1);
+  dash();
+  text(`MESA ${String(receipt.table).padStart(2, "0")}`, 1, true, 0x11);
+  text(new Date(receipt.at).toLocaleString("pt-BR"));
+  text(`Atendido por: ${waiters}`);
+  dash();
+  for (const line of receipt.lines) {
+    pair(`${line.qty}x ${line.name}`, money(line.qty * line.price), true);
+    if (line.qty > 1) text(`${money(line.price)} un.`);
+  }
+  dash();
+  pair("Subtotal", money(receipt.subtotal));
+  if (receipt.serviceCharge > 0) pair("Taxa de serviço", money(receipt.serviceCharge));
+  if ((receipt.discount ?? 0) > 0) pair("Desconto", `-${money(receipt.discount ?? 0)}`);
+  pair("TOTAL", money(receipt.total), true);
+  const share = splitShare(receipt.total, receipt.splitCount);
+  if (share) pair(`Dividido por ${share.people} pessoas:`, `${money(share.each)} cada`);
+  dash();
+  const footer = "Confira seu pedido antes de pagar";
+  if (footer.length <= width) text(footer, 1, true);
+  else for (const part of ["Confira seu pedido", "antes de pagar"]) text(part, 1, true);
+  commands.push(0x1b, 0x64, 3);
+  if (settings.cutPaper) commands.push(0x1d, 0x56, 66, 3);
+  return new Uint8Array(commands);
+}
+
+/**
+ * Imprime a conferência de consumo (antes do pagamento). Não fecha a conta,
+ * não abre a gaveta e sai sempre em uma via.
+ */
+export async function printConference(
   receipt: PrintReceipt,
   restaurant: PrintRestaurant,
   settings = getPrintSettings(),
-) {
-  const current = automaticPrints.get(receipt.id);
-  if (current) return current;
-  const operation = printReceipt(receipt, restaurant, settings);
-  automaticPrints.set(receipt.id, operation);
-  return operation;
+): Promise<PrintResult> {
+  const { payments: _payments, ...withoutPayments } = receipt;
+  const conference: PrintReceipt = { ...withoutPayments, kind: "conferencia", reprint: false };
+  const title = `Conferência mesa ${String(conference.table).padStart(2, "0")}`;
+  return enqueuePrint(async () => {
+    if (settings.printerMode === "simulacao") {
+      simulateHardware(settings);
+      addVirtualJob({
+        tipo: "conferencia",
+        html: await receiptHtml(conference, restaurant, settings),
+        escpos: escPosConference(conference, restaurant, settings),
+        larguraMm: settings.paperWidth,
+        colunas: settings.columns,
+        mesa: conference.table,
+        titulo: title,
+      });
+      return { method: "simulacao" };
+    }
+    const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
+    if (desktop) {
+      const desktopSettings = await desktop.getSettings();
+      const result = await desktop.print({
+        html: await receiptHtml(conference, restaurant, settings),
+        printerName: desktopSettings.printerNota,
+        widthMm: settings.paperWidth,
+        copies: 1,
+        tipo: "recibo",
+      });
+      if (!result.ok) throw new Error(result.error || "O Windows não concluiu a conferência.");
+      return { method: "desktop" };
+    }
+    let directError: string | undefined;
+    if (settings.printerMode === "direct") {
+      try {
+        await printDirectWithRetry(escPosConference(conference, restaurant, settings));
+        return { method: "direct" };
+      } catch (error) {
+        directError = errorMessage(error);
+      }
+    }
+    await printInHiddenFrame(await receiptHtml(conference, restaurant, settings));
+    return directError ? { method: "browser", fallbackReason: directError } : { method: "browser" };
+  });
 }
 
 export async function printTestPage(

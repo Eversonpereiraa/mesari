@@ -31,6 +31,7 @@ export const Route = createFileRoute("/impressora-virtual")({
 const tipoLabel: Record<VirtualPrintJob["tipo"], string> = {
   comanda: "Comanda",
   recibo: "Recibo",
+  conferencia: "Conferência",
   teste: "Teste",
 };
 

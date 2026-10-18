@@ -24,6 +24,7 @@ import {
   openVirtualPrinterWindowOnce,
 } from "@/lib/demo-mode";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
+import { BillRequestPrintStation } from "@/components/bill-request-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const btn = cva(
@@ -310,6 +311,7 @@ export function AppShell({
           <StoreErrorBanner />
           {user?.role === "caixa" && <DemoModeBanner />}
           {user?.role === "caixa" && <KitchenPrintStation />}
+          {user?.role === "caixa" && <BillRequestPrintStation />}
           {children}
         </main>
       </div>

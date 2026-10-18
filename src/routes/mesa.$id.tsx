@@ -69,7 +69,7 @@ function Mesa() {
               disabled={!lines.length || st === "conta"}
               onClick={() => actions.requestBill(id)}
             >
-              {st === "conta" ? "Conta pedida" : "Fechar Conta"}
+              {st === "conta" ? "Conta pedida" : "Pedir conta"}
             </Btn>
             <Btn size="lg" variant="neutral" onClick={() => nav({ to: "/garcom" })}>
               Voltar

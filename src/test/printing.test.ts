@@ -7,7 +7,8 @@ import {
   getPrinterStatus,
   getPrintSettings,
   printReceipt,
-  printReceiptOnce,
+  printConference,
+  escPosConference,
   printKitchenTicket,
   printTestPage,
   resetSimulatedPaper,
@@ -18,6 +19,7 @@ import {
   type PrintSettings,
 } from "@/lib/printing";
 import type { PrintRestaurant } from "@/lib/printing";
+import { decodeEscPos, previewToText } from "@/lib/escpos-preview";
 import {
   clearVirtualJobs,
   getVirtualJobs,
@@ -111,7 +113,7 @@ describe("configurações da impressora", () => {
       paperWidth: 58,
       copies: 2,
       printerMode: "browser",
-      autoPrintOnClose: true,
+      autoPrintConferenceOnRequest: true,
       showKitchenPrices: true,
     });
   });
@@ -217,7 +219,7 @@ describe("configurações da impressora", () => {
     append.mockRestore();
   });
 
-  it("usa o mesmo HTML do visualizador e evita duplicar a impressão automática", async () => {
+  it("usa o mesmo HTML do visualizador na reimpressão pelo navegador", async () => {
     let printedHtml = "";
     const printed = vi.fn(function (this: { onafterprint: (() => void) | null }) {
       this.onafterprint?.();
@@ -231,11 +233,10 @@ describe("configurações da impressora", () => {
       });
       frame.onload?.(new Event("load"));
     });
-    const receipt = sampleReceipt();
-    await Promise.all([
-      printReceiptOnce(receipt, restaurant),
-      printReceiptOnce(receipt, restaurant),
-    ]);
+    await printReceipt(sampleReceipt(), restaurant, {
+      ...getDefaultPrintSettings(),
+      printerMode: "browser",
+    });
 
     expect(printedHtml).toContain("receipt-paper");
     expect(printedHtml).toContain("CONTA DE CONSUMO");
@@ -670,5 +671,136 @@ describe("impressora simulada", () => {
     savePrintSettings({ ...getPrintSettings(), copies: 2 });
     setDemoSimulation(false);
     expect(getPrintSettings()).toMatchObject({ printerMode: "browser", copies: 2 });
+  });
+});
+
+describe("conferência de consumo", () => {
+  const paidReceipt = (): PrintReceipt => ({
+    ...sampleReceipt("conferencia-1"),
+    lines: [
+      { id: "l1", name: "Café", qty: 2, price: 5, note: "", waiter: "Ana" },
+      {
+        id: "l2",
+        name: "Filé à parmegiana com arroz, fritas e salada da casa",
+        qty: 1,
+        price: 89.9,
+        note: "",
+        waiter: "Ana",
+      },
+    ],
+    subtotal: 99.9,
+    serviceCharge: 9.99,
+    total: 109.89,
+    // Mesmo que venham pagamentos, a conferência nunca os mostra.
+    payments: [{ forma: "dinheiro", valor: 109.89, recebido: 120, troco: 10.11 }],
+    splitCount: 3,
+  });
+
+  beforeEach(() => {
+    resetVirtualPrinterForTests();
+    clearVirtualJobs();
+    resetSimulatedPaper();
+    setDemoSimulation(false);
+  });
+
+  it.each([58, 80] as const)(
+    "vai para a impressora virtual em %smm sem número da venda nem pagamento",
+    async (paperWidth) => {
+      const settings: PrintSettings = {
+        ...getDefaultPrintSettings(),
+        printerMode: "simulacao",
+        paperWidth,
+        columns: paperWidth === 58 ? 32 : 48,
+      };
+      await expect(printConference(paidReceipt(), restaurant, settings)).resolves.toEqual({
+        method: "simulacao",
+      });
+
+      const [job] = getVirtualJobs();
+      expect(job).toMatchObject({ tipo: "conferencia", mesa: 3, larguraMm: paperWidth });
+      expect(job?.html).toContain("CONFERÊNCIA DE CONSUMO");
+      expect(job?.html).toContain("Não é documento fiscal");
+      expect(job?.html).toContain("Confira seu pedido antes de pagar");
+      expect(job?.html).toMatch(/Dividido por 3 pessoas: R\$\s36,63 cada/);
+      expect(job?.html).not.toContain("Nº da venda");
+      expect(job?.html).not.toContain("Troco");
+      expect(job?.html).not.toContain("Recebido");
+      expect(job?.html).not.toContain("Dinheiro");
+
+      const preview = decodeEscPos(job?.escpos ?? new Uint8Array(), {
+        columns: settings.columns,
+      });
+      const text = previewToText(preview, settings.columns).replace(/\s+/g, " ");
+      expect(text).toContain("CONFERÊNCIA DE CONSUMO");
+      expect(text).toContain("Não é documento fiscal");
+      expect(text).toContain("MESA 03");
+      expect(text).toContain("Confira seu pedido antes de pagar");
+      expect(text).toMatch(/Dividido por 3 pessoas: R\$\s36,63/);
+      expect(text).not.toMatch(/venda|Troco|Dinheiro/);
+      expect(preview.linhas.filter((linha) => linha.tipo === "texto" && linha.estoura)).toEqual([]);
+      expect(preview.linhas.some((linha) => linha.tipo === "gaveta")).toBe(false);
+    },
+  );
+
+  it("não mostra a divisão quando é para 1 pessoa", () => {
+    const settings = { ...getDefaultPrintSettings(), columns: 32 };
+    const text = previewToText(
+      decodeEscPos(escPosConference({ ...paidReceipt(), splitCount: 1 }, restaurant, settings), {
+        columns: 32,
+      }),
+      32,
+    );
+    expect(text).not.toContain("Dividido");
+  });
+
+  it("no desktop usa a impressora de notas com uma via", async () => {
+    const nativePrint = vi.fn().mockResolvedValue({ ok: true });
+    Object.defineProperty(window, "mesariDesktop", {
+      configurable: true,
+      value: {
+        isDesktop: true,
+        print: nativePrint,
+        getSettings: vi.fn().mockResolvedValue({ printerNota: "Elgin Nota" }),
+      },
+    });
+
+    await printConference(paidReceipt(), restaurant, { ...getDefaultPrintSettings(), copies: 2 });
+
+    expect(nativePrint).toHaveBeenCalledOnce();
+    expect(nativePrint.mock.calls[0]?.[0]).toMatchObject({
+      printerName: "Elgin Nota",
+      copies: 1,
+      tipo: "recibo",
+    });
+    expect(nativePrint.mock.calls[0]?.[0].html).toContain("CONFERÊNCIA DE CONSUMO");
+  });
+
+  it("sem impressora direta cai para o navegador e informa o motivo", async () => {
+    let printedHtml = "";
+    const append = vi.spyOn(document.body, "append").mockImplementation((...nodes) => {
+      const frame = nodes[0] as HTMLIFrameElement;
+      printedHtml = frame.srcdoc;
+      Object.defineProperty(frame, "contentWindow", {
+        configurable: true,
+        value: {
+          focus: vi.fn(),
+          print(this: { onafterprint: (() => void) | null }) {
+            this.onafterprint?.();
+          },
+          onafterprint: null,
+        },
+      });
+      frame.onload?.(new Event("load"));
+    });
+
+    const result = await printConference(paidReceipt(), restaurant, {
+      ...getDefaultPrintSettings(),
+      printerMode: "direct",
+    });
+
+    expect(result.method).toBe("browser");
+    expect(result.fallbackReason).toBeTruthy();
+    expect(printedHtml).toContain("CONFERÊNCIA DE CONSUMO");
+    append.mockRestore();
   });
 });
