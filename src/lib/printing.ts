@@ -5,6 +5,7 @@ import receiptFontBoldUrl from "@fontsource/ibm-plex-mono/files/ibm-plex-mono-la
 import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
 import receiptStyles from "@/components/receipt-content.css?inline";
 import { ReceiptContent } from "@/components/receipt-content";
+import { codePageSelector, encodeText, type CharacterTable } from "@/lib/escpos-codepages";
 
 export type PrintSettings = {
   paperWidth: 58 | 80;
@@ -16,7 +17,7 @@ export type PrintSettings = {
   printKitchenEnabled: boolean;
   cutPaper: boolean;
   openCashDrawer: boolean;
-  characterTable: "CP860" | "CP850" | "WPC1252";
+  characterTable: CharacterTable;
   baudRate: 9600 | 19200 | 38400 | 57600 | 115200;
   printerMode: "direct" | "browser";
   printerConnected: boolean;
@@ -642,69 +643,6 @@ export async function forgetPrinter() {
     productId: undefined,
     productName: undefined,
     error: null,
-  });
-}
-
-const cp850Characters =
-  "ÇüéâäàåçêëèïîìÄÅÉæÆôöòûùÿÖÜ¢£¥₧ƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤ÁÂÀ©╣║╗╝¢¥┐└┴┬├─┼ãÃ╚╔╩╦╠═╬¤ðÐÊËÈıÍÎÏ┘┌█▄¦Ì▀ÓßÔÒõÕµþÞÚÛÙýÝ¯´≡±‗¾¶§÷¸°¨·¹³²■ ";
-const cp860Characters =
-  "ÇüéâãàÁçêÊèÍÔìÃÂÉÀÈôõòûùÌÕÜ¢£ÙÛƒáíóúñÑªº¿⌐¬½¼¡«»░▒▓│┤ÁÂÀ©╣║╗╝¢¥┐└┴┬├─┼ãÃ╚╔╩╦╠═╬¤ðÐÊËÈıÍÎÏ┘┌█▄¦Ì▀ÓßÔÒõÕµþÞÚÛÙýÝ¯´≡±‗¾¶§÷¸°¨·¹³²■";
-const cp1252Extra = new Map<number, number>([
-  [0x20ac, 0x80],
-  [0x201a, 0x82],
-  [0x192, 0x83],
-  [0x201e, 0x84],
-  [0x2026, 0x85],
-  [0x2020, 0x86],
-  [0x2021, 0x87],
-  [0x2c6, 0x88],
-  [0x2030, 0x89],
-  [0x160, 0x8a],
-  [0x2039, 0x8b],
-  [0x152, 0x8c],
-  [0x17d, 0x8e],
-  [0x2018, 0x91],
-  [0x2019, 0x92],
-  [0x201c, 0x93],
-  [0x201d, 0x94],
-  [0x2022, 0x95],
-  [0x2013, 0x96],
-  [0x2014, 0x97],
-  [0x2dc, 0x98],
-  [0x2122, 0x99],
-  [0x161, 0x9a],
-  [0x203a, 0x9b],
-  [0x153, 0x9c],
-  [0x17e, 0x9e],
-  [0x178, 0x9f],
-]);
-const codePageSelector: Record<PrintSettings["characterTable"], number> = {
-  CP860: 3,
-  CP850: 2,
-  WPC1252: 16,
-};
-
-function encodeText(text: string, table: PrintSettings["characterTable"] = "CP860") {
-  const characters = table === "CP860" ? cp860Characters : cp850Characters;
-  return Array.from(text, (character) => {
-    const code = character.codePointAt(0) ?? 63;
-    if (code <= 0x7f) return code;
-    if (table === "WPC1252") {
-      if (code >= 0xa0 && code <= 0xff) return code;
-      return (
-        cp1252Extra.get(code) ??
-        character
-          .normalize("NFD")
-          .replace(/[\u0300-\u036f]/g, "")
-          .codePointAt(0) ??
-        63
-      );
-    }
-    const characterIndex = characters.indexOf(character);
-    if (characterIndex >= 0) return characterIndex + 128;
-    const normalized = character.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-    const ascii = normalized.codePointAt(0) ?? 63;
-    return ascii <= 0x7f ? ascii : 63;
   });
 }
 
