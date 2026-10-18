@@ -6,6 +6,7 @@ import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
 import receiptStyles from "@/components/receipt-content.css?inline";
 import { ReceiptContent } from "@/components/receipt-content";
 import { codePageSelector, encodeText, type CharacterTable } from "@/lib/escpos-codepages";
+import { addVirtualJob } from "@/lib/virtual-printer";
 
 export type PrintSettings = {
   paperWidth: 58 | 80;
@@ -19,12 +20,16 @@ export type PrintSettings = {
   openCashDrawer: boolean;
   characterTable: CharacterTable;
   baudRate: 9600 | 19200 | 38400 | 57600 | 115200;
-  printerMode: "direct" | "browser";
+  printerMode: "direct" | "browser" | "simulacao";
+  /** Só no modo simulação: permite testar mensagens de erro sem impressora. */
+  simulationBehavior?: SimulationBehavior;
   printerConnected: boolean;
   printerName?: string;
   printerDeviceId?: string;
   connectionType?: "serial" | "usb";
 };
+
+export type SimulationBehavior = "normal" | "desconectada" | "sem_papel";
 
 export type PrintReceipt = {
   id: string;
@@ -188,7 +193,97 @@ let printQueue: Promise<unknown> = Promise.resolve();
 let reconnectTimer: number | null = null;
 let intentionalDisconnect = false;
 
-export type PrintResult = { method: "direct" | "browser" | "desktop"; fallbackReason?: string };
+export type PrintResult = {
+  method: "direct" | "browser" | "desktop" | "simulacao";
+  fallbackReason?: string;
+};
+
+// ---- Impressora simulada -------------------------------------------------
+// No modo "simulacao" nada vai para hardware, iframe ou Electron: cada impressão
+// vira um trabalho na fila da impressora virtual (/impressora-virtual).
+
+let demoSimulation = false;
+let simulatedPrints = 0;
+let simulatedStatus: PrinterStatus = {
+  supported: true,
+  connected: true,
+  name: "Impressora virtual",
+  error: null,
+};
+
+/** Modo demonstração (?demo=1): simula sem gravar nas configurações. */
+export function setDemoSimulation(enabled: boolean) {
+  demoSimulation = enabled;
+  refreshSimulatedStatus();
+}
+
+export function isDemoSimulation() {
+  return demoSimulation;
+}
+
+/** "Troca a bobina": zera a contagem do comportamento "Sem papel". */
+export function resetSimulatedPaper() {
+  simulatedPrints = 0;
+  refreshSimulatedStatus();
+}
+
+function simulatedState(settings: PrintSettings): PrinterStatus {
+  const behavior = settings.simulationBehavior ?? "normal";
+  if (behavior === "desconectada") {
+    return {
+      supported: true,
+      connected: false,
+      name: "Impressora virtual",
+      error: "Impressora desconectada (simulação).",
+    };
+  }
+  if (behavior === "sem_papel" && simulatedPrints >= 3) {
+    return {
+      supported: true,
+      connected: false,
+      name: "Impressora virtual",
+      error: "Impressora sem papel (simulação).",
+    };
+  }
+  return { supported: true, connected: true, name: "Impressora virtual", error: null };
+}
+
+function refreshSimulatedStatus() {
+  if (typeof localStorage === "undefined") return;
+  let settings: PrintSettings;
+  try {
+    settings = getPrintSettings();
+  } catch {
+    return;
+  }
+  if (settings.printerMode !== "simulacao") return;
+  const next = simulatedState(settings);
+  if (
+    next.connected === simulatedStatus.connected &&
+    next.error === simulatedStatus.error &&
+    next.name === simulatedStatus.name
+  ) {
+    return;
+  }
+  simulatedStatus = next;
+  listeners.forEach((listener) => listener());
+}
+
+/** Aplica o comportamento escolhido; lança o mesmo tipo de erro de uma impressora real. */
+function simulateHardware(settings: PrintSettings) {
+  const behavior = settings.simulationBehavior ?? "normal";
+  if (behavior === "desconectada") {
+    refreshSimulatedStatus();
+    throw new Error("Impressora desconectada (simulação). Verifique o cabo ou a energia.");
+  }
+  if (behavior === "sem_papel") {
+    simulatedPrints += 1;
+    refreshSimulatedStatus();
+    if (simulatedPrints >= 3) {
+      throw new Error("Impressora sem papel (simulação). Troque a bobina e tente de novo.");
+    }
+  }
+}
 
 function serialApi(): SerialApi | null {
   if (typeof navigator === "undefined") return null;
@@ -219,7 +314,10 @@ export function getDefaultPrintSettings(): PrintSettings {
 export function getPrintSettings(): PrintSettings {
   if (typeof localStorage === "undefined") return getDefaultPrintSettings();
   const stored = localStorage.getItem(SETTINGS_KEY);
-  if (!stored) return getDefaultPrintSettings();
+  if (!stored) {
+    const defaults = getDefaultPrintSettings();
+    return demoSimulation ? { ...defaults, printerMode: "simulacao" } : defaults;
+  }
 
   const value: unknown = JSON.parse(stored);
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -227,9 +325,10 @@ export function getPrintSettings(): PrintSettings {
   }
   const settings = value as Partial<PrintSettings>;
   const hasSavedDirectDevice = Boolean(settings.connectionType || settings.printerDeviceId);
-  const printerMode =
-    settings.printerMode === "browser"
-      ? "browser"
+  const printerMode: PrintSettings["printerMode"] = demoSimulation
+    ? "simulacao"
+    : settings.printerMode === "browser" || settings.printerMode === "simulacao"
+      ? settings.printerMode
       : hasSavedDirectDevice
         ? "direct"
         : getDefaultPrintSettings().printerMode;
@@ -263,6 +362,10 @@ export function getPrintSettings(): PrintSettings {
         ? settings.baudRate
         : 9600,
     printerMode,
+    simulationBehavior:
+      settings.simulationBehavior === "desconectada" || settings.simulationBehavior === "sem_papel"
+        ? settings.simulationBehavior
+        : "normal",
     printerConnected: false,
   };
 }
@@ -271,7 +374,34 @@ export function savePrintSettings(settings: PrintSettings) {
   if (typeof localStorage === "undefined") {
     throw new Error("Não foi possível salvar as configurações de impressão neste navegador.");
   }
-  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  let toSave = settings;
+  if (demoSimulation && settings.printerMode === "simulacao") {
+    // No modo demonstração a simulação é temporária: mantém o modo que estava salvo.
+    let storedMode: unknown;
+    try {
+      storedMode = (
+        JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") as { printerMode?: unknown }
+      ).printerMode;
+    } catch {
+      storedMode = undefined;
+    }
+    toSave = {
+      ...settings,
+      printerMode:
+        storedMode === "direct" || storedMode === "browser" || storedMode === "simulacao"
+          ? storedMode
+          : getDefaultPrintSettings().printerMode,
+    };
+  }
+  let previousBehavior: SimulationBehavior | undefined;
+  try {
+    previousBehavior = getPrintSettings().simulationBehavior;
+  } catch {
+    previousBehavior = undefined;
+  }
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(toSave));
+  if (previousBehavior !== (settings.simulationBehavior ?? "normal")) simulatedPrints = 0;
+  refreshSimulatedStatus();
 }
 
 export function subscribePrinterStatus(listener: () => void) {
@@ -280,6 +410,15 @@ export function subscribePrinterStatus(listener: () => void) {
 }
 
 export function getPrinterStatus() {
+  const settings = getPrintSettings();
+  if (settings.printerMode === "simulacao") {
+    // Mantém a mesma referência enquanto nada muda (exigência do useSyncExternalStore).
+    const next = simulatedState(settings);
+    if (next.connected !== simulatedStatus.connected || next.error !== simulatedStatus.error) {
+      simulatedStatus = next;
+    }
+    return simulatedStatus;
+  }
   if (
     typeof window !== "undefined" &&
     window.mesariDesktop &&
@@ -476,6 +615,10 @@ async function findAuthorizedDevice() {
 export function initializePrinter() {
   if (initialization) return initialization;
   initialization = (async () => {
+    if (getPrintSettings().printerMode === "simulacao") {
+      refreshSimulatedStatus();
+      return;
+    }
     listenForDeviceChanges();
     if (
       typeof window !== "undefined" &&
@@ -851,7 +994,7 @@ function externalKitchenTicketHtml(ticket: KitchenTicket, settings: PrintSetting
   return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize * 1.7}px}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.client{margin-top:3mm;font-weight:800}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item-main strong:last-child{white-space:nowrap}.note,.observation{margin:1mm 0 0 3mm;padding:1mm;font-weight:800;background:#eee}.totals p{display:flex;justify-content:space-between;margin:1mm 0}.total{font-size:${fontSize + 3}px;font-weight:900}.payment{margin-top:2mm;font-weight:900}.footer{text-align:center;font-size:${fontSize - 2}px}.cut{height:12mm}</style></head><body><main><header class="header">${title}<br>#${external.dayNumber}</header><div class="meta center">${escapeHtml(deliveryChannelLabel(external.channel))} · ${escapeHtml(new Date(ticket.createdAt).toLocaleTimeString("pt-BR"))}</div><div class="client">${escapeHtml(external.customerName)}</div>${external.phone ? `<div>Telefone: ${escapeHtml(external.phone)}</div>` : ""}${external.origin === "entrega" && external.address ? `<div>Endereço: ${escapeHtml(external.address)}</div>` : ""}<div class="dash"></div>${items}${external.observation ? `<div class="observation">OBSERVAÇÃO: ${escapeHtml(external.observation)}</div>` : ""}<div class="dash"></div><div class="totals"><p><span>Subtotal</span><strong>${escapeHtml(money(external.subtotal))}</strong></p>${external.origin === "entrega" ? `<p><span>Taxa de entrega</span><strong>${escapeHtml(money(external.deliveryFee))}</strong></p>` : ""}<p class="total"><span>TOTAL</span><strong>${escapeHtml(money(external.total))}</strong></p></div><div class="payment">${escapeHtml(expectedPaymentLabel(external.payment))}</div><div class="dash"></div><footer class="footer">Não é documento fiscal</footer><div class="cut"></div></main></body></html>`;
 }
 
-function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
+export function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
   if (ticket.external) return escPosExternalKitchenTicket(ticket, settings);
   const width = settings.columns;
   const canShowPrices =
@@ -951,6 +1094,22 @@ export async function printKitchenTicket(
   allowBrowserFallback = true,
 ) {
   return enqueuePrint(async () => {
+    if (settings.printerMode === "simulacao") {
+      simulateHardware(settings);
+      addVirtualJob({
+        tipo: "comanda",
+        html: kitchenTicketHtml(ticket, settings),
+        escpos: escPosKitchenTicket(ticket, settings),
+        larguraMm: settings.paperWidth,
+        colunas: settings.columns,
+        setor: ticket.sector,
+        mesa: ticket.table,
+        titulo: ticket.external
+          ? `${ticket.external.origin === "entrega" ? "Entrega" : "Retirada"} #${ticket.external.dayNumber}`
+          : `Pedido #${ticket.number}`,
+      });
+      return { method: "simulacao" as const };
+    }
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
     if (desktop) {
       const desktopSettings = await desktop.getSettings();
@@ -1027,6 +1186,22 @@ export async function printReceipt(
   settings = getPrintSettings(),
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
+    if (settings.printerMode === "simulacao") {
+      for (let copy = 0; copy < settings.copies; copy += 1) {
+        simulateHardware(settings);
+        const printableReceipt = { ...receipt, reprint: Boolean(receipt.reprint) || copy > 0 };
+        addVirtualJob({
+          tipo: "recibo",
+          html: await receiptHtml(printableReceipt, restaurant, settings),
+          larguraMm: settings.paperWidth,
+          colunas: settings.columns,
+          mesa: receipt.origin && receipt.origin !== "mesa" ? null : receipt.table,
+          titulo: `Recibo venda #${receipt.saleNumber}${copy > 0 ? " (2ª via)" : ""}`,
+          ...(printableReceipt.reprint ? { reimpressao: true } : {}),
+        });
+      }
+      return { method: "simulacao" };
+    }
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
     const desktopSettings = desktop ? await desktop.getSettings() : null;
     for (let copy = 0; copy < settings.copies; copy += 1) {
@@ -1071,6 +1246,18 @@ export async function printTestPage(
   restaurantName = "Mesari",
 ): Promise<PrintResult> {
   return enqueuePrint(async () => {
+    if (settings.printerMode === "simulacao") {
+      simulateHardware(settings);
+      addVirtualJob({
+        tipo: "teste",
+        html: testPageHtml(settings.paperWidth),
+        escpos: testPageEscPos(settings, accentTest),
+        larguraMm: settings.paperWidth,
+        colunas: settings.columns,
+        titulo: accentTest ? "Teste de acentos" : "Página de teste",
+      });
+      return { method: "simulacao" };
+    }
     const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
     if (desktop) {
       const desktopSettings = await desktop.getSettings();
@@ -1087,42 +1274,9 @@ export async function printTestPage(
       if (!selectedPort && !selectedDevice) await initializePrinter();
       if (selectedPort || selectedDevice) {
         try {
-          const test = accentTest
-            ? [
-                "MESARI",
-                "TESTE DE ACENTOS",
-                "á é í ó ú à â ê ô ã õ ç",
-                "Á É Í Ó Ú À Â Ê Ô Ã Õ Ç",
-                "ñ º ª",
-              ]
-            : [
-                "MESARI",
-                "TESTE DE IMPRESSAO",
-                "-".repeat(settings.columns),
-                "Acentos: á é í ó ú à â ê ô ã õ ç",
-                "ACENTOS: Á É Í Ó Ú À Â Ê Ô Ã Õ Ç",
-                "Caract: ñ º ª",
-                "Negrito",
-                "Tamanho duplo",
-                new Date().toLocaleString("pt-BR"),
-              ];
-          const bytes: number[] = [
-            0x1b,
-            0x40,
-            0x1b,
-            0x74,
-            codePageSelector[settings.characterTable],
-          ];
-          for (const [index, value] of test.entries()) {
-            const align = index < 2 || index === test.length - 1 ? 1 : 0;
-            const scale = index === test.length - 2 ? 0x11 : 0;
-            bytes.push(0x1b, 0x61, align, 0x1b, 0x45, index < 2 ? 1 : 0, 0x1d, 0x21, scale);
-            bytes.push(...encodeText(value, settings.characterTable), 0x0a);
-          }
-          bytes.push(0x1b, 0x64, 3);
-          if (settings.cutPaper) bytes.push(0x1d, 0x56, 66, 3);
+          const bytes = testPageEscPos(settings, accentTest);
           for (let copy = 0; copy < settings.copies; copy += 1) {
-            await printDirectWithRetry(new Uint8Array(bytes));
+            await printDirectWithRetry(bytes);
           }
           return { method: "direct" };
         } catch (error) {
@@ -1132,9 +1286,38 @@ export async function printTestPage(
         directError = "Nenhuma impressora direta autorizada está conectada.";
       }
     }
-    const width = settings.paperWidth;
-    const html = `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${width}mm auto;margin:0}html,body{width:${width}mm;margin:0;padding:0}body{box-sizing:border-box;padding:3mm;font:12px monospace;text-align:center;color:#000}.dash{border-top:1px dashed #000;margin:3mm 0}</style></head><body><strong>MESARI</strong><div class="dash"></div><h2>TESTE DE IMPRESSÃO</h2><p>Impressora configurada com sucesso.</p><div class="dash"></div><p>${escapeHtml(new Date().toLocaleString("pt-BR"))}</p><strong>OK</strong></body></html>`;
+    const html = testPageHtml(settings.paperWidth);
     await printInHiddenFrame(html);
     return directError ? { method: "browser", fallbackReason: directError } : { method: "browser" };
   });
+}
+
+function testPageEscPos(settings: PrintSettings, accentTest: boolean) {
+  const test = accentTest
+    ? ["MESARI", "TESTE DE ACENTOS", "á é í ó ú à â ê ô ã õ ç", "Á É Í Ó Ú À Â Ê Ô Ã Õ Ç", "ñ º ª"]
+    : [
+        "MESARI",
+        "TESTE DE IMPRESSAO",
+        "-".repeat(settings.columns),
+        "Acentos: á é í ó ú à â ê ô ã õ ç",
+        "ACENTOS: Á É Í Ó Ú À Â Ê Ô Ã Õ Ç",
+        "Caract: ñ º ª",
+        "Negrito",
+        "Tamanho duplo",
+        new Date().toLocaleString("pt-BR"),
+      ];
+  const bytes: number[] = [0x1b, 0x40, 0x1b, 0x74, codePageSelector[settings.characterTable]];
+  for (const [index, value] of test.entries()) {
+    const align = index < 2 || index === test.length - 1 ? 1 : 0;
+    const scale = index === test.length - 2 ? 0x11 : 0;
+    bytes.push(0x1b, 0x61, align, 0x1b, 0x45, index < 2 ? 1 : 0, 0x1d, 0x21, scale);
+    bytes.push(...encodeText(value, settings.characterTable), 0x0a);
+  }
+  bytes.push(0x1b, 0x64, 3);
+  if (settings.cutPaper) bytes.push(0x1d, 0x56, 66, 3);
+  return new Uint8Array(bytes);
+}
+
+function testPageHtml(width: number) {
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${width}mm auto;margin:0}html,body{width:${width}mm;margin:0;padding:0}body{box-sizing:border-box;padding:3mm;font:12px monospace;text-align:center;color:#000}.dash{border-top:1px dashed #000;margin:3mm 0}</style></head><body><strong>MESARI</strong><div class="dash"></div><h2>TESTE DE IMPRESSÃO</h2><p>Impressora configurada com sucesso.</p><div class="dash"></div><p>${escapeHtml(new Date().toLocaleString("pt-BR"))}</p><strong>OK</strong></body></html>`;
 }

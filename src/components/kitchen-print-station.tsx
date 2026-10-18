@@ -391,7 +391,12 @@ export function KitchenPrintStation() {
   if (user?.role !== "caixa") return null;
   const retryInWindows = async (ticket: TicketRow) => {
     try {
-      await printKitchenTicket(ticket, { ...getPrintSettings(), printerMode: "browser" }, true);
+      const current = getPrintSettings();
+      await printKitchenTicket(
+        ticket,
+        current.printerMode === "simulacao" ? current : { ...current, printerMode: "browser" },
+        true,
+      );
       setFailed((current) => {
         const next = current.filter((item) => item.id !== ticket.id);
         writeFailed(next);

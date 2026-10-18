@@ -10,12 +10,19 @@ import {
   printReceiptOnce,
   printKitchenTicket,
   printTestPage,
+  resetSimulatedPaper,
   savePrintSettings,
+  setDemoSimulation,
   type KitchenTicket,
   type PrintReceipt,
   type PrintSettings,
 } from "@/lib/printing";
 import type { PrintRestaurant } from "@/lib/printing";
+import {
+  clearVirtualJobs,
+  getVirtualJobs,
+  resetVirtualPrinterForTests,
+} from "@/lib/virtual-printer";
 
 const restaurant: PrintRestaurant = {
   name: "Mesari",
@@ -554,5 +561,114 @@ describe("configurações da impressora", () => {
     expect(printedHtml).not.toContain("R$");
     expect(printedHtml).not.toContain("TOTAL DO PEDIDO");
     append.mockRestore();
+  });
+});
+
+describe("impressora simulada", () => {
+  const ticket: KitchenTicket = {
+    id: "k1",
+    number: 12,
+    table: 4,
+    sector: "bar",
+    waiter: "Bia",
+    additional: false,
+    createdAt: new Date("2026-10-18T21:00:00").getTime(),
+    items: [{ product: "Caipirinha", quantity: 1, note: "sem gelo", unitPrice: 18 }],
+  };
+
+  beforeEach(() => {
+    resetVirtualPrinterForTests();
+    clearVirtualJobs();
+    resetSimulatedPaper();
+    setDemoSimulation(false);
+  });
+
+  function simulate(extra: Partial<PrintSettings> = {}) {
+    const settings: PrintSettings = {
+      ...getDefaultPrintSettings(),
+      printerMode: "simulacao",
+      ...extra,
+    };
+    savePrintSettings(settings);
+    return getPrintSettings();
+  }
+
+  it("não chama hardware, iframe nem Electron e põe a comanda na fila com HTML e ESC/POS", async () => {
+    const serial = { requestPort: vi.fn(), getPorts: vi.fn(), addEventListener: vi.fn() };
+    const usb = { requestDevice: vi.fn(), getDevices: vi.fn(), addEventListener: vi.fn() };
+    Object.defineProperty(navigator, "serial", { configurable: true, value: serial });
+    Object.defineProperty(navigator, "usb", { configurable: true, value: usb });
+    const nativePrint = vi.fn();
+    Object.defineProperty(window, "mesariDesktop", {
+      configurable: true,
+      value: { isDesktop: true, print: nativePrint, getSettings: vi.fn(), testPrint: vi.fn() },
+    });
+    const append = vi.spyOn(document.body, "append");
+    const settings = simulate();
+
+    await expect(printKitchenTicket(ticket, settings, false)).resolves.toEqual({
+      method: "simulacao",
+    });
+    await expect(printTestPage(settings)).resolves.toEqual({ method: "simulacao" });
+    await expect(printReceipt(sampleReceipt(), restaurant, settings)).resolves.toEqual({
+      method: "simulacao",
+    });
+
+    expect(nativePrint).not.toHaveBeenCalled();
+    expect(serial.requestPort).not.toHaveBeenCalled();
+    expect(serial.getPorts).not.toHaveBeenCalled();
+    expect(usb.requestDevice).not.toHaveBeenCalled();
+    expect(usb.getDevices).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
+
+    const [recibo, teste, comanda] = getVirtualJobs();
+    expect(comanda).toMatchObject({ tipo: "comanda", setor: "bar", mesa: 4, larguraMm: 58 });
+    expect(comanda?.html).toContain("Caipirinha");
+    expect(comanda?.escpos?.length).toBeGreaterThan(20);
+    expect(teste).toMatchObject({ tipo: "teste" });
+    expect(recibo).toMatchObject({ tipo: "recibo", mesa: 3 });
+    expect(recibo?.html).toContain("Café");
+    expect(getPrinterStatus()).toMatchObject({ connected: true, name: "Impressora virtual" });
+  });
+
+  it("guarda no máximo 50 trabalhos, mais recente primeiro, e sobrevive a recarregar", async () => {
+    const settings = simulate();
+    for (let index = 1; index <= 52; index += 1) {
+      await printKitchenTicket({ ...ticket, number: index }, settings, false);
+    }
+    resetVirtualPrinterForTests();
+    const jobs = getVirtualJobs();
+    expect(jobs).toHaveLength(50);
+    expect(jobs[0]?.titulo).toBe("Pedido #52");
+    expect(jobs[0]?.escpos).toBeInstanceOf(Uint8Array);
+  });
+
+  it("simula impressora desconectada", async () => {
+    const settings = simulate({ simulationBehavior: "desconectada" });
+    await expect(printKitchenTicket(ticket, settings, false)).rejects.toThrow(
+      "Impressora desconectada (simulação)",
+    );
+    expect(getPrinterStatus().connected).toBe(false);
+    expect(getVirtualJobs()).toHaveLength(0);
+  });
+
+  it("simula falta de papel na 3ª impressão", async () => {
+    const settings = simulate({ simulationBehavior: "sem_papel" });
+    await printKitchenTicket(ticket, settings, false);
+    await printKitchenTicket(ticket, settings, false);
+    await expect(printKitchenTicket(ticket, settings, false)).rejects.toThrow("sem papel");
+    expect(getPrinterStatus().connected).toBe(false);
+    expect(getVirtualJobs()).toHaveLength(2);
+    resetSimulatedPaper();
+    expect(getPrinterStatus().connected).toBe(true);
+  });
+
+  it("modo demonstração simula sem gravar nas configurações", () => {
+    savePrintSettings({ ...getDefaultPrintSettings(), printerMode: "browser" });
+    setDemoSimulation(true);
+    expect(getPrintSettings().printerMode).toBe("simulacao");
+    savePrintSettings({ ...getPrintSettings(), copies: 2 });
+    setDemoSimulation(false);
+    expect(getPrintSettings()).toMatchObject({ printerMode: "browser", copies: 2 });
   });
 });
