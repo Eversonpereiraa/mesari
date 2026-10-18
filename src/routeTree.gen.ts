@@ -16,6 +16,7 @@ import { Route as CozinhaRouteImport } from './routes/cozinha'
 import { Route as DeliveryRouteImport } from './routes/delivery'
 import { Route as GarcomRouteImport } from './routes/garcom'
 import { Route as ImpressaoRouteImport } from './routes/impressao'
+import { Route as ImpressoraVirtualRouteImport } from './routes/impressora-virtual'
 import { Route as LayoutRouteImport } from './routes/layout'
 import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
 import { Route as RestauranteRouteImport } from './routes/restaurante'
@@ -58,6 +59,11 @@ const ImpressaoRoute = ImpressaoRouteImport.update({
   path: '/impressao',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ImpressoraVirtualRoute = ImpressoraVirtualRouteImport.update({
+  id: '/impressora-virtual',
+  path: '/impressora-virtual',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const LayoutRoute = LayoutRouteImport.update({
   id: '/layout',
   path: '/layout',
@@ -97,6 +103,7 @@ export interface FileRoutesByFullPath {
   '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
+  '/impressora-virtual': typeof ImpressoraVirtualRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
@@ -112,6 +119,7 @@ export interface FileRoutesByTo {
   '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
+  '/impressora-virtual': typeof ImpressoraVirtualRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
@@ -128,6 +136,7 @@ export interface FileRoutesById {
   '/delivery': typeof DeliveryRoute
   '/garcom': typeof GarcomRoute
   '/impressao': typeof ImpressaoRoute
+  '/impressora-virtual': typeof ImpressoraVirtualRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
   '/restaurante': typeof RestauranteRoute
@@ -145,6 +154,7 @@ export interface FileRouteTypes {
     | '/delivery'
     | '/garcom'
     | '/impressao'
+    | '/impressora-virtual'
     | '/layout'
     | '/manifest.webmanifest'
     | '/restaurante'
@@ -160,6 +170,7 @@ export interface FileRouteTypes {
     | '/delivery'
     | '/garcom'
     | '/impressao'
+    | '/impressora-virtual'
     | '/layout'
     | '/manifest.webmanifest'
     | '/restaurante'
@@ -175,6 +186,7 @@ export interface FileRouteTypes {
     | '/delivery'
     | '/garcom'
     | '/impressao'
+    | '/impressora-virtual'
     | '/layout'
     | '/manifest.webmanifest'
     | '/restaurante'
@@ -191,6 +203,7 @@ export interface RootRouteChildren {
   DeliveryRoute: typeof DeliveryRoute
   GarcomRoute: typeof GarcomRoute
   ImpressaoRoute: typeof ImpressaoRoute
+  ImpressoraVirtualRoute: typeof ImpressoraVirtualRoute
   LayoutRoute: typeof LayoutRoute
   ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
   RestauranteRoute: typeof RestauranteRoute
@@ -250,6 +263,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ImpressaoRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/impressora-virtual': {
+      id: '/impressora-virtual'
+      path: '/impressora-virtual'
+      fullPath: '/impressora-virtual'
+      preLoaderRoute: typeof ImpressoraVirtualRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/layout': {
       id: '/layout'
       path: '/layout'
@@ -303,6 +323,7 @@ const rootRouteChildren: RootRouteChildren = {
   DeliveryRoute: DeliveryRoute,
   GarcomRoute: GarcomRoute,
   ImpressaoRoute: ImpressaoRoute,
+  ImpressoraVirtualRoute: ImpressoraVirtualRoute,
   LayoutRoute: LayoutRoute,
   ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
   RestauranteRoute: RestauranteRoute,
