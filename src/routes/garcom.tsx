@@ -110,10 +110,14 @@ function Garcom() {
       </div>
       {tables.length === 0 && (
         <div className="grid min-h-48 place-items-center p-8 text-center text-sm text-muted-foreground">
-          <p>
-            <Armchair className="mx-auto mb-2 h-7 w-7" />
-            Nenhuma mesa atribuída a você.
-          </p>
+          {s.loading ? (
+            <p role="status">Carregando...</p>
+          ) : (
+            <p>
+              <Armchair className="mx-auto mb-2 h-7 w-7" />
+              {myTables ? "Nenhuma mesa atribuída a você." : "Nenhuma mesa cadastrada."}
+            </p>
+          )}
         </div>
       )}
     </MobileFrame>

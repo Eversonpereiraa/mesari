@@ -19,10 +19,20 @@ export const Route = createFileRoute("/pedido/$id")({
 function Pedido() {
   const { id } = Route.useParams();
   const t = useStore((s) => s.tables.find((x) => x.id === id));
+  const loading = useStore((s) => s.loading);
   const navigate = useNavigate();
+  if (!t) {
+    return (
+      <MobileFrame title="Mesa" subtitle="Novo pedido" onBack={() => navigate({ to: "/garcom" })}>
+        <p role="status" className="p-8 text-center text-muted-foreground">
+          {loading ? "Carregando..." : "Mesa não encontrada ou desativada."}
+        </p>
+      </MobileFrame>
+    );
+  }
   return (
     <MobileFrame
-      title={`Mesa ${String(t?.number ?? "").padStart(2, "0")}`}
+      title={`Mesa ${String(t.number).padStart(2, "0")}`}
       subtitle="Novo pedido"
       onBack={() => navigate({ to: "/mesa/$id", params: { id } })}
     >
