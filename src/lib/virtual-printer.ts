@@ -9,7 +9,7 @@ export type VirtualPrintJob = {
   escpos?: Uint8Array;
   larguraMm: 58 | 80;
   colunas: number;
-  setor?: "cozinha" | "bar";
+  setor?: "cozinha" | "bar" | "geral";
   mesa?: number | null;
   titulo: string;
   reimpressao?: boolean;

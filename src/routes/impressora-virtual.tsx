@@ -143,7 +143,7 @@ export function JobCard({ job }: { job: VirtualPrintJob }) {
         </span>
         {job.setor && (
           <span className="rounded-sm bg-muted px-2 py-0.5 font-semibold uppercase text-ink">
-            {job.setor}
+            {job.setor === "geral" ? "cozinha + bar" : job.setor}
           </span>
         )}
         {typeof job.mesa === "number" && (

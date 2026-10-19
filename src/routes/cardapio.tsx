@@ -2,10 +2,18 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BookOpen, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { actions, brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
+import {
+  actions,
+  brl,
+  categorySectorOptions,
+  errorMessage,
+  useStore,
+  type Category,
+  type MenuItem,
+} from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
-import { useConfirm, usePrompt } from "@/components/system-dialog-provider";
+import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/cardapio")({
   head: () => ({
@@ -20,6 +28,7 @@ export const Route = createFileRoute("/cardapio")({
 });
 
 type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: string };
+type CategoryDraft = { name: string; sector: Category["sector"]; saving: boolean; error: string };
 
 function Cardapio() {
   const cats = useStore((s) => s.categories);
@@ -27,11 +36,11 @@ function Cardapio() {
   const role = useStore((s) => s.user?.role);
   const navigate = useNavigate();
   const confirmar = useConfirm();
-  const pedirTexto = usePrompt();
   const [cat, setCat] = useState(cats[0]?.id ?? "");
   const [q, setQ] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [categoryError, setCategoryError] = useState("");
+  const [newCategory, setNewCategory] = useState<CategoryDraft | null>(null);
   useEffect(() => {
     if (role && role !== "caixa") void navigate({ to: "/garcom", replace: true });
   }, [navigate, role]);
@@ -39,17 +48,16 @@ function Cardapio() {
   const t = q.trim().toLowerCase();
   const list = items.filter((i) => (t ? i.name.toLowerCase().includes(t) : i.categoryId === cat));
 
-  const newCat = async () => {
-    const n = await pedirTexto({
-      title: "Nova categoria",
-      description: "Informe o nome que será exibido no cardápio.",
-      label: "Nome da categoria",
-      placeholder: "Ex.: Bebidas",
-      required: true,
-      maxLength: 60,
-      confirmText: "Criar categoria",
-    });
-    if (n?.trim()) setCat(await actions.addCategory(n.trim()));
+  const newCat = () => setNewCategory({ name: "", sector: "cozinha", saving: false, error: "" });
+  const createCategory = async () => {
+    if (!newCategory || newCategory.saving || !newCategory.name.trim()) return;
+    setNewCategory({ ...newCategory, saving: true, error: "" });
+    try {
+      setCat(await actions.addCategory(newCategory.name.trim(), newCategory.sector));
+      setNewCategory(null);
+    } catch (cause) {
+      setNewCategory({ ...newCategory, saving: false, error: errorMessage(cause) });
+    }
   };
   const save = async () => {
     if (!draft || !draft.name.trim()) return;
@@ -117,11 +125,11 @@ function Cardapio() {
                 </span>
               </button>
               {role === "caixa" && (
-                <label className="flex items-center justify-between gap-2 px-3 pb-2 text-xs text-muted-foreground">
+                <label className="flex flex-col gap-1 px-3 pb-2 text-xs text-muted-foreground">
                   Setor
                   <AppSelect
-                    aria-label={`Setor de ${c.name}`}
-                    className="h-8 max-w-32 rounded-lg px-2 text-xs"
+                    ariaLabel={`Setor de ${c.name}`}
+                    className="h-8 w-full rounded-lg px-2 text-xs"
                     value={c.sector}
                     onValueChange={async (value) => {
                       const sector = value as typeof c.sector;
@@ -132,11 +140,7 @@ function Cardapio() {
                         setCategoryError(errorMessage(cause));
                       }
                     }}
-                    options={[
-                      { value: "cozinha", label: "Cozinha" },
-                      { value: "bar", label: "Bar" },
-                      { value: "nenhum", label: "Não imprimir" },
-                    ]}
+                    options={categorySectorOptions}
                   />
                 </label>
               )}
@@ -223,6 +227,85 @@ function Cardapio() {
           </div>
         </div>
       </div>
+
+      {newCategory && (
+        <div
+          className="fixed inset-0 z-20 grid place-items-center bg-ink/40 p-4"
+          onClick={() => setNewCategory(null)}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="nova-categoria-titulo"
+            className="w-full max-w-md overflow-hidden rounded-[14px] border bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void createCategory();
+            }}
+          >
+            <h2
+              id="nova-categoria-titulo"
+              className="border-b bg-background px-5 py-4 font-display font-bold text-ink"
+            >
+              Nova categoria
+            </h2>
+            <div className="space-y-4 p-5">
+              <Field label="Nome da categoria">
+                <input
+                  className="field"
+                  autoFocus
+                  required
+                  maxLength={60}
+                  placeholder="Ex.: Bebidas"
+                  value={newCategory.name}
+                  onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })}
+                />
+              </Field>
+              <fieldset>
+                <legend className="mb-1.5 text-sm font-medium text-ink">
+                  Onde sai a comanda destes itens?
+                </legend>
+                <div className="grid gap-1.5">
+                  {categorySectorOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={cn(
+                        "flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm",
+                        newCategory.sector === option.value
+                          ? "border-primary bg-accent font-semibold text-primary"
+                          : "text-ink hover:bg-muted",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="setor-nova-categoria"
+                        value={option.value}
+                        checked={newCategory.sector === option.value}
+                        onChange={() => setNewCategory({ ...newCategory, sector: option.value })}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {newCategory.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {newCategory.error}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t bg-background px-5 py-3">
+              <Btn type="button" variant="ghost" onClick={() => setNewCategory(null)}>
+                Cancelar
+              </Btn>
+              <Btn type="submit" disabled={!newCategory.name.trim() || newCategory.saving}>
+                {newCategory.saving ? "Criando..." : "Criar categoria"}
+              </Btn>
+            </div>
+          </form>
+        </div>
+      )}
 
       {draft && (
         <div

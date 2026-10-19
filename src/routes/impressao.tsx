@@ -22,7 +22,7 @@ import {
   type KitchenTicket,
   type SimulationBehavior,
 } from "@/lib/printing";
-import { errorMessage, useStore } from "@/lib/store";
+import { actions, errorMessage, useStore } from "@/lib/store";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/lib/supabase";
 
@@ -60,6 +60,81 @@ export const Route = createFileRoute("/impressao")({
   }),
   component: Impressao,
 });
+
+/** Uma impressora = comanda única com o pedido inteiro; duas = uma comanda por setor. */
+function TicketModeField() {
+  const [mode, setMode] = useState<"unica" | "por_setor" | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    actions
+      .getSingleTicketMode()
+      .then((single) => {
+        if (!active) return;
+        if (single === null) setUnavailable(true);
+        else setMode(single ? "unica" : "por_setor");
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(errorMessage(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const change = async (value: string) => {
+    const next = value === "por_setor" ? "por_setor" : "unica";
+    const previous = mode;
+    setMode(next);
+    setSaving(true);
+    setError("");
+    try {
+      await actions.setSingleTicketMode(next === "unica");
+    } catch (cause) {
+      setMode(previous);
+      setError(errorMessage(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <Field label="Impressoras de comanda">
+        <AppSelect
+          className="field"
+          ariaLabel="Impressoras de comanda"
+          value={mode ?? ""}
+          disabled={unavailable || mode === null || saving}
+          placeholder={unavailable ? "Aguardando atualização do banco" : "Carregando..."}
+          onValueChange={(value) => void change(value)}
+          options={[
+            { value: "unica", label: "Uma impressora (comanda única com o pedido inteiro)" },
+            {
+              value: "por_setor",
+              label: "Duas impressoras (uma comanda para cozinha e outra para bar)",
+            },
+          ]}
+        />
+      </Field>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {unavailable
+          ? "Esta opção aparece depois que o banco for atualizado. Por enquanto sai uma comanda por setor."
+          : mode === "por_setor"
+            ? "Cada envio do garçom gera uma comanda para a cozinha e outra para o bar."
+            : "Cada envio do garçom gera uma comanda só, com os blocos COZINHA e BAR."}
+      </p>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
 
 function Impressao() {
   const role = useStore((snapshot) => snapshot.user?.role);
@@ -780,11 +855,7 @@ function Impressao() {
                 />
                 Imprimir comandas neste computador
               </label>
-              {settings.printKitchenEnabled && (
-                <p className="text-xs text-muted-foreground">
-                  Setores ativos: Cozinha e Bar (uma comanda por pedido).
-                </p>
-              )}
+              <TicketModeField />
             </div>
           </section>
 

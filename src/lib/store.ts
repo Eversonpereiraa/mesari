@@ -12,7 +12,23 @@ export type Table = {
   status?: Status;
   active: boolean;
 };
-export type Category = { id: string; name: string; sector: "cozinha" | "bar" | "nenhum" };
+export type Category = { id: string; name: string; sector: "cozinha" | "bar" };
+export const categorySectorOptions: { value: Category["sector"]; label: string }[] = [
+  { value: "cozinha", label: "Cozinha" },
+  { value: "bar", label: "Bar" },
+];
+
+/**
+ * Setor da categoria vindo do banco. Todo item sai na comanda: registros
+ * antigos sem setor ou com "nenhum" (antigo "Não imprimir") viram cozinha.
+ */
+export function parseCategorySector(value: unknown, categoryName: string): Category["sector"] {
+  if (value === "bar") return "bar";
+  if (value === "cozinha" || value === "nenhum" || value === null || value === undefined) {
+    return "cozinha";
+  }
+  throw new Error(`Setor inválido recebido para a categoria ${categoryName}.`);
+}
 export type MenuItem = {
   id: string;
   name: string;
@@ -148,6 +164,11 @@ let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<void> | null = null;
 
 type DatabaseRow = Record<string, unknown>;
+
+/** Coluna inexistente no banco (Postgres 42703 / cache de schema do PostgREST). */
+function isMissingColumn(error: { code?: string; message?: string }) {
+  return error.code === "42703" || error.code === "PGRST204";
+}
 
 function asRow(value: unknown): DatabaseRow {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -416,11 +437,8 @@ async function loadRemoteData() {
     tables: (tablesRes.data ?? []).map(mapTable),
     categories: (categoriesRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
-      const sector = row["setor"] ?? "nenhum";
-      if (sector !== "cozinha" && sector !== "bar" && sector !== "nenhum") {
-        throw new Error(`Setor inválido recebido para a categoria ${stringValue(row["nome"])}.`);
-      }
-      return { id: stringValue(row["id"]), name: stringValue(row["nome"]), sector };
+      const name = stringValue(row["nome"]);
+      return { id: stringValue(row["id"]), name, sector: parseCategorySector(row["setor"], name) };
     }),
     items: (productsRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
@@ -802,11 +820,11 @@ export const actions = {
       if (error) throw error;
     });
   },
-  async addCategory(name: string): Promise<string> {
+  async addCategory(name: string, sector: Category["sector"] = "cozinha"): Promise<string> {
     return writeRemote(async () => {
       const { data, error } = await supabase
         .from("categorias")
-        .insert({ nome: name, ordem: state.categories.length, setor: "nenhum" })
+        .insert({ nome: name, ordem: state.categories.length, setor: sector })
         .select("id")
         .single();
       if (error) throw error;
@@ -862,6 +880,30 @@ export const actions = {
   },
   clearOrderSent() {
     publish({ orderSentMesaId: null });
+  },
+  /**
+   * Comanda única (restaurante.comanda_unica): um envio do garçom vira uma
+   * comanda só, com os itens agrupados por setor. Retorna null enquanto a
+   * coluna ainda não existe no banco (migração não aplicada).
+   */
+  async getSingleTicketMode(): Promise<boolean | null> {
+    const { data, error } = await supabase
+      .from("restaurante")
+      .select("comanda_unica")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) {
+      if (isMissingColumn(error)) return null;
+      throw error;
+    }
+    return asRow(data ?? {})["comanda_unica"] !== false;
+  },
+  async setSingleTicketMode(enabled: boolean) {
+    const { error } = await supabase
+      .from("restaurante")
+      .update({ comanda_unica: enabled })
+      .eq("id", 1);
+    if (error) throw error;
   },
   async updateRestaurant(restaurant: State["restaurant"]) {
     return writeRemote(async () => {

@@ -25,7 +25,15 @@ vi.mock("@/lib/supabase", () => ({
   usernameEmail: (username: string) => `${username.trim().toLowerCase()}@mesari.local`,
 }));
 
-import { actions, refreshData, tableStatus, useStore, type MenuItem } from "@/lib/store";
+import {
+  actions,
+  categorySectorOptions,
+  parseCategorySector,
+  refreshData,
+  tableStatus,
+  useStore,
+  type MenuItem,
+} from "@/lib/store";
 
 const item: MenuItem = {
   id: "item-1",
@@ -308,6 +316,40 @@ describe("integração do store com o schema existente", () => {
       method: "update",
       args: [{ setor: "bar" }, ["id", "category-1"]],
     });
+  });
+
+  it("cria categoria nova no setor cozinha, ou no setor escolhido", async () => {
+    mocks.rows["categorias"] = [{ id: "category-new" }];
+    await act(async () => actions.addCategory("Bebidas"));
+    await act(async () => actions.addCategory("Drinks", "bar"));
+
+    const inserts = mocks.calls.filter(
+      (call) => call.table === "categorias" && call.method === "insert",
+    );
+    expect(inserts.map((call) => (call.args[0] as { setor: string }).setor)).toEqual([
+      "cozinha",
+      "bar",
+    ]);
+  });
+
+  it("setor da categoria só tem Cozinha e Bar; registro antigo 'nenhum' vira cozinha", () => {
+    expect(categorySectorOptions.map((option) => option.value)).toEqual(["cozinha", "bar"]);
+    expect(parseCategorySector("nenhum", "Balcão")).toBe("cozinha");
+    expect(parseCategorySector(null, "Sem setor")).toBe("cozinha");
+    expect(parseCategorySector("bar", "Drinks")).toBe("bar");
+    expect(() => parseCategorySector("copa", "Copa")).toThrow("Setor inválido");
+  });
+
+  it("lê comanda_unica e trata a coluna ausente (banco sem migração) como indisponível", async () => {
+    mocks.rows["restaurante"] = [{ id: 1, comanda_unica: false }];
+    await expect(actions.getSingleTicketMode()).resolves.toBe(false);
+
+    mocks.errors["restaurante"] = {
+      code: "42703",
+      message: "column restaurante.comanda_unica does not exist",
+    };
+    await expect(actions.getSingleTicketMode()).resolves.toBeNull();
+    delete mocks.errors["restaurante"];
   });
 
   it("limpa comandas antigas chamando a função existente", async () => {

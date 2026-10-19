@@ -4,7 +4,13 @@ import { Check, Printer, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { Btn } from "@/components/ui-kit";
 import { supabase } from "@/lib/supabase";
 import { actions, errorMessage, useStore } from "@/lib/store";
-import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import {
+  getPrintSettings,
+  printKitchenTicket,
+  type KitchenSector,
+  type KitchenTicket,
+} from "@/lib/printing";
+import { parseTicketItems, parseTicketSector } from "@/lib/kitchen-ticket-row";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/cozinha")({
@@ -17,44 +23,28 @@ export const Route = createFileRoute("/cozinha")({
   component: KitchenStation,
 });
 
-type Sector = KitchenTicket["sector"];
+type Sector = KitchenSector;
 type KitchenRow = KitchenTicket & { printedAt: number | null };
 const SECTORS_KEY = "mesari-kitchen-sectors";
 const DEFAULT_SECTORS: Sector[] = ["cozinha", "bar"];
+/** A comanda única ("geral") tem cozinha e bar juntos: toda estação a recebe. */
+const withSingleTicket = (sectors: Sector[]): KitchenTicket["sector"][] => [...sectors, "geral"];
 
 function mapOrder(value: unknown): KitchenRow {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("O Supabase retornou uma comanda em formato inválido.");
   }
   const row = value as Record<string, unknown>;
-  if (row["setor"] !== "cozinha" && row["setor"] !== "bar") {
-    throw new Error(`Setor inválido recebido na comanda: ${String(row["setor"])}.`);
-  }
-  if (!Array.isArray(row["itens"]))
-    throw new Error("A comanda não contém uma lista válida de itens.");
   return {
     id: String(row["id"]),
     number: Number(row["numero"]),
     table: Number(row["mesa_numero"]),
-    sector: row["setor"],
+    sector: parseTicketSector(row["setor"]),
     waiter: typeof row["garcom_nome"] === "string" ? row["garcom_nome"] : "",
     additional: row["adicional"] === true,
     createdAt: new Date(String(row["criado_em"])).getTime(),
     printedAt: row["impresso_em"] ? new Date(String(row["impresso_em"])).getTime() : null,
-    items: row["itens"].map((value: unknown) => {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error("Um item da comanda está em formato inválido.");
-      }
-      const item = value as Record<string, unknown>;
-      return {
-        product: typeof item["produto"] === "string" ? item["produto"] : "",
-        quantity: Number(item["quantidade"]),
-        note: typeof item["observacao"] === "string" ? item["observacao"] : "",
-        ...(typeof item["valor_unitario"] === "number" && Number.isFinite(item["valor_unitario"])
-          ? { unitPrice: item["valor_unitario"] }
-          : {}),
-      };
-    }),
+    items: parseTicketItems(row["itens"]),
   };
 }
 
@@ -139,7 +129,7 @@ function KitchenStation() {
     const { data, error: queryError } = await supabase
       .from("pedidos_cozinha")
       .select("id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em")
-      .in("setor", selected)
+      .in("setor", withSingleTicket(selected))
       .order("criado_em", { ascending: false })
       .limit(30);
     if (queryError) throw queryError;
@@ -187,7 +177,7 @@ function KitchenStation() {
       config: { presence: { key: `${user.id}` } },
     });
     channelRef.current = channel;
-    for (const selected of selectedSectors) {
+    for (const selected of withSingleTicket(selectedSectors)) {
       channel.on(
         "postgres_changes",
         {
@@ -234,7 +224,7 @@ function KitchenStation() {
               .select(
                 "id,numero,mesa_numero,setor,garcom_nome,adicional,itens,criado_em,impresso_em",
               )
-              .in("setor", selectedSectors)
+              .in("setor", withSingleTicket(selectedSectors))
               .is("impresso_em", null)
               .gte("criado_em", cutoff)
               .order("criado_em", { ascending: true });

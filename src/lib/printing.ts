@@ -80,15 +80,24 @@ export type PrintRestaurant = {
   logo?: string;
 };
 
+export type KitchenSector = "cozinha" | "bar";
+
 export type KitchenTicket = {
   id: string;
   number: number;
   table: number | null;
-  sector: "cozinha" | "bar";
+  /** "geral": comanda única com o pedido inteiro; cada item traz o próprio setor. */
+  sector: KitchenSector | "geral";
   waiter: string;
   additional: boolean;
   createdAt: number;
-  items: { product: string; quantity: number; note: string; unitPrice?: number }[];
+  items: {
+    product: string;
+    quantity: number;
+    note: string;
+    unitPrice?: number;
+    sector?: KitchenSector;
+  }[];
   external?: {
     origin: "entrega" | "retirada";
     dayNumber: number;
@@ -952,6 +961,23 @@ async function receiptHtml(
   return `<!doctype html><html><head><meta charset="utf-8"><style>@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:400;src:url("${regularFont}") format("woff2")}@font-face{font-family:"IBM Plex Mono";font-style:normal;font-weight:700;src:url("${boldFont}") format("woff2")}${receiptStyles}\n@page{size:${settings.paperWidth}mm auto;margin:0}html,body{width:${settings.paperWidth}mm;margin:0;padding:0;background:#fff;color:#000}.receipt-paper{width:${settings.paperWidth}mm!important;margin:0!important;padding:3mm!important;border:0!important;border-radius:0!important;background:#fff!important;color:#000!important;box-shadow:none!important;filter:none!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}</style></head><body>${body}</body></html>`;
 }
 
+const sectorTitle: Record<KitchenSector, string> = { cozinha: "COZINHA", bar: "BAR" };
+
+/**
+ * Blocos de itens da comanda. Na comanda única ("geral") os itens saem
+ * agrupados por setor no mesmo papel, só os setores que têm itens. Todo item
+ * sai: item sem setor entra no bloco COZINHA.
+ */
+export function kitchenTicketGroups(ticket: KitchenTicket) {
+  if (ticket.sector !== "geral") return [{ title: null, items: ticket.items }];
+  return (["cozinha", "bar"] as const)
+    .map((sector) => ({
+      title: sectorTitle[sector] as string | null,
+      items: ticket.items.filter((item) => (item.sector ?? "cozinha") === sector),
+    }))
+    .filter((group) => group.items.length > 0);
+}
+
 function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
   if (ticket.external) return externalKitchenTicketHtml(ticket, settings);
   const fontSize = settings.fontSize === "small" ? 11 : settings.fontSize === "large" ? 18 : 14;
@@ -960,11 +986,15 @@ function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
     ticket.items.every(
       (item) => typeof item.unitPrice === "number" && Number.isFinite(item.unitPrice),
     );
-  const items = ticket.items
-    .map((item) => {
-      const unitPrice = item.unitPrice ?? 0;
-      return `<section class="item"><div class="item-main"><strong>${item.quantity}x&nbsp; ${escapeHtml(item.product)}</strong>${canShowPrices ? `<strong class="subtotal">${escapeHtml(money(item.quantity * unitPrice))}</strong>` : ""}</div>${canShowPrices ? `<div class="unit-price">${escapeHtml(money(unitPrice))} un.</div>` : ""}${item.note ? `<p class="note">&gt;&gt; ${escapeHtml(item.note)}</p>` : ""}</section>`;
-    })
+  const itemHtml = (item: KitchenTicket["items"][number]) => {
+    const unitPrice = item.unitPrice ?? 0;
+    return `<section class="item"><div class="item-main"><strong>${item.quantity}x&nbsp; ${escapeHtml(item.product)}</strong>${canShowPrices ? `<strong class="subtotal">${escapeHtml(money(item.quantity * unitPrice))}</strong>` : ""}</div>${canShowPrices ? `<div class="unit-price">${escapeHtml(money(unitPrice))} un.</div>` : ""}${item.note ? `<p class="note">&gt;&gt; ${escapeHtml(item.note)}</p>` : ""}</section>`;
+  };
+  const items = kitchenTicketGroups(ticket)
+    .map(
+      (group) =>
+        `${group.title ? `<div class="block">${group.title}</div>` : ""}${group.items.map(itemHtml).join("")}`,
+    )
     .join("");
   const total = canShowPrices
     ? ticket.items.reduce((sum, item) => sum + item.quantity * (item.unitPrice ?? 0), 0)
@@ -974,7 +1004,7 @@ function kitchenTicketHtml(ticket: KitchenTicket, settings: PrintSettings) {
     ticket.table === null
       ? ""
       : `<div class="table">MESA ${String(ticket.table).padStart(2, "0")}</div>`;
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize + 3}px}.sector{text-align:center;font-size:${fontSize - 2}px;font-weight:700}.table{margin:4mm 0;text-align:center;font-weight:900;font-size:${fontSize * 2}px}.flag{padding:2mm;text-align:center;font-weight:900;border:1px solid #000}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize + 1}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item strong{font-weight:900}.subtotal{white-space:nowrap}.unit-price{font-size:${fontSize - 2}px;margin-top:1mm}.total{font-size:${fontSize + 2}px;font-weight:900}.note{margin:1mm 0 0 4mm;padding:1mm;font-size:${fontSize}px;font-weight:800;background:#eee}.cut{height:12mm}</style></head><body><main><header class="header">PEDIDO #${ticket.number}</header>${barLabel}${tableLabel}${ticket.additional ? '<div class="flag">** ADICIONAL **</div>' : ""}<div class="meta">${escapeHtml(new Date(ticket.createdAt).toLocaleString("pt-BR"))}</div><div class="meta">Garçom: ${escapeHtml(ticket.waiter)}</div><div class="dash"></div>${items}${total === null ? "" : `<div class="dash"></div><div class="total">TOTAL DO PEDIDO ${escapeHtml(money(total))}</div>`}<div class="cut"></div></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize + 3}px}.sector{text-align:center;font-size:${fontSize - 2}px;font-weight:700}.table{margin:4mm 0;text-align:center;font-weight:900;font-size:${fontSize * 2}px}.flag{padding:2mm;text-align:center;font-weight:900;border:1px solid #000}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize + 1}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item strong{font-weight:900}.subtotal{white-space:nowrap}.unit-price{font-size:${fontSize - 2}px;margin-top:1mm}.total{font-size:${fontSize + 2}px;font-weight:900}.note{margin:1mm 0 0 4mm;padding:1mm;font-size:${fontSize}px;font-weight:800;background:#eee}.block{margin-top:3mm;padding:1mm 0;text-align:center;font-weight:900;font-size:${fontSize + 2}px;border-top:2px solid #000;border-bottom:2px solid #000}.cut{height:12mm}</style></head><body><main><header class="header">PEDIDO #${ticket.number}</header>${barLabel}${tableLabel}${ticket.additional ? '<div class="flag">** ADICIONAL **</div>' : ""}<div class="meta">${escapeHtml(new Date(ticket.createdAt).toLocaleString("pt-BR"))}</div><div class="meta">Garçom: ${escapeHtml(ticket.waiter)}</div><div class="dash"></div>${items}${total === null ? "" : `<div class="dash"></div><div class="total">TOTAL DO PEDIDO ${escapeHtml(money(total))}</div>`}<div class="cut"></div></main></body></html>`;
 }
 
 const deliveryChannelLabel = (channel: string) =>
@@ -1027,7 +1057,7 @@ export function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettin
   text(new Date(ticket.createdAt).toLocaleString("pt-BR"));
   text(`Garçom: ${ticket.waiter || "—"}`);
   text("-".repeat(width));
-  for (const item of ticket.items) {
+  const printItem = (item: KitchenTicket["items"][number]) => {
     const itemName = `${item.quantity}x ${item.product}`;
     if (canShowPrices) {
       const price = money(item.quantity * (item.unitPrice ?? 0));
@@ -1041,6 +1071,10 @@ export function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettin
       text(itemName, 0, true);
     }
     if (item.note) text(`>> ${item.note}`);
+  };
+  for (const group of kitchenTicketGroups(ticket)) {
+    if (group.title) text(`== ${group.title} ==`, 1, true);
+    for (const item of group.items) printItem(item);
   }
   if (canShowPrices) {
     const total = ticket.items.reduce(
