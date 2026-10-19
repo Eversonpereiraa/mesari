@@ -192,7 +192,8 @@ export function ReceiptContent({
             <div className="receipt-thanks-small">Volte sempre</div>
           </>
         )}
-        <div className="receipt-thanks-small">{restaurant.instagram || "@mesari"}</div>
+        {/* Sem Instagram do restaurante, nada: a nota é do cliente, não do sistema. */}
+        {restaurant.instagram && <div className="receipt-thanks-small">{restaurant.instagram}</div>}
       </footer>
     </article>
   );

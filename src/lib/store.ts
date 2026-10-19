@@ -1,6 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
-import { cleanCpfCnpj, cleanInstagram, cleanPhone } from "@/lib/masks";
+import {
+  cleanCpfCnpj,
+  cleanInstagram,
+  cleanPhone,
+  cpfCnpjError,
+  instagramError,
+  phoneError,
+} from "@/lib/masks";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
@@ -255,18 +262,26 @@ const mapOrderLine = (value: unknown): OrderLine => {
   };
 };
 
+/** Primeiro texto não vazio entre as chaves (o formato de vendas.itens mudou com o tempo). */
+const firstText = (row: DatabaseRow, keys: string[]) =>
+  keys.map((key) => stringValue(row[key]).trim()).find(Boolean) ?? "";
+
+/**
+ * Item de vendas.itens. fechar_conta e concluir_pedido_externo gravam "produto" e
+ * "garcom"; vendas antigas usam "produto_nome"/"garcom_nome" ou "name"/"waiter".
+ */
 const mapSaleLine = (value: unknown): OrderLine => {
   const line = asRow(value);
   const createdAt = stringValue(line["criado_em"]);
   return {
     id: stringValue(line["id"]),
     itemId: stringValue(line["produto_id"] ?? line["itemId"]),
-    name: stringValue(line["produto_nome"] ?? line["name"]),
+    name: firstText(line, ["produto", "produto_nome", "nome", "name"]),
     qty: Number(line["quantidade"] ?? line["qty"]),
     price: Number(line["valor_unitario"] ?? line["price"]),
     note: stringValue(line["observacao"] ?? line["note"]),
     at: createdAt ? new Date(createdAt).getTime() : Number(line["at"] ?? 0),
-    waiter: stringValue(line["garcom_nome"] ?? line["waiter"]),
+    waiter: firstText(line, ["garcom", "garcom_nome", "waiter"]),
     waiterId: stringValue(line["garcom_id"] ?? line["waiterId"]) || undefined,
   };
 };
@@ -274,12 +289,18 @@ const mapSaleLine = (value: unknown): OrderLine => {
 const mapClosing = (value: unknown): Closing => {
   const row = asRow(value);
   const origin = row["origem"];
+  // Sem garçom no item (ex.: delivery), vale quem atendeu/fechou a venda.
+  const saleWaiter = firstText(row, ["garcom_nome", "fechado_por_nome"]);
   return {
     id: stringValue(row["id"]),
     at: new Date(stringValue(row["fechada_em"])).getTime(),
     table: Number(row["mesa_numero"] ?? 0),
     saleNumber: Number(row["numero"]),
-    lines: Array.isArray(row["itens"]) ? row["itens"].map(mapSaleLine) : [],
+    lines: Array.isArray(row["itens"])
+      ? row["itens"]
+          .map(mapSaleLine)
+          .map((line) => (line.waiter || !saleWaiter ? line : { ...line, waiter: saleWaiter }))
+      : [],
     subtotal: Number(row["subtotal"]),
     serviceCharge: Number(row["taxa_servico"]),
     total: Number(row["total"]),
@@ -908,15 +929,21 @@ export const actions = {
     if (error) throw error;
   },
   async updateRestaurant(restaurant: State["restaurant"]) {
+    // Mesma regra das máscaras: nada de telefone incompleto ou documento inválido no banco.
+    const invalid =
+      phoneError(restaurant.phone) ??
+      cpfCnpjError(restaurant.cnpj) ??
+      instagramError(restaurant.instagram);
+    if (invalid) throw new Error(invalid);
     return writeRemote(async () => {
       const { error } = await supabase
         .from("restaurante")
         .update({
           nome: restaurant.name,
-          telefone: restaurant.phone,
+          telefone: cleanPhone(restaurant.phone),
           endereco: restaurant.address,
-          cnpj: restaurant.cnpj,
-          instagram: restaurant.instagram,
+          cnpj: cleanCpfCnpj(restaurant.cnpj),
+          instagram: cleanInstagram(restaurant.instagram),
           logo_url: restaurant.logo,
           taxa_servico_ativa: restaurant.serviceChargeEnabled,
           taxa_servico_percentual: restaurant.serviceChargePercent,

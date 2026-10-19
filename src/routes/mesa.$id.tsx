@@ -79,7 +79,7 @@ function Mesa() {
       }
     >
       <div className="px-4 pt-4">
-        <StatusTag s={st} />
+        <StatusTag s={st} variant="garcom" />
       </div>
       {orderSent && (
         <div

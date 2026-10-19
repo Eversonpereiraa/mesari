@@ -59,16 +59,38 @@ const statusMap: Record<Status, { label: string; cls: string }> = {
   ocupada: { label: "Ocupada", cls: "bg-busy text-white" },
   conta: { label: "Conta solicitada", cls: "bg-bill text-white" },
 };
-export function StatusTag({ s, className }: { s: Status; className?: string }) {
+/** Rótulos curtos (app do garçom e cards do caixa): cabem no card sem cortar nada. */
+const shortLabels: Record<Status, string> = {
+  livre: "Livre",
+  ocupada: "Ocupada",
+  conta: "Pedindo conta",
+};
+
+export function StatusTag({
+  s,
+  className,
+  variant = "default",
+  short = variant === "garcom",
+}: {
+  s: Status;
+  className?: string;
+  /** "garcom": rótulo curto e selo compacto, que nunca é cortado. */
+  variant?: "default" | "garcom";
+  /** Rótulo curto ("Pedindo conta") no tamanho normal, para cards apertados. */
+  short?: boolean;
+}) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap",
+        "inline-flex shrink-0 items-center rounded-full font-bold whitespace-nowrap",
+        variant === "garcom"
+          ? "px-2 py-0.5 text-[11px] leading-4 tracking-tight @max-[96px]:px-1.5 @max-[96px]:text-[10px]"
+          : "px-2.5 py-1 text-xs",
         statusMap[s].cls,
         className,
       )}
     >
-      {statusMap[s].label}
+      {short ? shortLabels[s] : statusMap[s].label}
     </span>
   );
 }
@@ -319,7 +341,11 @@ export function AppShell({
   );
 }
 
-/** Faixa do modo demonstração (?demo=1): tudo imprime na impressora virtual. */
+/**
+ * Modo demonstração (?demo=1): tudo imprime na impressora virtual, que abre numa
+ * janela lateral. Sem faixa na tela, para os prints e a apresentação saírem limpos;
+ * a faixa só aparece se o navegador bloquear a janela. Para sair: ?demo=0.
+ */
 function DemoModeBanner() {
   const [active, setActive] = useState(isDemoSimulation);
   const [blocked, setBlocked] = useState(false);
@@ -329,7 +355,7 @@ function DemoModeBanner() {
     if (new URLSearchParams(window.location.search).get("janela") === "1") return;
     setBlocked(!openVirtualPrinterWindowOnce());
   }, [active]);
-  if (!active) return null;
+  if (!active || !blocked) return null;
   return (
     <div
       role="status"

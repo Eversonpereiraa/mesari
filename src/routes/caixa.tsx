@@ -291,7 +291,7 @@ function Caixa() {
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-2">
-                    <StatusTag s={st} />
+                    <StatusTag s={st} short />
                     {st === "livre" ? (
                       <span
                         aria-label="Mesa livre"
@@ -301,7 +301,7 @@ function Caixa() {
                         <Armchair className="h-4 w-4" />
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                         {itemCount} {itemCount === 1 ? "item" : "itens"}
                       </span>
                     )}

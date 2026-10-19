@@ -67,7 +67,7 @@ function Garcom() {
         </nav>
       }
     >
-      <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2 p-3 sm:grid-cols-3">
         {tables.map((t) => {
           const st = tableStatus(s, t.id);
           const tone =
@@ -78,7 +78,8 @@ function Garcom() {
               to="/mesa/$id"
               params={{ id: t.id }}
               className={cn(
-                "min-h-[148px] rounded-[14px] border border-transparent p-4 shadow-sm transition duration-150 active:scale-[0.98]",
+                // @container: o selo encolhe quando o card fica estreito (3 colunas no celular).
+                "@container min-h-[148px] rounded-[14px] border border-transparent p-3 shadow-sm transition duration-150 active:scale-[0.98]",
                 tone,
                 st === "conta" && "table-requested",
               )}
@@ -89,7 +90,7 @@ function Garcom() {
                 </div>
                 <span className="text-[11px] text-muted-foreground">{t.seats} lug.</span>
               </div>
-              <StatusTag s={st} className="mt-2 max-w-full truncate text-[11px]" />
+              <StatusTag s={st} variant="garcom" className="mt-2" />
               <div className="num mt-2 truncate text-sm font-bold text-ink">
                 {st === "livre" ? (
                   <span aria-label="Mesa livre" title="Mesa livre">

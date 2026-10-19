@@ -14,6 +14,7 @@ import { errorMessage, useStore } from "@/lib/store";
 import { mapStationTicket as mapTicket, type StationTicket } from "@/lib/kitchen-ticket-row";
 import { trackKitchenStation, untrackKitchenStation } from "@/lib/kitchen-presence";
 import { Btn } from "@/components/ui-kit";
+import { demoRequested } from "@/lib/demo-mode";
 
 type TicketRow = StationTicket;
 const FAILED_KEY = "mesari-unprinted-kitchen-orders";
@@ -329,9 +330,12 @@ export function KitchenPrintStation() {
 
   return (
     <>
-      <div className="border-b bg-muted/60 px-4 py-2 text-center text-xs text-muted-foreground">
-        Mantenha o Mesari aberto neste computador para imprimir os pedidos
-      </div>
+      {/* No modo demonstração (?demo=1) a faixa some para as telas saírem limpas nos prints. */}
+      {!demoRequested() && (
+        <div className="border-b bg-muted/60 px-4 py-2 text-center text-xs text-muted-foreground">
+          Mantenha o Mesari aberto neste computador para imprimir os pedidos
+        </div>
+      )}
       {warning && (
         <div
           role="alert"
@@ -368,19 +372,21 @@ export function KitchenPrintStation() {
       <div className="sr-only" aria-live="polite">
         {printer.connected ? "Impressora pronta" : "Impressora desconectada"}
       </div>
-      <div
-        className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : settings.printerDeviceId || settings.connectionType ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
-      >
-        {printer.connected ? (
-          <span className="font-semibold">Impressora pronta · {printer.name}</span>
-        ) : settings.printerDeviceId || settings.connectionType ? (
-          <span className="font-semibold">Reconectando...</span>
-        ) : (
-          <Link to="/impressao" className="font-semibold underline">
-            Impressora desconectada
-          </Link>
-        )}
-      </div>
+      {!demoRequested() && (
+        <div
+          className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : settings.printerDeviceId || settings.connectionType ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
+        >
+          {printer.connected ? (
+            <span className="font-semibold">Impressora pronta · {printer.name}</span>
+          ) : settings.printerDeviceId || settings.connectionType ? (
+            <span className="font-semibold">Reconectando...</span>
+          ) : (
+            <Link to="/impressao" className="font-semibold underline">
+              Impressora desconectada
+            </Link>
+          )}
+        </div>
+      )}
       {recent.length > 0 && (
         <details className="border-b px-4 py-2 text-xs text-muted-foreground">
           <summary className="cursor-pointer font-semibold">

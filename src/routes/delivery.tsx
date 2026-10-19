@@ -30,8 +30,19 @@ import {
 } from "@/lib/masks";
 import { usePrompt } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
-import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
+import { brl, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
 import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import {
+  EXTERNAL_ORDER_BOARD,
+  EXTERNAL_ORDER_MESSAGES,
+  EXTERNAL_ORDER_STATUS,
+  EXTERNAL_ORDER_STATUS_LABEL,
+  belongsToColumn,
+  isFinishedExternalOrder,
+  nextExternalOrderStatus,
+  parseExternalOrderStatus,
+  type ExternalOrderStatus,
+} from "@/lib/external-order-status";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/delivery")({
@@ -45,7 +56,7 @@ export const Route = createFileRoute("/delivery")({
 });
 
 type Channel = "whatsapp" | "telefone" | "papel";
-type OrderStatus = "novo" | "em_preparo" | "pronto" | "saiu" | "entregue" | "cancelado";
+type OrderStatus = ExternalOrderStatus;
 type OrderType = "entrega" | "retirada";
 type ExtraItem = { id: string; name: string; price: number; quantity: number; note: string };
 type DeliveryOrder = {
@@ -71,15 +82,6 @@ const channelLabel: Record<Channel, string> = {
   telefone: "Telefone",
   papel: "Papel",
 };
-const statusLabel: Record<OrderStatus, string> = {
-  novo: "Novo",
-  em_preparo: "Em preparo",
-  pronto: "Pronto",
-  saiu: "Saiu",
-  entregue: "Entregue",
-  cancelado: "Cancelado",
-};
-const stageOrder: OrderStatus[] = ["novo", "em_preparo", "pronto", "saiu"];
 const paymentOptions: { value: Exclude<PaymentMethod, "nao_informado">; label: string }[] = [
   { value: "dinheiro", label: "Dinheiro" },
   { value: "pix", label: "Pix" },
@@ -104,26 +106,22 @@ function numeric(value: unknown, fallback = 0) {
   return Number.isFinite(result) ? result : fallback;
 }
 
-function mapOrder(value: unknown): DeliveryOrder {
+/**
+ * Linha de pedidos_externos. Um registro estranho (tipo, origem ou status
+ * desconhecido) fica de fora do quadro e vai para o console, sem derrubar a lista.
+ */
+function mapOrder(value: unknown): DeliveryOrder | null {
   const row = asRecord(value);
   const type = row["tipo"];
   const channel = row["canal"];
-  const status = row["status"];
-  if (type !== "entrega" && type !== "retirada") {
-    throw new Error("O pedido de delivery retornou um tipo inválido.");
-  }
-  if (channel !== "whatsapp" && channel !== "telefone" && channel !== "papel") {
-    throw new Error("O pedido de delivery retornou uma origem inválida.");
-  }
+  const status = parseExternalOrderStatus(row["status"]);
   if (
-    status !== "novo" &&
-    status !== "em_preparo" &&
-    status !== "pronto" &&
-    status !== "saiu" &&
-    status !== "entregue" &&
-    status !== "cancelado"
+    (type !== "entrega" && type !== "retirada") ||
+    (channel !== "whatsapp" && channel !== "telefone" && channel !== "papel") ||
+    status === null
   ) {
-    throw new Error(`Status de pedido de delivery inválido: ${String(status)}.`);
+    console.error("Pedido de delivery ignorado: dados inválidos.", row);
+    return null;
   }
   return {
     id: String(row["id"] ?? ""),
@@ -191,6 +189,8 @@ function Delivery() {
   const [formError, setFormError] = useState("");
   const [triedSave, setTriedSave] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  /** Pedidos com mudança de status em andamento: evita clique duplo. */
+  const pendingOrders = useRef(new Set<string>());
 
   const loadOrders = useCallback(async () => {
     const { data, error } = await supabase
@@ -199,7 +199,9 @@ function Delivery() {
       .order("criado_em", { ascending: false })
       .limit(300);
     if (error) throw error;
-    const next = (data ?? []).map(mapOrder);
+    const next = (data ?? [])
+      .map(mapOrder)
+      .filter((order): order is DeliveryOrder => order !== null);
     setOrders(next);
     setListError("");
     setLoadingOrders(false);
@@ -217,7 +219,8 @@ function Delivery() {
     let active = true;
     void loadOrders().catch((cause: unknown) => {
       if (!active) return;
-      setListError(errorMessage(cause));
+      console.error("Falha ao carregar pedidos de delivery.", cause);
+      setListError(EXTERNAL_ORDER_MESSAGES.loadFailed);
       setLoadingOrders(false);
     });
     const realtime = supabase
@@ -233,15 +236,17 @@ function Delivery() {
               return;
             }
             const order = mapOrder(payload.new);
+            if (!order) return;
             setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)]);
           } catch (cause) {
-            setListError(errorMessage(cause));
+            console.error("Falha na atualização automática do delivery.", cause);
           }
         },
       )
       .subscribe((status, cause) => {
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          setListError(cause ? errorMessage(cause) : "Falha na atualização em tempo real.");
+          if (cause) console.error("Falha na atualização automática do delivery.", cause);
+          setListError(EXTERNAL_ORDER_MESSAGES.liveFailed);
         }
       });
     return () => {
@@ -378,20 +383,31 @@ function Delivery() {
             setNotice(`Pedido #${createdOrder.number} enviado para impressão`);
           }
         })
-        .catch((cause: unknown) => setListError(errorMessage(cause)));
+        .catch((cause: unknown) => {
+          console.error("Falha ao recarregar pedidos de delivery.", cause);
+          setListError(EXTERNAL_ORDER_MESSAGES.loadFailed);
+        });
     } catch (cause) {
-      setFormError(errorMessage(cause));
+      console.error("Falha ao salvar pedido de delivery.", cause);
+      setFormError(EXTERNAL_ORDER_MESSAGES.saveFailed);
     } finally {
       setBusy(false);
     }
   };
 
+  /**
+   * Muda o status no banco e só depois mexe na tela. Nunca imprime: a comanda do
+   * pedido sai uma vez, quando ele é criado. Com erro (ex.: sem internet) o card
+   * fica onde estava e o erro técnico vai só para o console.
+   */
   const runOrderAction = async (
     order: DeliveryOrder,
-    status: OrderStatus,
-    courier: string | null = "",
+    status: Exclude<OrderStatus, typeof EXTERNAL_ORDER_STATUS.entregue>,
+    courier: string | null = null,
     reason: string | null = null,
   ) => {
+    if (pendingOrders.current.has(order.id)) return false;
+    pendingOrders.current.add(order.id);
     setBusy(true);
     setListError("");
     try {
@@ -402,24 +418,37 @@ function Delivery() {
         p_motivo: reason,
       });
       if (error) throw error;
-      if (status === "cancelado") toast.success(`Pedido #${order.number} cancelado.`);
-      await loadOrders().catch((cause: unknown) => setListError(errorMessage(cause)));
-    } catch (cause) {
-      setListError(errorMessage(cause));
-      if (status === "cancelado") {
-        toast.error(`Não foi possível cancelar o pedido: ${errorMessage(cause)}`);
+      setOrders((current) =>
+        current.map((entry) =>
+          entry.id === order.id ? { ...entry, status, ...(courier ? { courier } : {}) } : entry,
+        ),
+      );
+      if (status === EXTERNAL_ORDER_STATUS.cancelado) {
+        toast.success(`Pedido #${order.number} cancelado.`);
       }
+      void loadOrders().catch((cause: unknown) =>
+        console.error("Falha ao recarregar pedidos de delivery.", cause),
+      );
+      return true;
+    } catch (cause) {
+      console.error(`Falha ao mudar o pedido #${order.number} para "${status}".`, cause);
+      toast.error(
+        status === EXTERNAL_ORDER_STATUS.cancelado
+          ? EXTERNAL_ORDER_MESSAGES.cancelFailed
+          : EXTERNAL_ORDER_MESSAGES.statusFailed,
+      );
+      return false;
     } finally {
+      pendingOrders.current.delete(order.id);
       setBusy(false);
     }
   };
 
   const advanceOrder = async (order: DeliveryOrder) => {
-    const index = stageOrder.indexOf(order.status);
-    const next = stageOrder[index + 1];
-    if (!next) return;
-    let courier: string | null = "";
-    if (next === "saiu") {
+    const next = nextExternalOrderStatus(order.status, order.type);
+    if (!next || next === EXTERNAL_ORDER_STATUS.entregue) return;
+    let courier: string | null = null;
+    if (next === EXTERNAL_ORDER_STATUS.saiu) {
       const answer = await pedirTexto({
         title: `Pedido #${order.number} saiu para entrega`,
         description: "Informe o nome do entregador, se desejar.",
@@ -429,9 +458,9 @@ function Delivery() {
         confirmText: "Confirmar saída",
       });
       if (answer === null) return;
-      courier = answer.trim();
+      courier = answer.trim() || null;
     }
-    void runOrderAction(order, next, courier);
+    await runOrderAction(order, next, courier);
   };
 
   const cancelOrder = async (order: DeliveryOrder) => {
@@ -459,7 +488,11 @@ function Delivery() {
       variant: "danger",
     });
     if (reason === null) return;
-    await runOrderAction(order, "cancelado", null, reason);
+    if (!reason.trim()) {
+      toast.error(EXTERNAL_ORDER_MESSAGES.cancelNeedsReason);
+      return;
+    }
+    await runOrderAction(order, EXTERNAL_ORDER_STATUS.cancelado, null, reason.trim());
   };
 
   const completeOrder = async (payments: PaymentInput[]) => {
@@ -474,10 +507,22 @@ function Delivery() {
           : {}),
       })),
     });
-    if (error) throw error;
+    if (error) {
+      console.error(`Falha ao concluir o pedido #${paymentOrder.number}.`, error);
+      // A janela de pagamento mostra esta mensagem e continua aberta.
+      throw new Error(EXTERNAL_ORDER_MESSAGES.completeFailed);
+    }
+    const done = paymentOrder;
     setPaymentOrder(null);
-    await loadOrders();
-    setNotice(`Pedido #${paymentOrder.number} concluído e recebido.`);
+    setOrders((current) =>
+      current.map((entry) =>
+        entry.id === done.id ? { ...entry, status: EXTERNAL_ORDER_STATUS.entregue } : entry,
+      ),
+    );
+    setNotice(`Pedido #${done.number} concluído e recebido.`);
+    void loadOrders().catch((cause: unknown) =>
+      console.error("Falha ao recarregar pedidos de delivery.", cause),
+    );
   };
 
   const addExtra = (event: React.FormEvent<HTMLFormElement>) => {
@@ -550,7 +595,8 @@ function Delivery() {
       await printKitchenTicket(ticket, getPrintSettings(), false);
       setNotice(`Pedido #${order.number} enviado para reimpressão.`);
     } catch (cause) {
-      setListError(`Não foi possível reimprimir o pedido #${order.number}: ${errorMessage(cause)}`);
+      console.error(`Falha ao reimprimir o pedido #${order.number}.`, cause);
+      setListError(EXTERNAL_ORDER_MESSAGES.reprintFailed(order.number));
     } finally {
       setBusy(false);
     }
@@ -572,14 +618,12 @@ function Delivery() {
     end.setDate(end.getDate() + 1);
     return orders.filter(
       (order) =>
-        (order.status === "entregue" || order.status === "cancelado") &&
+        isFinishedExternalOrder(order.status) &&
         order.createdAt >= start.getTime() &&
         order.createdAt < end.getTime(),
     );
   }, [orders]);
-  const activeOrders = orders.filter(
-    (order) => order.status !== "entregue" && order.status !== "cancelado",
-  );
+  const activeOrders = orders.filter((order) => !isFinishedExternalOrder(order.status));
 
   if (snapshot.user?.role !== "caixa") return null;
 
@@ -659,15 +703,16 @@ function Delivery() {
           ) : (
             <div className="overflow-x-auto pb-2">
               <div className="grid min-w-[1050px] grid-cols-4 gap-3">
-                {stageOrder.map((stage) => {
-                  const stageOrders = activeOrders.filter(
-                    (order) =>
-                      order.status === stage && (stage !== "saiu" || order.type === "entrega"),
+                {EXTERNAL_ORDER_BOARD.map((stage) => {
+                  const stageOrders = activeOrders.filter((order) =>
+                    belongsToColumn(order.status, order.type, stage),
                   );
                   return (
                     <section key={stage} className="min-h-[60vh] rounded-xl bg-muted/50 p-3">
                       <header className="mb-3 flex items-center justify-between">
-                        <h2 className="font-display font-bold text-ink">{statusLabel[stage]}</h2>
+                        <h2 className="font-display font-bold text-ink">
+                          {EXTERNAL_ORDER_STATUS_LABEL[stage]}
+                        </h2>
                         <span className="rounded-full bg-card px-2 py-0.5 text-xs font-bold text-muted-foreground">
                           {stageOrders.length}
                         </span>
@@ -1026,9 +1071,8 @@ function OrderCard({
   onReprint: () => void;
   onCancel: () => void;
 }) {
-  const index = stageOrder.indexOf(order.status);
-  const nextStatus = stageOrder[index + 1];
-  const isFinalized = order.status === "entregue" || order.status === "cancelado";
+  const nextStatus = nextExternalOrderStatus(order.status, order.type);
+  const isFinalized = isFinishedExternalOrder(order.status);
   return (
     <article className="rounded-xl border bg-card p-4 shadow-sm">
       <header className="flex items-start justify-between gap-2">
@@ -1062,7 +1106,7 @@ function OrderCard({
         )}
         <div className="mt-3 flex items-center justify-between">
           <span className="text-xs font-semibold text-muted-foreground">
-            {statusLabel[order.status]}
+            {EXTERNAL_ORDER_STATUS_LABEL[order.status]}
           </span>
           <strong className="font-display text-lg font-extrabold text-ink">
             {brl(order.total)}
@@ -1075,12 +1119,14 @@ function OrderCard({
       <div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
         {nextStatus && (
           <Btn size="sm" disabled={busy} onClick={() => onAdvance(order)}>
-            {nextStatus === "saiu" ? (
+            {nextStatus === EXTERNAL_ORDER_STATUS.saiu ? (
               <Bike className="h-4 w-4" />
             ) : (
               <PackageCheck className="h-4 w-4" />
             )}
-            {nextStatus === "saiu" ? "Saiu" : `Avançar: ${statusLabel[nextStatus]}`}
+            {nextStatus === EXTERNAL_ORDER_STATUS.saiu
+              ? EXTERNAL_ORDER_STATUS_LABEL.saiu
+              : `Avançar: ${EXTERNAL_ORDER_STATUS_LABEL[nextStatus]}`}
           </Btn>
         )}
         {!isFinalized && (

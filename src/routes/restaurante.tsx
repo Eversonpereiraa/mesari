@@ -5,6 +5,8 @@ import { actions, refreshData, useStore, type StaffMember } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { useConfirm } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
+import { DemoSeedPanel } from "@/components/demo-seed-panel";
+import { demoRequested } from "@/lib/demo-mode";
 import {
   CnpjCpfInput,
   InstagramInput,
@@ -382,6 +384,7 @@ function Restaurante() {
             </div>
           </section>
         )}
+        {role === "caixa" && tab === "dados" && demoRequested() && <DemoSeedPanel />}
       </div>
       {staffDraft && (
         <div
