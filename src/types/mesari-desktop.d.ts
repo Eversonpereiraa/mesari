@@ -32,5 +32,7 @@ interface Window {
       widthMm: number,
       restaurantName?: string,
     ): Promise<{ ok: boolean; error?: string }>;
+    /** Abre um link (ex.: wa.me) fora do app. Ausente em versões antigas do desktop. */
+    openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
   };
 }

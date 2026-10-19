@@ -35,4 +35,6 @@ contextBridge.exposeInMainWorld("mesariDesktop", {
     restaurantName?: string,
   ): Promise<{ ok: boolean; error?: string }> =>
     ipcRenderer.invoke("mesari:test-print", { printerName, widthMm, restaurantName }),
+  openExternal: (url: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke("mesari:open-external", url),
 });

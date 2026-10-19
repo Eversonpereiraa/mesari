@@ -74,7 +74,7 @@ vi.mock("@/lib/store", async (importOriginal) => {
   const state = {
     user: { id: "u1", username: "caixa", name: "Caixa", role: "caixa" },
     loading: false,
-    restaurant: { deliveryFee: 6 },
+    restaurant: { deliveryFee: 6, name: "Sabor do Agreste" },
     categories: [],
     items: [],
   } as unknown as State;
@@ -83,11 +83,18 @@ vi.mock("@/lib/store", async (importOriginal) => {
 
 import { Route } from "@/routes/delivery";
 import { SystemDialogProvider } from "@/components/system-dialog-provider";
+import { resetNotifiedForTests } from "@/lib/whatsapp-notify";
 
 const DeliveryPage = (Route as unknown as { options: { component: ComponentType } }).options
   .component;
 
-function order(id: string, numero: number, tipo: "entrega" | "retirada", status: string) {
+function order(
+  id: string,
+  numero: number,
+  tipo: "entrega" | "retirada",
+  status: string,
+  telefone = "",
+) {
   return {
     id,
     numero_dia: numero,
@@ -95,7 +102,8 @@ function order(id: string, numero: number, tipo: "entrega" | "retirada", status:
     canal: "whatsapp",
     status,
     cliente_nome: `Cliente ${numero}`,
-    telefone: "",
+    telefone,
+    pagamento_previsto: { forma: "pix", pago: false, troco_para: null },
     endereco: tipo === "entrega" ? "Rua A, 1" : "",
     observacao: "",
     subtotal: 30,
@@ -127,6 +135,9 @@ async function renderBoard() {
 }
 
 beforeEach(() => {
+  localStorage.clear();
+  resetNotifiedForTests();
+  delete (window as { mesariDesktop?: unknown }).mesariDesktop;
   h.db.rows = [];
   h.db.offline = false;
   h.rpc.mockClear();
@@ -247,5 +258,80 @@ describe("fluxo de status do delivery", () => {
       }),
     );
     await waitFor(() => expect(screen.queryByText("#17")).toBeNull());
+  });
+});
+
+describe("aviso ao cliente pelo WhatsApp", () => {
+  const phone = "81997218844";
+
+  it("entrega: ao sair, oferece avisar; abre wa.me em nova aba e marca Cliente avisado", async () => {
+    h.db.rows = [order("w1", 21, "entrega", "pronto", phone)];
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await renderBoard();
+
+    fireEvent.click(card(21).getByRole("button", { name: /Saiu para entrega/ }));
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirmar saída" }));
+    await waitFor(() => expect(columnOf(21)).toBe("Saiu para entrega"));
+
+    // Logo em seguida: faixa com o botão destacado, e o botão também no card.
+    const banner = await screen.findByText(/Pedido #21 saiu para entrega\./);
+    expect(banner.closest("[role=status]")).not.toBeNull();
+    expect(card(21).queryByText("Cliente avisado")).toBeNull();
+    fireEvent.click(card(21).getByRole("button", { name: /Avisar cliente no WhatsApp/ }));
+
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    const [url, target] = open.mock.calls[0]!;
+    expect(String(url)).toMatch(/^https:\/\/wa\.me\/5581997218844\?text=/);
+    expect(decodeURIComponent(String(url).split("?text=")[1]!)).toBe(
+      "Olá, Cliente 21! Seu pedido #21 do Sabor do Agreste saiu para entrega. Total: R$ 36,00. Pagamento: Pix.",
+    );
+    expect(target).toBe("_blank");
+    expect(await card(21).findByText("Cliente avisado")).toBeInTheDocument();
+    expect(screen.queryByText(/Pedido #21 saiu para entrega\./)).toBeNull();
+    open.mockRestore();
+  });
+
+  it("retirada pronta: Avisar que está pronto, nunca saiu para entrega", async () => {
+    h.db.rows = [order("w2", 22, "retirada", "preparo", phone)];
+    await renderBoard();
+    fireEvent.click(card(22).getByRole("button", { name: /Avançar: Pronto/ }));
+    await waitFor(() => expect(columnOf(22)).toBe("Pronto"));
+
+    expect(card(22).getByRole("button", { name: /Avisar que está pronto/ })).toBeInTheDocument();
+    expect(screen.getByText(/Pedido #22 está pronto para retirada\./)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Avisar cliente no WhatsApp/ })).toBeNull();
+    expect(screen.queryByText(/saiu para entrega\./)).toBeNull();
+  });
+
+  it("em preparo: botão discreto Avisar: pedido confirmado", async () => {
+    h.db.rows = [order("w3", 23, "entrega", "preparo", phone)];
+    await renderBoard();
+    expect(card(23).getByRole("button", { name: /Avisar: pedido confirmado/ })).toBeInTheDocument();
+  });
+
+  it("pedido sem telefone não mostra botão de WhatsApp", async () => {
+    h.db.rows = [
+      order("w4", 24, "entrega", "saiu"),
+      order("w5", 25, "retirada", "pronto"),
+      order("w6", 26, "entrega", "preparo"),
+    ];
+    await renderBoard();
+    expect(screen.queryByRole("button", { name: /Avisar/ })).toBeNull();
+  });
+
+  it("no app desktop abre pelo sistema (openExternal), nunca dentro da janela", async () => {
+    const openExternal = vi.fn(async (_url: string) => ({ ok: true }));
+    (window as { mesariDesktop?: unknown }).mesariDesktop = { isDesktop: true, openExternal };
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    h.db.rows = [order("w7", 27, "retirada", "pronto", phone)];
+    await renderBoard();
+
+    fireEvent.click(card(27).getByRole("button", { name: /Avisar que está pronto/ }));
+    await waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
+    expect(openExternal.mock.calls[0]![0]).toMatch(/^https:\/\/wa\.me\/5581997218844\?text=/);
+    expect(open).not.toHaveBeenCalled();
+    expect(await card(27).findByText("Cliente avisado")).toBeInTheDocument();
+    open.mockRestore();
   });
 });

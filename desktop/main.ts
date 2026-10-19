@@ -892,6 +892,21 @@ function registerIpcHandlers() {
     log("Configurações do aplicativo atualizadas.");
     return settings;
   });
+  // Abre fora do app só links do WhatsApp (aviso ao cliente do delivery).
+  registerHandler("mesari:open-external", async (_event, value) => {
+    try {
+      const target = new URL(String(value));
+      const allowed = ["wa.me", "api.whatsapp.com"];
+      if (target.protocol !== "https:" || !allowed.includes(target.hostname)) {
+        return { ok: false, error: "Link externo não permitido." };
+      }
+      await shell.openExternal(target.toString());
+      return { ok: true };
+    } catch (cause) {
+      log("Falha ao abrir link externo", cause);
+      return { ok: false, error: "Não foi possível abrir o WhatsApp." };
+    }
+  });
   registerHandler("mesari:forget-direct-device", (_event, value) => {
     if (value !== "serial" && value !== "usb") {
       throw new Error("Tipo de conexão direta inválido.");

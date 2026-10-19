@@ -6,6 +6,7 @@ import {
   Check,
   Clock3,
   CreditCard,
+  MessageCircle,
   PackageCheck,
   Plus,
   Printer,
@@ -43,6 +44,17 @@ import {
   parseExternalOrderStatus,
   type ExternalOrderStatus,
 } from "@/lib/external-order-status";
+import {
+  WHATSAPP_NOTICE_BUTTON,
+  markNotified,
+  noticeForStatus,
+  openExternalLink,
+  wasNotified,
+  whatsappLink,
+  whatsappMessage,
+  type WhatsappNotice,
+} from "@/lib/whatsapp-notify";
+import { isValidPhone } from "@/lib/masks";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/delivery")({
@@ -145,7 +157,7 @@ function mapOrder(value: unknown): DeliveryOrder | null {
 function paymentData(order: DeliveryOrder) {
   const raw = asRecord(order.raw["pagamento_previsto"]);
   const forma = raw["forma"];
-  const payment =
+  const payment: Exclude<PaymentMethod, "nao_informado"> | null =
     forma === "dinheiro" || forma === "pix" || forma === "credito" || forma === "debito"
       ? forma
       : null;
@@ -165,6 +177,12 @@ function Delivery() {
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [listError, setListError] = useState("");
   const [notice, setNotice] = useState("");
+  /** Logo depois de avançar para "Saiu"/"Pronto": oferece avisar o cliente. */
+  const [noticePrompt, setNoticePrompt] = useState<{
+    orderId: string;
+    kind: WhatsappNotice;
+  } | null>(null);
+  const [, setNotifiedVersion] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [showFinalized, setShowFinalized] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState<DeliveryOrder | null>(null);
@@ -426,6 +444,12 @@ function Delivery() {
       if (status === EXTERNAL_ORDER_STATUS.cancelado) {
         toast.success(`Pedido #${order.number} cancelado.`);
       }
+      const kind = noticeForStatus(status, order.type);
+      setNoticePrompt(
+        kind && kind !== "confirmado" && isValidPhone(order.phone)
+          ? { orderId: order.id, kind }
+          : null,
+      );
       void loadOrders().catch((cause: unknown) =>
         console.error("Falha ao recarregar pedidos de delivery.", cause),
       );
@@ -462,6 +486,33 @@ function Delivery() {
     }
     await runOrderAction(order, next, courier);
   };
+
+  /** Abre o WhatsApp do cliente com a mensagem pronta e marca "Cliente avisado". */
+  const notifyCustomer = async (order: DeliveryOrder, kind: WhatsappNotice) => {
+    const text = whatsappMessage(
+      kind,
+      { ...order, payment: paymentData(order) },
+      snapshot.restaurant.name,
+    );
+    const link = whatsappLink(order.phone, text);
+    if (!link) {
+      toast.error("O telefone deste cliente não é válido para o WhatsApp.");
+      return;
+    }
+    try {
+      await openExternalLink(link);
+      markNotified(order.id, kind);
+      setNotifiedVersion((version) => version + 1);
+      setNoticePrompt((current) => (current?.orderId === order.id ? null : current));
+    } catch (cause) {
+      console.error(`Falha ao abrir o WhatsApp do pedido #${order.number}.`, cause);
+      toast.error("Não foi possível abrir o WhatsApp. Tente novamente.");
+    }
+  };
+
+  const promptedOrder = noticePrompt
+    ? orders.find((order) => order.id === noticePrompt.orderId)
+    : undefined;
 
   const cancelOrder = async (order: DeliveryOrder) => {
     const reason = await pedirTexto({
@@ -672,6 +723,32 @@ function Delivery() {
               </button>
             </div>
           )}
+          {noticePrompt && promptedOrder && (
+            <div
+              role="status"
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"
+            >
+              <span className="font-semibold">
+                Pedido #{promptedOrder.number}{" "}
+                {noticePrompt.kind === "saiu" ? "saiu para entrega." : "está pronto para retirada."}
+              </span>
+              <Btn
+                size="sm"
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                onClick={() => void notifyCustomer(promptedOrder, noticePrompt.kind)}
+              >
+                <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON[noticePrompt.kind]}
+              </Btn>
+              <button
+                type="button"
+                className="ml-auto"
+                aria-label="Fechar aviso do WhatsApp"
+                onClick={() => setNoticePrompt(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           {listError && (
             <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
               {listError}
@@ -692,6 +769,7 @@ function Delivery() {
                   onComplete={setPaymentOrder}
                   onReprint={() => void reprintOrder(order)}
                   onCancel={() => cancelOrder(order)}
+                  onNotify={(kind) => void notifyCustomer(order, kind)}
                 />
               ))}
               {finalizedToday.length === 0 && (
@@ -727,6 +805,7 @@ function Delivery() {
                             onComplete={setPaymentOrder}
                             onReprint={() => void reprintOrder(order)}
                             onCancel={() => cancelOrder(order)}
+                            onNotify={(kind) => void notifyCustomer(order, kind)}
                           />
                         ))}
                         {stageOrders.length === 0 && (
@@ -1063,6 +1142,7 @@ function OrderCard({
   onComplete,
   onReprint,
   onCancel,
+  onNotify,
 }: {
   order: DeliveryOrder;
   busy: boolean;
@@ -1070,9 +1150,15 @@ function OrderCard({
   onComplete: (order: DeliveryOrder) => void;
   onReprint: () => void;
   onCancel: () => void;
+  onNotify: (kind: WhatsappNotice) => void;
 }) {
   const nextStatus = nextExternalOrderStatus(order.status, order.type);
   const isFinalized = isFinishedExternalOrder(order.status);
+  // Aviso pelo WhatsApp desta etapa; sem telefone válido, nenhum botão.
+  const whatsappNotice = isValidPhone(order.phone)
+    ? noticeForStatus(order.status, order.type)
+    : null;
+  const notified = whatsappNotice ? wasNotified(order.id, whatsappNotice) : false;
   return (
     <article className="rounded-xl border bg-card p-4 shadow-sm">
       <header className="flex items-start justify-between gap-2">
@@ -1143,6 +1229,36 @@ function OrderCard({
           </Btn>
         )}
       </div>
+      {whatsappNotice && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {whatsappNotice === "confirmado" ? (
+            <Btn
+              size="sm"
+              variant="ghost"
+              className="px-2"
+              onClick={() => onNotify(whatsappNotice)}
+            >
+              <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON.confirmado}
+            </Btn>
+          ) : (
+            <Btn
+              size="sm"
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => onNotify(whatsappNotice)}
+            >
+              <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON[whatsappNotice]}
+            </Btn>
+          )}
+          {notified && (
+            <span
+              className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700"
+              title="O WhatsApp foi aberto com a mensagem. Confirme no WhatsApp se foi enviada."
+            >
+              <Check className="h-3.5 w-3.5" /> Cliente avisado
+            </span>
+          )}
+        </div>
+      )}
     </article>
   );
 }
