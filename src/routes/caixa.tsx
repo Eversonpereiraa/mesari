@@ -41,6 +41,7 @@ import {
   useConferenceVersion,
 } from "@/lib/conference";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { IntegerInput } from "@/components/inputs";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/caixa")({
@@ -85,6 +86,7 @@ function Caixa() {
   const [spin, setSpin] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [splitBy, setSplitBy] = useState(1);
+  const [splitDraft, setSplitDraft] = useState<number | null>(1);
   const [printingBill, setPrintingBill] = useState(false);
   const [salesVersion, setSalesVersion] = useState(0);
   useConferenceVersion();
@@ -468,23 +470,21 @@ function Caixa() {
                         title="Mostra na conta o valor por pessoa"
                       >
                         Dividir por
-                        <input
-                          type="number"
-                          inputMode="numeric"
-                          min={1}
-                          max={50}
-                          aria-label="Dividir a conta por quantas pessoas"
-                          className="field mt-0.5 h-8 w-16 px-2 text-sm text-ink"
-                          value={splitBy}
-                          onChange={(event) =>
-                            setSplitBy(
-                              Math.max(
-                                1,
-                                Math.min(50, Math.floor(Number(event.target.value)) || 1),
-                              ),
-                            )
-                          }
-                        />
+                        <span className="mt-0.5 block w-16">
+                          <IntegerInput
+                            min={1}
+                            max={50}
+                            aria-label="Dividir a conta por quantas pessoas"
+                            className="h-8 px-2 text-sm text-ink"
+                            enterKeyHint="done"
+                            value={splitDraft}
+                            onChange={(value) => {
+                              setSplitDraft(value);
+                              if (value !== null && value >= 1 && value <= 50) setSplitBy(value);
+                            }}
+                            onBlur={() => setSplitDraft(splitBy)}
+                          />
+                        </span>
                       </label>
                     </div>
                     <Btn

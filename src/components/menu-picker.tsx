@@ -14,6 +14,11 @@ import { cn } from "@/lib/utils";
 import { brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
 import { getKitchenStationStatus, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import { Btn } from "./ui-kit";
+import { TextInput } from "@/components/inputs";
+import { TEXT_LIMITS } from "@/lib/masks";
+
+/** Limite de quantidade por item aceito pelo banco. */
+const MAX_QTY = 99;
 
 function sendErrorMessage(cause: unknown) {
   const offline = typeof navigator !== "undefined" && navigator.onLine === false;
@@ -126,7 +131,7 @@ export function MenuPicker({
   const adjustCart = (item: MenuItem, delta: number) => {
     setCart((current) => {
       const existing = current.find((entry) => entry.item.id === item.id);
-      const nextQty = (existing?.qty ?? 0) + delta;
+      const nextQty = Math.min(MAX_QTY, (existing?.qty ?? 0) + delta);
       if (nextQty <= 0) return current.filter((entry) => entry.item.id !== item.id);
       const nextNote = existing?.note ?? (selected?.id === item.id ? note.trim() : "");
       if (existing)
@@ -222,6 +227,9 @@ export function MenuPicker({
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <input
             className="field h-11 pl-10"
+            type="search"
+            enterKeyHint="search"
+            maxLength={60}
             aria-label="Buscar item do cardápio"
             placeholder="Buscar item do cardápio"
             value={q}
@@ -349,19 +357,22 @@ export function MenuPicker({
                               className="h-12 w-12 rounded-l-none"
                               aria-label="Aumentar quantidade"
                               type="button"
-                              onClick={() => setQty(qty + 1)}
+                              onClick={() => setQty(Math.min(MAX_QTY, qty + 1))}
                             >
                               <Plus className="h-4 w-4" />
                             </Btn>
                           </div>
                         </div>
                       )}
-                      <input
-                        className="field h-11"
+                      <TextInput
+                        className="h-11"
                         aria-label={`Observação para ${item.name}`}
                         placeholder="Observação (ex.: sem cebola)"
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
                         value={note}
-                        onChange={(event) => updateNote(event.target.value)}
+                        onChange={updateNote}
                       />
                       {!mobile && (
                         <Btn
@@ -504,21 +515,24 @@ export function MenuPicker({
                     >
                       <Plus className="h-4 w-4" />
                     </button>
-                    <input
-                      className="field ml-auto h-11 max-w-[190px]"
-                      aria-label={`Observação para ${entry.item.name}`}
-                      placeholder="Observação"
-                      value={entry.note}
-                      onChange={(event) =>
-                        setCart((current) =>
-                          current.map((line) =>
-                            line.item.id === entry.item.id
-                              ? { ...line, note: event.target.value }
-                              : line,
-                          ),
-                        )
-                      }
-                    />
+                    <span className="ml-auto block w-full max-w-[190px]">
+                      <TextInput
+                        className="h-11"
+                        aria-label={`Observação para ${entry.item.name}`}
+                        placeholder="Observação"
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
+                        value={entry.note}
+                        onChange={(note) =>
+                          setCart((current) =>
+                            current.map((line) =>
+                              line.item.id === entry.item.id ? { ...line, note } : line,
+                            ),
+                          )
+                        }
+                      />
+                    </span>
                   </div>
                 </div>
               ))}

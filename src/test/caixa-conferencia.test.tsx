@@ -169,7 +169,7 @@ describe("caixa: conferência de consumo separada do pagamento", () => {
     h.set(makeState("conta", firstLines));
     render(<Caixa />);
     openTable();
-    fireEvent.change(screen.getByRole("spinbutton", { name: /Dividir a conta/ }), {
+    fireEvent.change(screen.getByRole("textbox", { name: /Dividir a conta/ }), {
       target: { value: "4" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Imprimir conta" }));

@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import { brl, paymentMethodLabel } from "@/lib/store";
 import type { PrintReceipt, PrintRestaurant } from "@/lib/printing";
 import { splitShare } from "@/lib/split-share";
+import { cpfCnpjLabel, displayCpfCnpj, displayPhone } from "@/lib/masks";
 import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
 
 export function ReceiptContent({
@@ -56,9 +57,13 @@ export function ReceiptContent({
         {restaurant.address && (
           <div className="receipt-restaurant-detail">{restaurant.address}</div>
         )}
-        {restaurant.phone && <div className="receipt-restaurant-detail">{restaurant.phone}</div>}
+        {restaurant.phone && (
+          <div className="receipt-restaurant-detail">{displayPhone(restaurant.phone)}</div>
+        )}
         {restaurant.cnpj && (
-          <div className="receipt-restaurant-detail">CNPJ: {restaurant.cnpj}</div>
+          <div className="receipt-restaurant-detail">
+            {cpfCnpjLabel(restaurant.cnpj)}: {displayCpfCnpj(restaurant.cnpj)}
+          </div>
         )}
       </header>
 

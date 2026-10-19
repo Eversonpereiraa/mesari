@@ -8,6 +8,7 @@ import { ReceiptContent } from "@/components/receipt-content";
 import { codePageSelector, encodeText, type CharacterTable } from "@/lib/escpos-codepages";
 import { addVirtualJob } from "@/lib/virtual-printer";
 import { splitShare } from "@/lib/split-share";
+import { cpfCnpjLabel, displayCpfCnpj, displayPhone } from "@/lib/masks";
 
 export type PrintSettings = {
   paperWidth: 58 | 80;
@@ -1032,7 +1033,7 @@ function externalKitchenTicketHtml(ticket: KitchenTicket, settings: PrintSetting
     )
     .join("");
   const title = external.origin === "entrega" ? "ENTREGA" : "RETIRADA";
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize * 1.7}px}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.client{margin-top:3mm;font-weight:800}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item-main strong:last-child{white-space:nowrap}.note,.observation{margin:1mm 0 0 3mm;padding:1mm;font-weight:800;background:#eee}.totals p{display:flex;justify-content:space-between;margin:1mm 0}.total{font-size:${fontSize + 3}px;font-weight:900}.payment{margin-top:2mm;font-weight:900}.footer{text-align:center;font-size:${fontSize - 2}px}.cut{height:12mm}</style></head><body><main><header class="header">${title}<br>#${external.dayNumber}</header><div class="meta center">${escapeHtml(deliveryChannelLabel(external.channel))} · ${escapeHtml(new Date(ticket.createdAt).toLocaleTimeString("pt-BR"))}</div><div class="client">${escapeHtml(external.customerName)}</div>${external.phone ? `<div>Telefone: ${escapeHtml(external.phone)}</div>` : ""}${external.origin === "entrega" && external.address ? `<div>Endereço: ${escapeHtml(external.address)}</div>` : ""}<div class="dash"></div>${items}${external.observation ? `<div class="observation">OBSERVAÇÃO: ${escapeHtml(external.observation)}</div>` : ""}<div class="dash"></div><div class="totals"><p><span>Subtotal</span><strong>${escapeHtml(money(external.subtotal))}</strong></p>${external.origin === "entrega" ? `<p><span>Taxa de entrega</span><strong>${escapeHtml(money(external.deliveryFee))}</strong></p>` : ""}<p class="total"><span>TOTAL</span><strong>${escapeHtml(money(external.total))}</strong></p></div><div class="payment">${escapeHtml(expectedPaymentLabel(external.payment))}</div><div class="dash"></div><footer class="footer">Não é documento fiscal</footer><div class="cut"></div></main></body></html>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{size:${settings.paperWidth}mm auto;margin:0}*{box-sizing:border-box}html,body{width:${settings.paperWidth}mm;margin:0;padding:0}body{font-family:Arial,sans-serif;font-size:${fontSize}px;line-height:1.25;color:#000}main{width:${settings.paperWidth}mm;padding:3mm;overflow-wrap:anywhere}.center{text-align:center}.header{text-align:center;font-weight:900;font-size:${fontSize * 1.7}px}.meta{font-size:${fontSize - 2}px;margin-top:2mm}.client{margin-top:3mm;font-weight:800}.dash{border-top:1px dashed #000;margin:3mm 0}.item{padding:2mm 0;font-size:${fontSize}px}.item-main{display:flex;justify-content:space-between;gap:2mm}.item-main strong:last-child{white-space:nowrap}.note,.observation{margin:1mm 0 0 3mm;padding:1mm;font-weight:800;background:#eee}.totals p{display:flex;justify-content:space-between;margin:1mm 0}.total{font-size:${fontSize + 3}px;font-weight:900}.payment{margin-top:2mm;font-weight:900}.footer{text-align:center;font-size:${fontSize - 2}px}.cut{height:12mm}</style></head><body><main><header class="header">${title}<br>#${external.dayNumber}</header><div class="meta center">${escapeHtml(deliveryChannelLabel(external.channel))} · ${escapeHtml(new Date(ticket.createdAt).toLocaleTimeString("pt-BR"))}</div><div class="client">${escapeHtml(external.customerName)}</div>${external.phone ? `<div>Telefone: ${escapeHtml(displayPhone(external.phone))}</div>` : ""}${external.origin === "entrega" && external.address ? `<div>Endereço: ${escapeHtml(external.address)}</div>` : ""}<div class="dash"></div>${items}${external.observation ? `<div class="observation">OBSERVAÇÃO: ${escapeHtml(external.observation)}</div>` : ""}<div class="dash"></div><div class="totals"><p><span>Subtotal</span><strong>${escapeHtml(money(external.subtotal))}</strong></p>${external.origin === "entrega" ? `<p><span>Taxa de entrega</span><strong>${escapeHtml(money(external.deliveryFee))}</strong></p>` : ""}<p class="total"><span>TOTAL</span><strong>${escapeHtml(money(external.total))}</strong></p></div><div class="payment">${escapeHtml(expectedPaymentLabel(external.payment))}</div><div class="dash"></div><footer class="footer">Não é documento fiscal</footer><div class="cut"></div></main></body></html>`;
 }
 
 export function escPosKitchenTicket(ticket: KitchenTicket, settings: PrintSettings) {
@@ -1108,7 +1109,7 @@ function escPosExternalKitchenTicket(ticket: KitchenTicket, settings: PrintSetti
     1,
   );
   text(external.customerName, 0, true);
-  if (external.phone) text(`Telefone: ${external.phone}`);
+  if (external.phone) text(`Telefone: ${displayPhone(external.phone)}`);
   if (external.origin === "entrega" && external.address)
     text(`Endereço: ${external.address}`, 0, true);
   text("-".repeat(width));
@@ -1311,8 +1312,10 @@ export function escPosConference(
 
   text(restaurant.name || "Mesari", 1, true);
   if (restaurant.address) text(restaurant.address, 1);
-  if (restaurant.phone) text(restaurant.phone, 1);
-  if (restaurant.cnpj) text(`CNPJ: ${restaurant.cnpj}`, 1);
+  if (restaurant.phone) text(displayPhone(restaurant.phone), 1);
+  if (restaurant.cnpj) {
+    text(`${cpfCnpjLabel(restaurant.cnpj)}: ${displayCpfCnpj(restaurant.cnpj)}`, 1);
+  }
   dash();
   text("CONFERÊNCIA DE CONSUMO", 1, true);
   text("Não é documento fiscal", 1);

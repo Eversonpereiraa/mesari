@@ -13,6 +13,8 @@ import {
 } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
+import { MoneyInput, TextInput } from "@/components/inputs";
+import { TEXT_LIMITS, cleanText, moneyError, requiredTextError } from "@/lib/masks";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/cardapio")({
@@ -27,7 +29,8 @@ export const Route = createFileRoute("/cardapio")({
   component: Cardapio,
 });
 
-type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: string };
+/** Rascunho do item: preço em centavos (null = vazio). */
+type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: number | null };
 type CategoryDraft = { name: string; sector: Category["sector"]; saving: boolean; error: string };
 
 function Cardapio() {
@@ -41,6 +44,7 @@ function Cardapio() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [categoryError, setCategoryError] = useState("");
   const [newCategory, setNewCategory] = useState<CategoryDraft | null>(null);
+  const [triedSave, setTriedSave] = useState(false);
   useEffect(() => {
     if (role && role !== "caixa") void navigate({ to: "/garcom", replace: true });
   }, [navigate, role]);
@@ -50,19 +54,32 @@ function Cardapio() {
 
   const newCat = () => setNewCategory({ name: "", sector: "cozinha", saving: false, error: "" });
   const createCategory = async () => {
-    if (!newCategory || newCategory.saving || !newCategory.name.trim()) return;
+    const name = cleanText(newCategory?.name, TEXT_LIMITS.name);
+    if (!newCategory || newCategory.saving || !name) return;
     setNewCategory({ ...newCategory, saving: true, error: "" });
     try {
-      setCat(await actions.addCategory(newCategory.name.trim(), newCategory.sector));
+      setCat(await actions.addCategory(name, newCategory.sector));
       setNewCategory(null);
     } catch (cause) {
       setNewCategory({ ...newCategory, saving: false, error: errorMessage(cause) });
     }
   };
+  const draftNameError = draft ? requiredTextError(draft.name, "Informe o nome do item.") : null;
+  const draftPriceError = draft ? moneyError(draft.price, { required: true }) : null;
+  const openDraft = (next: Draft) => {
+    setTriedSave(false);
+    setDraft(next);
+  };
   const save = async () => {
-    if (!draft || !draft.name.trim()) return;
-    const price = parseFloat(draft.price.replace(",", ".")) || 0;
-    await actions.saveItem({ ...draft, name: draft.name.trim(), price });
+    if (!draft) return;
+    setTriedSave(true);
+    if (draftNameError || draftPriceError || draft.price === null) return;
+    await actions.saveItem({
+      ...draft,
+      name: cleanText(draft.name, TEXT_LIMITS.name),
+      description: cleanText(draft.description, TEXT_LIMITS.description),
+      price: draft.price / 100,
+    });
     setDraft(null);
   };
 
@@ -79,7 +96,7 @@ function Cardapio() {
             size="sm"
             className="whitespace-nowrap"
             onClick={() =>
-              setDraft({ name: "", categoryId: cat, price: "", description: "", active: true })
+              openDraft({ name: "", categoryId: cat, price: null, description: "", active: true })
             }
           >
             <Plus className="h-4 w-4" />
@@ -93,6 +110,9 @@ function Cardapio() {
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <input
             className="field h-11 max-w-sm pl-10"
+            type="search"
+            enterKeyHint="search"
+            maxLength={60}
             aria-label="Buscar item"
             placeholder="Buscar item"
             value={q}
@@ -187,9 +207,7 @@ function Cardapio() {
                       <button
                         aria-label={`Editar ${i.name}`}
                         className="mr-2 inline-flex h-9 w-9 items-center justify-center rounded-lg text-primary hover:bg-accent"
-                        onClick={() =>
-                          setDraft({ ...i, price: i.price.toFixed(2).replace(".", ",") })
-                        }
+                        onClick={() => openDraft({ ...i, price: Math.round(i.price * 100) })}
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
@@ -252,14 +270,14 @@ function Cardapio() {
             </h2>
             <div className="space-y-4 p-5">
               <Field label="Nome da categoria">
-                <input
-                  className="field"
+                <TextInput
                   autoFocus
-                  required
-                  maxLength={60}
+                  aria-required
+                  enterKeyHint="done"
+                  maxLength={TEXT_LIMITS.name}
                   placeholder="Ex.: Bebidas"
                   value={newCategory.name}
-                  onChange={(e) => setNewCategory({ ...newCategory, name: e.target.value })}
+                  onChange={(name) => setNewCategory({ ...newCategory, name })}
                 />
               </Field>
               <fieldset>
@@ -321,11 +339,15 @@ function Cardapio() {
             </h2>
             <div className="space-y-4 p-5">
               <Field label="Nome do item">
-                <input
-                  className="field"
+                <TextInput
                   autoFocus
+                  aria-required
+                  enterKeyHint="next"
+                  maxLength={TEXT_LIMITS.name}
                   value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  onChange={(name) => setDraft({ ...draft, name })}
+                  error={draftNameError}
+                  showError={triedSave}
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
@@ -338,20 +360,22 @@ function Cardapio() {
                   />
                 </Field>
                 <Field label="Preço (R$)">
-                  <input
-                    className="field num"
-                    inputMode="decimal"
-                    placeholder="0,00"
+                  <MoneyInput
+                    required
                     value={draft.price}
-                    onChange={(e) => setDraft({ ...draft, price: e.target.value })}
+                    onChange={(price) => setDraft({ ...draft, price })}
+                    showError={triedSave}
                   />
                 </Field>
               </div>
               <Field label="Descrição (opcional)">
-                <textarea
-                  className="field h-20 py-2"
+                <TextInput
+                  multiline
+                  className="h-20"
+                  maxLength={TEXT_LIMITS.description}
+                  counterFrom={TEXT_LIMITS.description - 40}
                   value={draft.description}
-                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  onChange={(description) => setDraft({ ...draft, description })}
                 />
               </Field>
               <Field label="Status">

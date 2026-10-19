@@ -17,6 +17,17 @@ import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
 import { MenuPicker, type MenuCartEntry } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { IntegerInput, MoneyInput, PhoneInput, TextInput } from "@/components/inputs";
+import {
+  TEXT_LIMITS,
+  cleanText,
+  displayPhone,
+  formatCents,
+  integerError,
+  moneyError,
+  phoneError,
+  requiredTextError,
+} from "@/lib/masks";
 import { usePrompt } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
@@ -133,13 +144,6 @@ function mapOrder(value: unknown): DeliveryOrder {
   };
 }
 
-function amountFromInput(value: string): number | null {
-  const normalized = value.trim().replace(/\s/g, "").replace(",", ".");
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const amount = Number(normalized);
-  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
-}
-
 function paymentData(order: DeliveryOrder) {
   const raw = asRecord(order.raw["pagamento_previsto"]);
   const forma = raw["forma"];
@@ -175,14 +179,17 @@ function Delivery() {
   const [observation, setObservation] = useState("");
   const [paymentForm, setPaymentForm] = useState<Exclude<PaymentMethod, "nao_informado"> | "">("");
   const [isPaid, setIsPaid] = useState(false);
-  const [changeFor, setChangeFor] = useState("");
+  /** Centavos; null = sem troco informado. */
+  const [changeFor, setChangeFor] = useState<number | null>(null);
   const [menuCart, setMenuCart] = useState<MenuCartEntry[]>([]);
   const [extras, setExtras] = useState<ExtraItem[]>([]);
   const [extraOpen, setExtraOpen] = useState(false);
   const [extraName, setExtraName] = useState("");
-  const [extraPrice, setExtraPrice] = useState("");
-  const [extraQuantity, setExtraQuantity] = useState("1");
+  const [extraPrice, setExtraPrice] = useState<number | null>(null);
+  const [extraQuantity, setExtraQuantity] = useState<number | null>(1);
+  const [extraTried, setExtraTried] = useState(false);
   const [formError, setFormError] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
 
   const loadOrders = useCallback(async () => {
@@ -267,6 +274,26 @@ function Delivery() {
   const deliveryFee = type === "entrega" ? Number(snapshot.restaurant.deliveryFee || 0) : 0;
   const totalAmount = Math.round((subtotal + deliveryFee) * 100) / 100;
 
+  const totalCents = Math.round(totalAmount * 100);
+  const errors = {
+    customerName: requiredTextError(customerName, "Informe o nome do cliente."),
+    phone: phoneError(phone),
+    address:
+      type === "entrega" ? requiredTextError(address, "Informe o endereço para a entrega.") : null,
+    changeFor:
+      paymentForm !== "dinheiro"
+        ? null
+        : (moneyError(changeFor) ??
+          (changeFor !== null && changeFor < totalCents
+            ? `O troco deve ser para R$ ${formatCents(totalCents)} ou mais.`
+            : null)),
+  };
+  const extraErrors = {
+    name: requiredTextError(extraName, "Informe o nome do item."),
+    price: moneyError(extraPrice, { required: true }),
+    quantity: integerError(extraQuantity, { min: 1, max: 99 }),
+  };
+
   const resetForm = () => {
     setType("entrega");
     setChannel("whatsapp");
@@ -276,42 +303,36 @@ function Delivery() {
     setObservation("");
     setPaymentForm("");
     setIsPaid(false);
-    setChangeFor("");
+    setChangeFor(null);
     setMenuCart([]);
     setExtras([]);
     setExtraOpen(false);
     setFormError("");
+    setTriedSave(false);
   };
 
   const saveOrder = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError("");
-    if (!customerName.trim()) {
-      setFormError("Informe o nome do cliente.");
-      return;
-    }
-    if (type === "entrega" && !address.trim()) {
-      setFormError("Informe o endereço para a entrega.");
+    setTriedSave(true);
+    if (Object.values(errors).some(Boolean)) {
+      setFormError("Corrija os campos destacados antes de salvar.");
       return;
     }
     if (menuCart.length + extras.length === 0) {
       setFormError("Adicione pelo menos um item ao pedido.");
       return;
     }
-    const troco = changeFor.trim() ? amountFromInput(changeFor) : null;
-    if (changeFor.trim() && (troco === null || paymentForm !== "dinheiro")) {
-      setFormError("Informe um valor de troco válido para pagamento em dinheiro.");
-      return;
-    }
+    const troco = paymentForm === "dinheiro" && changeFor !== null ? changeFor / 100 : null;
     setBusy(true);
     try {
       const p_dados = {
         canal: channel,
         tipo: type,
-        cliente_nome: customerName.trim(),
-        telefone: phone.replace(/\D/g, "") || null,
-        endereco: type === "entrega" ? address.trim() : "",
-        observacao: observation.trim(),
+        cliente_nome: cleanText(customerName, TEXT_LIMITS.name),
+        telefone: phone || null,
+        endereco: type === "entrega" ? cleanText(address, TEXT_LIMITS.address) : "",
+        observacao: cleanText(observation, TEXT_LIMITS.note),
         pagamento_previsto: {
           forma: paymentForm || null,
           pago: isPaid,
@@ -321,13 +342,13 @@ function Delivery() {
           ...menuCart.map(({ item, qty, note }) => ({
             produto_id: item.id,
             quantidade: qty,
-            observacao: note.trim(),
+            observacao: cleanText(note, TEXT_LIMITS.note),
           })),
           ...extras.map((item) => ({
             nome: item.name,
             valor_unitario: item.price,
             quantidade: item.quantity,
-            observacao: item.note.trim(),
+            observacao: cleanText(item.note, TEXT_LIMITS.note),
           })),
         ],
       };
@@ -461,19 +482,20 @@ function Delivery() {
 
   const addExtra = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const price = amountFromInput(extraPrice);
-    const quantity = Number(extraQuantity);
-    if (!extraName.trim() || price === null || !Number.isInteger(quantity) || quantity < 1) {
-      setFormError("Informe nome, valor válido e quantidade do item avulso.");
+    event.stopPropagation();
+    setExtraTried(true);
+    if (Object.values(extraErrors).some(Boolean) || extraPrice === null || extraQuantity === null) {
       return;
     }
+    const name = cleanText(extraName, TEXT_LIMITS.name);
     setExtras((current) => [
       ...current,
-      { id: crypto.randomUUID(), name: extraName.trim(), price, quantity, note: "" },
+      { id: crypto.randomUUID(), name, price: extraPrice / 100, quantity: extraQuantity, note: "" },
     ]);
     setExtraName("");
-    setExtraPrice("");
-    setExtraQuantity("1");
+    setExtraPrice(null);
+    setExtraQuantity(1);
+    setExtraTried(false);
     setExtraOpen(false);
   };
 
@@ -537,7 +559,9 @@ function Delivery() {
   const addAvulsoQuantity = (id: string, change: number) =>
     setExtras((current) =>
       current
-        .map((item) => (item.id === id ? { ...item, quantity: item.quantity + change } : item))
+        .map((item) =>
+          item.id === id ? { ...item, quantity: Math.min(99, item.quantity + change) } : item,
+        )
         .filter((item) => item.quantity > 0),
     );
 
@@ -723,40 +747,42 @@ function Delivery() {
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
                     <Field label="Nome do cliente *">
-                      <input
-                        className="field"
+                      <TextInput
                         autoComplete="name"
+                        enterKeyHint="next"
+                        aria-required
+                        maxLength={TEXT_LIMITS.name}
                         value={customerName}
-                        onChange={(event) => setCustomerName(event.target.value)}
-                        required
+                        onChange={setCustomerName}
+                        error={errors.customerName}
+                        showError={triedSave}
                       />
                     </Field>
                     <Field label="Telefone">
-                      <input
-                        className="field"
-                        type="tel"
-                        autoComplete="tel"
-                        value={phone}
-                        onChange={(event) => setPhone(event.target.value)}
-                      />
+                      <PhoneInput value={phone} onChange={setPhone} showError={triedSave} />
                     </Field>
                     {type === "entrega" && (
                       <Field label="Endereço *">
-                        <input
-                          className="field"
+                        <TextInput
                           autoComplete="street-address"
+                          enterKeyHint="next"
+                          aria-required
+                          maxLength={TEXT_LIMITS.address}
                           value={address}
-                          onChange={(event) => setAddress(event.target.value)}
-                          required
+                          onChange={setAddress}
+                          error={errors.address}
+                          showError={triedSave}
                         />
                       </Field>
                     )}
                     <Field label="Observação geral">
-                      <input
-                        className="field"
+                      <TextInput
                         placeholder="Referência, instruções..."
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
                         value={observation}
-                        onChange={(event) => setObservation(event.target.value)}
+                        onChange={setObservation}
                       />
                     </Field>
                   </div>
@@ -792,21 +818,24 @@ function Delivery() {
                               {brl(item.price)} cada
                             </div>
                           </div>
-                          <input
-                            className="field h-10 w-24"
-                            aria-label={`Observação de ${item.name}`}
-                            placeholder="Observação"
-                            value={item.note}
-                            onChange={(event) =>
-                              setExtras((current) =>
-                                current.map((line) =>
-                                  line.id === item.id
-                                    ? { ...line, note: event.target.value }
-                                    : line,
-                                ),
-                              )
-                            }
-                          />
+                          <div className="w-32">
+                            <TextInput
+                              className="h-10"
+                              aria-label={`Observação de ${item.name}`}
+                              placeholder="Observação"
+                              enterKeyHint="done"
+                              maxLength={TEXT_LIMITS.note}
+                              counterFrom={100}
+                              value={item.note}
+                              onChange={(note) =>
+                                setExtras((current) =>
+                                  current.map((line) =>
+                                    line.id === item.id ? { ...line, note } : line,
+                                  ),
+                                )
+                              }
+                            />
+                          </div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -852,12 +881,13 @@ function Delivery() {
                 </Field>
                 {paymentForm === "dinheiro" && (
                   <Field label="Troco para quanto?">
-                    <input
-                      className="field"
-                      inputMode="decimal"
+                    <MoneyInput
                       placeholder="Ex.: 100,00"
+                      enterKeyHint="done"
                       value={changeFor}
-                      onChange={(event) => setChangeFor(event.target.value)}
+                      onChange={setChangeFor}
+                      error={errors.changeFor}
+                      showError={triedSave}
                     />
                   </Field>
                 )}
@@ -926,34 +956,34 @@ function Delivery() {
               >
                 <h2 className="font-display text-xl font-bold text-ink">Adicionar item avulso</h2>
                 <Field label="Nome do item">
-                  <input
-                    className="field"
+                  <TextInput
                     autoFocus
+                    aria-required
+                    enterKeyHint="next"
+                    maxLength={TEXT_LIMITS.name}
                     value={extraName}
-                    onChange={(event) => setExtraName(event.target.value)}
-                    required
+                    onChange={setExtraName}
+                    error={extraErrors.name}
+                    showError={extraTried}
                   />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Valor unitário (R$)">
-                    <input
-                      className="field"
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      value={extraPrice}
-                      onChange={(event) => setExtraPrice(event.target.value)}
+                    <MoneyInput
                       required
+                      value={extraPrice}
+                      onChange={setExtraPrice}
+                      showError={extraTried}
                     />
                   </Field>
                   <Field label="Quantidade">
-                    <input
-                      className="field"
-                      type="number"
-                      min="1"
-                      step="1"
+                    <IntegerInput
+                      min={1}
+                      max={99}
+                      enterKeyHint="done"
                       value={extraQuantity}
-                      onChange={(event) => setExtraQuantity(event.target.value)}
-                      required
+                      onChange={setExtraQuantity}
+                      showError={extraTried}
                     />
                   </Field>
                 </div>
@@ -1024,7 +1054,9 @@ function OrderCard({
       </header>
       <div className="mt-3 border-t pt-3">
         <div className="font-semibold text-ink">{order.customerName}</div>
-        {order.phone && <div className="mt-0.5 text-xs text-muted-foreground">{order.phone}</div>}
+        {order.phone && (
+          <div className="mt-0.5 text-xs text-muted-foreground">{displayPhone(order.phone)}</div>
+        )}
         {order.type === "entrega" && order.address && (
           <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{order.address}</div>
         )}

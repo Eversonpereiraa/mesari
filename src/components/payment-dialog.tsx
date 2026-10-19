@@ -1,14 +1,17 @@
 import { useState, type FormEvent } from "react";
 import { Banknote, CreditCard, Plus, QrCode, Trash2, WalletCards, X } from "lucide-react";
 import { brl, errorMessage, type PaymentInput } from "@/lib/store";
+import { MONEY_MAX_CENTS } from "@/lib/masks";
 import { Btn } from "@/components/ui-kit";
+import { MoneyInput } from "@/components/inputs";
 
 type Method = PaymentInput["forma"];
 type PaymentLine = {
   id: number;
   method: Method | null;
-  amount: string;
-  received: string;
+  /** Centavos; null = campo vazio. */
+  amount: number | null;
+  received: number | null;
 };
 
 const methods: { value: Method; label: string; Icon: typeof Banknote }[] = [
@@ -17,29 +20,6 @@ const methods: { value: Method; label: string; Icon: typeof Banknote }[] = [
   { value: "credito", label: "Crédito", Icon: CreditCard },
   { value: "debito", label: "Débito", Icon: WalletCards },
 ];
-
-const moneyToCents = (value: string) => {
-  const normalized = value.trim().replace(/[^\d.,]/g, "");
-  let whole = normalized;
-  let fraction = "00";
-  if (normalized.includes(",")) {
-    if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{0,2})?$/.test(normalized)) return 0;
-    const [integer = "", decimal = ""] = normalized.split(",");
-    whole = integer.replace(/\./g, "");
-    fraction = decimal.padEnd(2, "0");
-  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
-    whole = normalized.replace(/\./g, "");
-  } else if (/^\d*(?:\.\d{0,2})?$/.test(normalized) && normalized.includes(".")) {
-    const [integer = "", decimal = ""] = normalized.split(".");
-    whole = integer;
-    fraction = decimal.padEnd(2, "0");
-  } else if (!/^\d+$/.test(normalized)) {
-    return 0;
-  }
-  return (Number(whole) || 0) * 100 + (Number(fraction) || 0);
-};
-const inputValue = (cents: number) =>
-  `${Math.floor(cents / 100)},${String(cents % 100).padStart(2, "0")}`;
 
 export function PaymentDialog({
   table,
@@ -59,16 +39,14 @@ export function PaymentDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const paidCents = payments.reduce((sum, payment) => sum + moneyToCents(payment.amount), 0);
+  const paidCents = payments.reduce((sum, payment) => sum + (payment.amount ?? 0), 0);
   const cashUnderpaid = payments.some(
-    (payment) =>
-      payment.method === "dinheiro" &&
-      moneyToCents(payment.received) < moneyToCents(payment.amount),
+    (payment) => payment.method === "dinheiro" && (payment.received ?? 0) < (payment.amount ?? 0),
   );
   const canConfirm =
     !saving &&
     payments.length > 0 &&
-    payments.every((payment) => payment.method !== null && moneyToCents(payment.amount) > 0) &&
+    payments.every((payment) => payment.method !== null && (payment.amount ?? 0) > 0) &&
     paidCents === totalCents &&
     !cashUnderpaid;
 
@@ -77,8 +55,8 @@ export function PaymentDialog({
       {
         id: Date.now(),
         method,
-        amount: inputValue(totalCents),
-        received: method === "dinheiro" ? inputValue(totalCents) : "",
+        amount: totalCents,
+        received: method === "dinheiro" ? totalCents : null,
       },
     ]);
   };
@@ -93,7 +71,7 @@ export function PaymentDialog({
     const remaining = Math.max(0, totalCents - paidCents);
     setPayments((current) => [
       ...current,
-      { id: Date.now(), method: null, amount: inputValue(remaining), received: "" },
+      { id: Date.now(), method: null, amount: remaining, received: null },
     ]);
     setSplit(true);
   };
@@ -107,9 +85,9 @@ export function PaymentDialog({
       await onConfirm(
         payments.map((payment) => ({
           forma: payment.method!,
-          valor: moneyToCents(payment.amount) / 100,
-          ...(payment.method === "dinheiro" && payment.received
-            ? { recebido: moneyToCents(payment.received) / 100 }
+          valor: (payment.amount ?? 0) / 100,
+          ...(payment.method === "dinheiro" && payment.received !== null
+            ? { recebido: payment.received / 100 }
             : {}),
         })),
       );
@@ -175,8 +153,8 @@ export function PaymentDialog({
         ) : (
           <div className="space-y-4">
             {payments.map((payment, index) => {
-              const amountCents = moneyToCents(payment.amount);
-              const receivedCents = moneyToCents(payment.received);
+              const amountCents = payment.amount ?? 0;
+              const receivedCents = payment.received ?? 0;
               const selectedMethod = methods.find((method) => method.value === payment.method);
               return (
                 <section key={payment.id} className="space-y-3 rounded-xl border p-4">
@@ -205,7 +183,7 @@ export function PaymentDialog({
                           updatePayment(payment.id, {
                             method: value,
                             received:
-                              value === "dinheiro" ? payment.received || payment.amount : "",
+                              value === "dinheiro" ? (payment.received ?? payment.amount) : null,
                           })
                         }
                         className={`flex min-h-16 flex-col items-center justify-center gap-1 rounded-lg border text-xs font-semibold ${payment.method === value ? "border-primary bg-accent text-primary" : "text-muted-foreground hover:bg-muted"}`}
@@ -217,35 +195,27 @@ export function PaymentDialog({
                   </div>
                   <label className="block text-sm font-medium text-ink">
                     Valor do pagamento
-                    <div className="mt-1 flex items-center rounded-lg border bg-background px-3 focus-within:ring-2 focus-within:ring-ring">
-                      <span className="text-muted-foreground">R$</span>
-                      <input
-                        aria-label={`Valor do pagamento ${index + 1}`}
-                        inputMode="decimal"
-                        className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-right font-semibold outline-none"
-                        value={payment.amount}
-                        onChange={(event) =>
-                          updatePayment(payment.id, { amount: event.target.value })
-                        }
-                      />
-                    </div>
+                    <MoneyInput
+                      aria-label={`Valor do pagamento ${index + 1}`}
+                      wrapperClassName="mt-1"
+                      className="text-right font-semibold"
+                      required
+                      value={payment.amount}
+                      onChange={(amount) => updatePayment(payment.id, { amount })}
+                    />
                   </label>
                   {payment.method === "dinheiro" && (
                     <div className="space-y-3 rounded-lg bg-muted/60 p-3">
                       <label className="block text-sm font-medium text-ink">
                         Valor recebido
-                        <div className="mt-1 flex items-center rounded-lg border bg-background px-3">
-                          <span className="text-muted-foreground">R$</span>
-                          <input
-                            aria-label={`Valor recebido do pagamento ${index + 1}`}
-                            inputMode="decimal"
-                            className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-right font-semibold outline-none"
-                            value={payment.received}
-                            onChange={(event) =>
-                              updatePayment(payment.id, { received: event.target.value })
-                            }
-                          />
-                        </div>
+                        <MoneyInput
+                          aria-label={`Valor recebido do pagamento ${index + 1}`}
+                          wrapperClassName="mt-1"
+                          className="text-right font-semibold"
+                          enterKeyHint="done"
+                          value={payment.received}
+                          onChange={(received) => updatePayment(payment.id, { received })}
+                        />
                       </label>
                       <div className="flex flex-wrap gap-2">
                         {[2000, 5000, 10000, 20000].map((note) => (
@@ -254,7 +224,7 @@ export function PaymentDialog({
                             type="button"
                             onClick={() =>
                               updatePayment(payment.id, {
-                                received: inputValue(receivedCents + note),
+                                received: Math.min(receivedCents + note, MONEY_MAX_CENTS),
                               })
                             }
                             className="rounded-full border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-background"
@@ -264,9 +234,7 @@ export function PaymentDialog({
                         ))}
                         <button
                           type="button"
-                          onClick={() =>
-                            updatePayment(payment.id, { received: inputValue(amountCents) })
-                          }
+                          onClick={() => updatePayment(payment.id, { received: amountCents })}
                           className="rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-semibold text-primary hover:bg-background"
                         >
                           Valor exato

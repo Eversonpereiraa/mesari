@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
+import { IntegerInput } from "@/components/inputs";
 import {
   connectSerialPrinter,
   connectUsbPrinter,
@@ -304,6 +305,10 @@ function Impressao() {
       active = false;
     };
   }, [role]);
+
+  // Rascunho das colunas: deixa digitar "4" a caminho de "48" sem pular para 16.
+  const [columnsDraft, setColumnsDraft] = useState<number | null>(settings.columns);
+  useEffect(() => setColumnsDraft(settings.columns), [settings.columns]);
 
   const updateSettings = (update: Partial<PrintSettings>) => {
     const next = { ...settings, ...update };
@@ -790,17 +795,18 @@ function Impressao() {
                 </Field>
               )}
               <Field label="Colunas (avançado)">
-                <input
-                  className="field"
-                  type="number"
+                <IntegerInput
                   min={16}
                   max={64}
-                  value={settings.columns}
-                  onChange={(event) =>
-                    updateSettings({
-                      columns: Math.max(16, Math.min(64, Number(event.target.value) || 32)),
-                    })
-                  }
+                  enterKeyHint="done"
+                  value={columnsDraft}
+                  onChange={(columns) => {
+                    setColumnsDraft(columns);
+                    if (columns !== null && columns >= 16 && columns <= 64) {
+                      updateSettings({ columns });
+                    }
+                  }}
+                  onBlur={() => setColumnsDraft(settings.columns)}
                 />
               </Field>
               <Field label="Número de vias da nota">

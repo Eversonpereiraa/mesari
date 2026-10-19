@@ -1,5 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
+import { cleanCpfCnpj, cleanInstagram, cleanPhone } from "@/lib/masks";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
@@ -425,10 +426,11 @@ async function loadRemoteData() {
     }),
     restaurant: {
       name: stringValue(restaurant["nome"]),
-      phone: stringValue(restaurant["telefone"]),
+      // Dados antigos podem estar formatados ou sujos: no estado ficam limpos.
+      phone: cleanPhone(stringValue(restaurant["telefone"])),
       address: stringValue(restaurant["endereco"]),
-      cnpj: stringValue(restaurant["cnpj"]),
-      instagram: stringValue(restaurant["instagram"]),
+      cnpj: cleanCpfCnpj(stringValue(restaurant["cnpj"])),
+      instagram: cleanInstagram(stringValue(restaurant["instagram"])),
       logo: stringValue(restaurant["logo_url"]),
       serviceChargeEnabled: restaurant["taxa_servico_ativa"] === true,
       serviceChargePercent: Number(restaurant["taxa_servico_percentual"]),
