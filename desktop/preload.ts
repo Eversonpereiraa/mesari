@@ -72,3 +72,26 @@ contextBridge.exposeInMainWorld("mesariDesktop", {
     ipcRenderer.invoke("mesari:test-print", { printerName, widthMm, restaurantName }),
   openWhatsApp,
 });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
