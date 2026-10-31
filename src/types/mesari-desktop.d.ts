@@ -32,7 +32,10 @@ interface Window {
       widthMm: number,
       restaurantName?: string,
     ): Promise<{ ok: boolean; error?: string }>;
-    /** Abre um link (ex.: wa.me) fora do app. Ausente em versões antigas do desktop. */
-    openExternal?(url: string): Promise<{ ok: boolean; error?: string }>;
+    /**
+     * Abre a conversa no WhatsApp instalado no PC (whatsapp://send). `ok: false`
+     * quando o app não está instalado. Ausente em versões antigas do desktop.
+     */
+    openWhatsApp?(phone: string, text: string): Promise<{ ok: boolean; error?: string }>;
   };
 }

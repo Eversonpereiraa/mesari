@@ -892,18 +892,29 @@ function registerIpcHandlers() {
     log("Configurações do aplicativo atualizadas.");
     return settings;
   });
-  // Abre fora do app só links do WhatsApp (aviso ao cliente do delivery).
-  registerHandler("mesari:open-external", async (_event, value) => {
+  // Abre o WhatsApp instalado (aviso ao cliente do delivery). Só whatsapp://send
+  // e https://wa.me; o preload já valida, aqui confere de novo.
+  registerHandler("mesari:open-whatsapp", async (_event, value) => {
+    let target: URL;
     try {
-      const target = new URL(String(value));
-      const allowed = ["wa.me", "api.whatsapp.com"];
-      if (target.protocol !== "https:" || !allowed.includes(target.hostname)) {
-        return { ok: false, error: "Link externo não permitido." };
-      }
+      target = new URL(String(value));
+    } catch {
+      return { ok: false, error: "Link do WhatsApp inválido." };
+    }
+    const isApp = target.protocol === "whatsapp:" && target.hostname === "send";
+    const isWaMe = target.protocol === "https:" && target.hostname === "wa.me";
+    if ((!isApp && !isWaMe) || target.username || target.password || target.port) {
+      return { ok: false, error: "Link externo não permitido." };
+    }
+    // Sem app registrado para whatsapp://, o Windows mostraria "procurar um app".
+    if (isApp && !app.getApplicationNameForProtocol("whatsapp://")) {
+      return { ok: false, error: "WhatsApp não encontrado neste PC." };
+    }
+    try {
       await shell.openExternal(target.toString());
       return { ok: true };
     } catch (cause) {
-      log("Falha ao abrir link externo", cause);
+      log("Falha ao abrir o WhatsApp", cause);
       return { ok: false, error: "Não foi possível abrir o WhatsApp." };
     }
   });

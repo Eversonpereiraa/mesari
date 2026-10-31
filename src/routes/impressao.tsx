@@ -26,6 +26,11 @@ import {
 import { actions, errorMessage, useStore } from "@/lib/store";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/lib/supabase";
+import {
+  getWhatsappOpenMode,
+  setWhatsappOpenMode,
+  type WhatsappOpenMode,
+} from "@/lib/whatsapp-notify";
 
 function translatePrinterError(cause: unknown) {
   const name =
@@ -133,6 +138,41 @@ function TicketModeField() {
           {error}
         </p>
       )}
+    </div>
+  );
+}
+
+/** Aviso ao cliente do delivery: app do WhatsApp instalado ou WhatsApp Web. Vale neste computador. */
+function WhatsappModeField() {
+  const [mode, setMode] = useState<WhatsappOpenMode | null>(null);
+  // Lido depois de montar: o padrão depende de estar no app desktop ou no navegador.
+  useEffect(() => setMode(getWhatsappOpenMode()), []);
+
+  return (
+    <div>
+      <Field label="Como abrir o WhatsApp">
+        <AppSelect
+          className="field"
+          ariaLabel="Como abrir o WhatsApp"
+          value={mode ?? ""}
+          disabled={mode === null}
+          placeholder="Carregando..."
+          onValueChange={(value) => {
+            const next: WhatsappOpenMode = value === "web" ? "web" : "app";
+            setMode(next);
+            setWhatsappOpenMode(next);
+          }}
+          options={[
+            { value: "app", label: "App do WhatsApp instalado neste computador" },
+            { value: "web", label: "WhatsApp Web no navegador" },
+          ]}
+        />
+      </Field>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {mode === "web"
+          ? "Os avisos abrem sempre na mesma aba do WhatsApp Web."
+          : "Os avisos abrem direto no app. Se ele não estiver instalado, abre pelo navegador."}
+      </p>
     </div>
   );
 }
@@ -863,6 +903,17 @@ function Impressao() {
               </label>
               <TicketModeField />
             </div>
+          </section>
+
+          <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
+            <div>
+              <div className="text-xs text-muted-foreground">Preferências locais</div>
+              <h2 className="font-semibold text-ink">Aviso pelo WhatsApp</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Usado no delivery para avisar o cliente. Vale só neste computador.
+              </p>
+            </div>
+            <WhatsappModeField />
           </section>
 
           <section className="grid grid-cols-1 gap-5 py-5 md:grid-cols-[200px_1fr] md:gap-6">

@@ -46,7 +46,7 @@ const h = vi.hoisted(() => {
       removeChannel: async () => "ok",
     },
     printKitchenTicket: vi.fn(),
-    toast: { success: vi.fn(), error: vi.fn() },
+    toast: { success: vi.fn(), error: vi.fn(), warning: vi.fn() },
   };
 });
 
@@ -144,6 +144,7 @@ beforeEach(() => {
   h.printKitchenTicket.mockClear();
   h.toast.success.mockClear();
   h.toast.error.mockClear();
+  h.toast.warning.mockClear();
 });
 
 describe("fluxo de status do delivery", () => {
@@ -264,7 +265,7 @@ describe("fluxo de status do delivery", () => {
 describe("aviso ao cliente pelo WhatsApp", () => {
   const phone = "81997218844";
 
-  it("entrega: ao sair, oferece avisar; abre wa.me em nova aba e marca Cliente avisado", async () => {
+  it("entrega: ao sair, oferece avisar; abre o WhatsApp Web na aba nomeada e marca Cliente avisado", async () => {
     h.db.rows = [order("w1", 21, "entrega", "pronto", phone)];
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     await renderBoard();
@@ -282,11 +283,11 @@ describe("aviso ao cliente pelo WhatsApp", () => {
 
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
     const [url, target] = open.mock.calls[0]!;
-    expect(String(url)).toMatch(/^https:\/\/wa\.me\/5581997218844\?text=/);
-    expect(decodeURIComponent(String(url).split("?text=")[1]!)).toBe(
+    expect(String(url)).toMatch(/^https:\/\/web\.whatsapp\.com\/send\?phone=5581997218844&text=/);
+    expect(new URL(String(url)).searchParams.get("text")).toBe(
       "Olá, Cliente 21! Seu pedido #21 do Sabor do Agreste saiu para entrega. Total: R$ 36,00. Pagamento: Pix.",
     );
-    expect(target).toBe("_blank");
+    expect(target).toBe("mesari-whatsapp");
     expect(await card(21).findByText("Cliente avisado")).toBeInTheDocument();
     expect(screen.queryByText(/Pedido #21 saiu para entrega\./)).toBeNull();
     open.mockRestore();
@@ -320,18 +321,55 @@ describe("aviso ao cliente pelo WhatsApp", () => {
     expect(screen.queryByRole("button", { name: /Avisar/ })).toBeNull();
   });
 
-  it("no app desktop abre pelo sistema (openExternal), nunca dentro da janela", async () => {
-    const openExternal = vi.fn(async (_url: string) => ({ ok: true }));
-    (window as { mesariDesktop?: unknown }).mesariDesktop = { isDesktop: true, openExternal };
+  it("no app desktop abre direto no WhatsApp instalado, sem abrir guia", async () => {
+    const openWhatsApp = vi.fn(async (_phone: string, _text: string) => ({ ok: true }));
+    (window as { mesariDesktop?: unknown }).mesariDesktop = { isDesktop: true, openWhatsApp };
     const open = vi.spyOn(window, "open").mockReturnValue(null);
     h.db.rows = [order("w7", 27, "retirada", "pronto", phone)];
     await renderBoard();
 
     fireEvent.click(card(27).getByRole("button", { name: /Avisar que está pronto/ }));
-    await waitFor(() => expect(openExternal).toHaveBeenCalledTimes(1));
-    expect(openExternal.mock.calls[0]![0]).toMatch(/^https:\/\/wa\.me\/5581997218844\?text=/);
+    await waitFor(() => expect(openWhatsApp).toHaveBeenCalledTimes(1));
+    expect(openWhatsApp.mock.calls[0]).toEqual([
+      "81997218844",
+      "Olá, Cliente 27! Seu pedido #27 já está pronto para retirada no Sabor do Agreste.",
+    ]);
     expect(open).not.toHaveBeenCalled();
+    expect(h.toast.warning).not.toHaveBeenCalled();
     expect(await card(27).findByText("Cliente avisado")).toBeInTheDocument();
+    open.mockRestore();
+  });
+
+  it("app do WhatsApp não instalado: avisa e abre pelo navegador", async () => {
+    const openWhatsApp = vi.fn(async () => ({ ok: false, error: "WhatsApp não encontrado." }));
+    (window as { mesariDesktop?: unknown }).mesariDesktop = { isDesktop: true, openWhatsApp };
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    h.db.rows = [order("w8", 28, "retirada", "pronto", phone)];
+    await renderBoard();
+
+    fireEvent.click(card(28).getByRole("button", { name: /Avisar que está pronto/ }));
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(String(open.mock.calls[0]![0])).toMatch(/^https:\/\/web\.whatsapp\.com\/send\?/);
+    expect(open.mock.calls[0]![1]).toBe("mesari-whatsapp");
+    expect(h.toast.warning).toHaveBeenCalledWith(
+      "WhatsApp não encontrado neste PC. Abrindo pelo navegador.",
+    );
+    expect(await card(28).findByText("Cliente avisado")).toBeInTheDocument();
+    open.mockRestore();
+  });
+
+  it("no desktop com WhatsApp Web escolhido, usa a aba nomeada", async () => {
+    const openWhatsApp = vi.fn(async () => ({ ok: true }));
+    (window as { mesariDesktop?: unknown }).mesariDesktop = { isDesktop: true, openWhatsApp };
+    localStorage.setItem("mesari-whatsapp-modo", "web");
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    h.db.rows = [order("w9", 29, "retirada", "pronto", phone)];
+    await renderBoard();
+
+    fireEvent.click(card(29).getByRole("button", { name: /Avisar que está pronto/ }));
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(open.mock.calls[0]![1]).toBe("mesari-whatsapp");
+    expect(openWhatsApp).not.toHaveBeenCalled();
     open.mockRestore();
   });
 });

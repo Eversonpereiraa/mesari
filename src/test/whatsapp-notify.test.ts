@@ -1,12 +1,18 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  WHATSAPP_WINDOW_NAME,
+  defaultWhatsappOpenMode,
+  getWhatsappOpenMode,
   markNotified,
   noticeForStatus,
+  openWhatsapp,
   paymentSentence,
   resetNotifiedForTests,
+  setWhatsappOpenMode,
   wasNotified,
-  whatsappLink,
+  whatsappAppLink,
   whatsappMessage,
+  whatsappWebLink,
   type WhatsappOrder,
 } from "@/lib/whatsapp-notify";
 
@@ -21,30 +27,125 @@ const order: WhatsappOrder = {
   payment: { forma: "dinheiro", pago: false, trocoPara: 100 },
 };
 
+const setDesktop = (value: unknown) => {
+  (window as { mesariDesktop?: unknown }).mesariDesktop = value;
+};
+
 beforeEach(() => {
   localStorage.clear();
   resetNotifiedForTests();
 });
 
-describe("link do WhatsApp", () => {
-  it("usa 55 + DDD + número, só dígitos", () => {
-    expect(whatsappLink("81997218844", "oi")).toBe("https://wa.me/5581997218844?text=oi");
-    expect(whatsappLink("(81) 9 9721-8844", "oi")).toBe("https://wa.me/5581997218844?text=oi");
-    expect(whatsappLink("+55 81 3634-1234", "oi")).toBe("https://wa.me/558136341234?text=oi");
+afterEach(() => {
+  setDesktop(undefined);
+  vi.restoreAllMocks();
+});
+
+describe("links do WhatsApp", () => {
+  it("app: whatsapp://send com 55 + DDD + número, só dígitos", () => {
+    expect(whatsappAppLink("81997218844", "oi")).toBe(
+      "whatsapp://send?phone=5581997218844&text=oi",
+    );
+    expect(whatsappAppLink("(81) 9 9721-8844", "oi")).toBe(
+      "whatsapp://send?phone=5581997218844&text=oi",
+    );
+    expect(whatsappAppLink("+55 81 3634-1234", "oi")).toBe(
+      "whatsapp://send?phone=558136341234&text=oi",
+    );
+  });
+
+  it("web: web.whatsapp.com/send com o mesmo telefone", () => {
+    expect(whatsappWebLink("(81) 9 9721-8844", "oi")).toBe(
+      "https://web.whatsapp.com/send?phone=5581997218844&text=oi",
+    );
   });
 
   it("telefone vazio ou sem DDD não gera link", () => {
-    expect(whatsappLink("", "oi")).toBeNull();
-    expect(whatsappLink("99721-8844", "oi")).toBeNull();
+    for (const phone of ["", "99721-8844"]) {
+      expect(whatsappAppLink(phone, "oi")).toBeNull();
+      expect(whatsappWebLink(phone, "oi")).toBeNull();
+    }
   });
 
-  it("codifica acentos e emoji corretamente", () => {
-    const text = whatsappMessage("confirmado", order, "Restaurante Sabor do Agreste");
-    const link = whatsappLink(order.phone, text)!;
-    expect(link).toContain("Ol%C3%A1%2C%20Jos%C3%A9%20C%C3%ADcero!");
-    expect(link).toContain("%F0%9F%98%8A"); // 😊
-    expect(link).not.toMatch(/[ áéíçã😊]/u);
-    expect(decodeURIComponent(link.split("?text=")[1]!)).toBe(text);
+  it("codifica acentos, emoji e símbolos do texto", () => {
+    const text = `${whatsappMessage("confirmado", order, "Sabor & Cia")} Total: R$ 10,00 #1?`;
+    for (const link of [whatsappAppLink(order.phone, text)!, whatsappWebLink(order.phone, text)!]) {
+      expect(link).toContain("Ol%C3%A1%2C%20Jos%C3%A9%20C%C3%ADcero!");
+      expect(link).toContain("%F0%9F%98%8A"); // 😊
+      expect(link).toContain("Sabor%20%26%20Cia"); // & não quebra o parâmetro
+      expect(link).not.toMatch(/[ áéíçã😊]/u);
+      const params = new URL(link).searchParams;
+      expect(params.get("phone")).toBe("5581997218844");
+      expect(params.get("text")).toBe(text);
+    }
+  });
+});
+
+describe("como abrir o WhatsApp", () => {
+  it("padrão: app no desktop, WhatsApp Web no navegador", () => {
+    expect(defaultWhatsappOpenMode()).toBe("web");
+    expect(getWhatsappOpenMode()).toBe("web");
+    setDesktop({ isDesktop: true });
+    expect(getWhatsappOpenMode()).toBe("app");
+  });
+
+  it("guarda a escolha neste computador", () => {
+    setDesktop({ isDesktop: true });
+    setWhatsappOpenMode("web");
+    expect(getWhatsappOpenMode()).toBe("web");
+    localStorage.setItem("mesari-whatsapp-modo", "qualquer");
+    expect(getWhatsappOpenMode()).toBe("app");
+  });
+
+  it("sem localStorage, usa o padrão e não quebra", () => {
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("bloqueado");
+    });
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("bloqueado");
+    });
+    expect(() => setWhatsappOpenMode("app")).not.toThrow();
+    expect(getWhatsappOpenMode()).toBe("web");
+  });
+
+  it("web: reaproveita sempre a mesma aba nomeada", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await openWhatsapp(order.phone, "oi", "web");
+    await openWhatsapp(order.phone, "de novo", "web");
+    expect(open).toHaveBeenCalledTimes(2);
+    expect(open.mock.calls[0]).toEqual([
+      "https://web.whatsapp.com/send?phone=5581997218844&text=oi",
+      WHATSAPP_WINDOW_NAME,
+    ]);
+    expect(open.mock.calls[1]![1]).toBe("mesari-whatsapp");
+  });
+
+  it("app no desktop: chama openWhatsApp do preload, sem abrir aba", async () => {
+    const openWhatsApp = vi.fn(async () => ({ ok: true }));
+    setDesktop({ isDesktop: true, openWhatsApp });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await expect(openWhatsapp("(81) 99721-8844", "Olá 😊", "app")).resolves.toEqual({
+      fellBack: false,
+    });
+    expect(openWhatsApp).toHaveBeenCalledWith("81997218844", "Olá 😊");
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("app não instalado: cai para o WhatsApp Web", async () => {
+    const openWhatsApp = vi.fn(async () => ({ ok: false, error: "WhatsApp não encontrado." }));
+    setDesktop({ isDesktop: true, openWhatsApp });
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await expect(openWhatsapp(order.phone, "oi", "app")).resolves.toEqual({ fellBack: true });
+    expect(open).toHaveBeenCalledWith(
+      "https://web.whatsapp.com/send?phone=5581997218844&text=oi",
+      WHATSAPP_WINDOW_NAME,
+    );
+  });
+
+  it("telefone inválido não abre nada", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await expect(openWhatsapp("123", "oi", "web")).rejects.toThrow(/não é válido/);
+    expect(open).not.toHaveBeenCalled();
   });
 });
 

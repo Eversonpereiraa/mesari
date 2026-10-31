@@ -16,6 +16,10 @@ export default defineConfig({
     },
   },
   resolve: {
-    alias: { "@": path.resolve(__dirname, "./src") },
+    alias: {
+      "@": path.resolve(__dirname, "./src"),
+      // O preload do desktop (desktop/preload.ts) é testado sem o Electron instalado.
+      electron: path.resolve(__dirname, "./src/test/electron-stub.ts"),
+    },
   },
 });

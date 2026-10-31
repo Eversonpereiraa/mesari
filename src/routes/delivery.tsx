@@ -45,12 +45,12 @@ import {
   type ExternalOrderStatus,
 } from "@/lib/external-order-status";
 import {
+  WHATSAPP_NOT_FOUND_MESSAGE,
   WHATSAPP_NOTICE_BUTTON,
   markNotified,
   noticeForStatus,
-  openExternalLink,
+  openWhatsapp,
   wasNotified,
-  whatsappLink,
   whatsappMessage,
   type WhatsappNotice,
 } from "@/lib/whatsapp-notify";
@@ -494,13 +494,13 @@ function Delivery() {
       { ...order, payment: paymentData(order) },
       snapshot.restaurant.name,
     );
-    const link = whatsappLink(order.phone, text);
-    if (!link) {
+    if (!isValidPhone(order.phone)) {
       toast.error("O telefone deste cliente não é válido para o WhatsApp.");
       return;
     }
     try {
-      await openExternalLink(link);
+      const { fellBack } = await openWhatsapp(order.phone, text);
+      if (fellBack) toast.warning(WHATSAPP_NOT_FOUND_MESSAGE);
       markNotified(order.id, kind);
       setNotifiedVersion((version) => version + 1);
       setNoticePrompt((current) => (current?.orderId === order.id ? null : current));

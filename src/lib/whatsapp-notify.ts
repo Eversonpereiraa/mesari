@@ -5,8 +5,9 @@ import {
   type ExternalOrderType,
 } from "@/lib/external-order-status";
 
-// Aviso ao cliente do delivery pelo WhatsApp: monta o link wa.me com a mensagem
-// pronta e abre fora do Mesari. O WhatsApp só é ABERTO; quem envia é a pessoa.
+// Aviso ao cliente do delivery pelo WhatsApp: monta o link com a mensagem pronta
+// e abre fora do Mesari (app instalado ou WhatsApp Web). O WhatsApp só é ABERTO;
+// quem envia é a pessoa.
 
 export type WhatsappNotice = "confirmado" | "saiu" | "pronto";
 
@@ -76,26 +77,101 @@ export function whatsappMessage(
   }
 }
 
-/** https://wa.me/55<DDD+número>?text=... — null se o telefone não for válido. */
-export function whatsappLink(phone: string, text: string) {
+/* ------------------------------------------- Como abrir o WhatsApp (local) */
+
+/** "app" = WhatsApp instalado no PC; "web" = WhatsApp Web no navegador. */
+export type WhatsappOpenMode = "app" | "web";
+
+const OPEN_MODE_KEY = "mesari-whatsapp-modo";
+/** Aba/janela nomeada: cada aviso reaproveita a mesma, em vez de abrir outra. */
+export const WHATSAPP_WINDOW_NAME = "mesari-whatsapp";
+export const WHATSAPP_NOT_FOUND_MESSAGE =
+  "WhatsApp não encontrado neste PC. Abrindo pelo navegador.";
+
+/** No app desktop, o WhatsApp instalado; no navegador, o WhatsApp Web. */
+export function defaultWhatsappOpenMode(): WhatsappOpenMode {
+  return typeof window !== "undefined" && window.mesariDesktop ? "app" : "web";
+}
+
+/** Escolha guardada neste computador (ou o padrão do ambiente). */
+export function getWhatsappOpenMode(): WhatsappOpenMode {
+  try {
+    const stored = localStorage.getItem(OPEN_MODE_KEY);
+    if (stored === "app" || stored === "web") return stored;
+  } catch {
+    // Sem localStorage: usa o padrão.
+  }
+  return defaultWhatsappOpenMode();
+}
+
+export function setWhatsappOpenMode(mode: WhatsappOpenMode) {
+  try {
+    localStorage.setItem(OPEN_MODE_KEY, mode);
+  } catch {
+    // Sem localStorage: a escolha vale só até recarregar a página.
+  }
+}
+
+/** 55 + DDD + número, só dígitos — null se o telefone não for válido. */
+function whatsappPhone(phone: string) {
   const digits = cleanPhone(phone);
-  if (!isValidPhone(digits)) return null;
-  return `https://wa.me/55${digits}?text=${encodeURIComponent(text)}`;
+  return isValidPhone(digits) ? `55${digits}` : null;
+}
+
+/** whatsapp://send?phone=55...&text=... — abre o app instalado. */
+export function whatsappAppLink(phone: string, text: string) {
+  const full = whatsappPhone(phone);
+  return full ? `whatsapp://send?phone=${full}&text=${encodeURIComponent(text)}` : null;
+}
+
+/** https://web.whatsapp.com/send?phone=55...&text=... — WhatsApp Web. */
+export function whatsappWebLink(phone: string, text: string) {
+  const full = whatsappPhone(phone);
+  return full
+    ? `https://web.whatsapp.com/send?phone=${full}&text=${encodeURIComponent(text)}`
+    : null;
+}
+
+/** Sempre na mesma aba nomeada. No app desktop, o link vai para o navegador do sistema. */
+function openWhatsappWeb(url: string) {
+  window.open(url, WHATSAPP_WINDOW_NAME);
 }
 
 /**
- * Abre o link fora do Mesari: no app desktop pelo navegador/WhatsApp do sistema
- * (nunca dentro da janela do app); no navegador, em nova aba.
+ * Abre a conversa com a mensagem pronta, do jeito escolhido neste computador.
+ * `fellBack` = o app não foi encontrado e a conversa abriu pelo navegador.
  */
-export async function openExternalLink(url: string) {
-  const desktop = typeof window !== "undefined" ? window.mesariDesktop : undefined;
-  if (desktop?.openExternal) {
-    const result = await desktop.openExternal(url);
-    if (!result.ok) throw new Error(result.error ?? "Não foi possível abrir o WhatsApp.");
-    return;
+export async function openWhatsapp(
+  phone: string,
+  text: string,
+  mode: WhatsappOpenMode = getWhatsappOpenMode(),
+): Promise<{ fellBack: boolean }> {
+  const appLink = whatsappAppLink(phone, text);
+  const webLink = whatsappWebLink(phone, text);
+  if (!appLink || !webLink) {
+    throw new Error("O telefone deste cliente não é válido para o WhatsApp.");
   }
-  // Desktop antigo, sem openExternal: o app já manda window.open para o navegador do sistema.
-  window.open(url, "_blank", "noopener,noreferrer");
+  if (mode === "web") {
+    openWhatsappWeb(webLink);
+    return { fellBack: false };
+  }
+  const desktop = window.mesariDesktop;
+  if (!desktop) {
+    // Navegador: o próprio navegador entrega o whatsapp:// ao app instalado.
+    window.location.assign(appLink);
+    return { fellBack: false };
+  }
+  if (!desktop.openWhatsApp) {
+    // Desktop antigo, sem suporte ao app: segue pelo WhatsApp Web.
+    openWhatsappWeb(webLink);
+    return { fellBack: false };
+  }
+  const result = await desktop
+    .openWhatsApp(cleanPhone(phone), text)
+    .catch((cause: unknown) => ({ ok: false, error: String(cause) }));
+  if (result.ok) return { fellBack: false };
+  openWhatsappWeb(webLink);
+  return { fellBack: true };
 }
 
 /* ------------------------------------------------- "Cliente avisado" (local) */
