@@ -2,7 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { actions, useStore } from "@/lib/store";
 import { MobileFrame } from "@/components/mobile-frame";
 import { MenuPicker } from "@/components/menu-picker";
-import { isKitchenStationOnline } from "@/lib/kitchen-presence";
+import { getKitchenStationStatus } from "@/lib/kitchen-presence";
 
 export const Route = createFileRoute("/pedido/$id")({
   head: () => ({
@@ -19,10 +19,20 @@ export const Route = createFileRoute("/pedido/$id")({
 function Pedido() {
   const { id } = Route.useParams();
   const t = useStore((s) => s.tables.find((x) => x.id === id));
+  const loading = useStore((s) => s.loading);
   const navigate = useNavigate();
+  if (!t) {
+    return (
+      <MobileFrame title="Mesa" subtitle="Novo pedido" onBack={() => navigate({ to: "/garcom" })}>
+        <p role="status" className="p-8 text-center text-muted-foreground">
+          {loading ? "Carregando..." : "Mesa não encontrada ou desativada."}
+        </p>
+      </MobileFrame>
+    );
+  }
   return (
     <MobileFrame
-      title={`Mesa ${String(t?.number ?? "").padStart(2, "0")}`}
+      title={`Mesa ${String(t.number).padStart(2, "0")}`}
       subtitle="Novo pedido"
       onBack={() => navigate({ to: "/mesa/$id", params: { id } })}
     >
@@ -33,11 +43,11 @@ function Pedido() {
             actions.addLine(id, item, quantity, note, print)
           }
           onSubmit={async (entries, print = true) => {
-            const stationOnline = isKitchenStationOnline();
+            const stationOffline = getKitchenStationStatus() === "offline";
             await actions.addLines(id, entries, print);
             sessionStorage.setItem(
               "mesari-order-sent",
-              `${id}:${print && !stationOnline ? "offline" : "ok"}`,
+              `${id}:${print && stationOffline ? "offline" : "ok"}`,
             );
             navigate({ to: "/mesa/$id", params: { id } });
           }}

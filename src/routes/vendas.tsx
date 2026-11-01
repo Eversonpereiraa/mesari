@@ -7,6 +7,7 @@ import { BillViewer } from "@/components/bill-viewer";
 import {
   dateKeyForPicker,
   getShortcutRange,
+  parseDateKey,
   ReportDatePicker,
   reportDateRange,
   saoPauloDateKey,
@@ -23,6 +24,7 @@ import {
   type PaymentSummary,
 } from "@/lib/store";
 import { useStore } from "@/lib/store";
+import { formatPercent } from "@/lib/masks";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/vendas")({
@@ -47,7 +49,7 @@ const methods: Exclude<PaymentMethod, "nao_informado">[] = ["dinheiro", "pix", "
 const todayValue = saoPauloDateKey;
 
 function addDateDays(value: string, days: number) {
-  const [year, month, day] = value.split("-").map(Number);
+  const { year, month, day } = parseDateKey(value);
   const date = new Date(year, month - 1, day + days, 12);
   return dateKeyForPicker(date);
 }
@@ -63,7 +65,7 @@ function periodRange(period: Period, selectedDate: string, selectedEndDate: stri
     return reportDateRange(date, date);
   }
   if (period === "semana") {
-    const [year, month, day] = today.split("-").map(Number);
+    const { year, month, day } = parseDateKey(today);
     const start = new Date(year, month - 1, day, 12);
     start.setDate(start.getDate() - ((start.getDay() + 6) % 7));
     const startValue = dateKeyForPicker(start);
@@ -241,11 +243,11 @@ function Vendas() {
                   {loading ? "—" : brl(amount)}
                 </div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {contas} {contas === 1 ? "conta" : "contas"} · {percent.toFixed(1)}%
+                  {contas} {contas === 1 ? "conta" : "contas"} · {formatPercent(percent)}%
                 </div>
                 <div
                   role="progressbar"
-                  aria-label={`${paymentMethodLabel[forma]}: ${percent.toFixed(1)}% do total`}
+                  aria-label={`${paymentMethodLabel[forma]}: ${formatPercent(percent)}% do total`}
                   aria-valuemin={0}
                   aria-valuemax={100}
                   aria-valuenow={percent}
@@ -283,7 +285,8 @@ function Vendas() {
             <div>
               <h2 className="font-display text-lg font-bold text-ink">Vendas do período</h2>
               <p className="text-sm text-muted-foreground">
-                {filteredSales.length} vendas na lista carregada
+                {filteredSales.length} {filteredSales.length === 1 ? "venda" : "vendas"} na lista
+                carregada
               </p>
             </div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink">

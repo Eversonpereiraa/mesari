@@ -1,7 +1,8 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
+import { IntegerInput } from "@/components/inputs";
 import {
   connectSerialPrinter,
   connectUsbPrinter,
@@ -11,17 +12,25 @@ import {
   getPrinterStatus,
   getPrintSettings,
   initializePrinter,
+  isDemoSimulation,
   isDirectPrintSupported,
   printTestPage,
   printKitchenTicket,
+  resetSimulatedPaper,
   savePrintSettings,
   subscribePrinterStatus,
   type PrintSettings,
   type KitchenTicket,
+  type SimulationBehavior,
 } from "@/lib/printing";
-import { errorMessage, useStore } from "@/lib/store";
+import { actions, errorMessage, useStore } from "@/lib/store";
 import { Switch } from "@/components/ui/switch";
 import { supabase } from "@/lib/supabase";
+import {
+  getWhatsappOpenMode,
+  setWhatsappOpenMode,
+  type WhatsappOpenMode,
+} from "@/lib/whatsapp-notify";
 
 function translatePrinterError(cause: unknown) {
   const name =
@@ -58,6 +67,116 @@ export const Route = createFileRoute("/impressao")({
   component: Impressao,
 });
 
+/** Uma impressora = comanda única com o pedido inteiro; duas = uma comanda por setor. */
+function TicketModeField() {
+  const [mode, setMode] = useState<"unica" | "por_setor" | null>(null);
+  const [unavailable, setUnavailable] = useState(false);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    actions
+      .getSingleTicketMode()
+      .then((single) => {
+        if (!active) return;
+        if (single === null) setUnavailable(true);
+        else setMode(single ? "unica" : "por_setor");
+      })
+      .catch((cause: unknown) => {
+        if (active) setError(errorMessage(cause));
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const change = async (value: string) => {
+    const next = value === "por_setor" ? "por_setor" : "unica";
+    const previous = mode;
+    setMode(next);
+    setSaving(true);
+    setError("");
+    try {
+      await actions.setSingleTicketMode(next === "unica");
+    } catch (cause) {
+      setMode(previous);
+      setError(errorMessage(cause));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="mt-2">
+      <Field label="Impressoras de comanda">
+        <AppSelect
+          className="field"
+          ariaLabel="Impressoras de comanda"
+          value={mode ?? ""}
+          disabled={unavailable || mode === null || saving}
+          placeholder={unavailable ? "Aguardando atualização do banco" : "Carregando..."}
+          onValueChange={(value) => void change(value)}
+          options={[
+            { value: "unica", label: "Uma impressora (comanda única com o pedido inteiro)" },
+            {
+              value: "por_setor",
+              label: "Duas impressoras (uma comanda para cozinha e outra para bar)",
+            },
+          ]}
+        />
+      </Field>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {unavailable
+          ? "Esta opção aparece depois que o banco for atualizado. Por enquanto sai uma comanda por setor."
+          : mode === "por_setor"
+            ? "Cada envio do garçom gera uma comanda para a cozinha e outra para o bar."
+            : "Cada envio do garçom gera uma comanda só, com os blocos COZINHA e BAR."}
+      </p>
+      {error && (
+        <p role="alert" className="mt-1 text-xs text-destructive">
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** Aviso ao cliente do delivery: app do WhatsApp instalado ou WhatsApp Web. Vale neste computador. */
+function WhatsappModeField() {
+  const [mode, setMode] = useState<WhatsappOpenMode | null>(null);
+  // Lido depois de montar: o padrão depende de estar no app desktop ou no navegador.
+  useEffect(() => setMode(getWhatsappOpenMode()), []);
+
+  return (
+    <div>
+      <Field label="Como abrir o WhatsApp">
+        <AppSelect
+          className="field"
+          ariaLabel="Como abrir o WhatsApp"
+          value={mode ?? ""}
+          disabled={mode === null}
+          placeholder="Carregando..."
+          onValueChange={(value) => {
+            const next: WhatsappOpenMode = value === "web" ? "web" : "app";
+            setMode(next);
+            setWhatsappOpenMode(next);
+          }}
+          options={[
+            { value: "app", label: "App do WhatsApp instalado neste computador" },
+            { value: "web", label: "WhatsApp Web no navegador" },
+          ]}
+        />
+      </Field>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {mode === "web"
+          ? "Os avisos abrem sempre na mesma aba do WhatsApp Web."
+          : "Os avisos abrem direto no app. Se ele não estiver instalado, abre pelo navegador."}
+      </p>
+    </div>
+  );
+}
+
 function Impressao() {
   const role = useStore((snapshot) => snapshot.user?.role);
   const restaurantName = useStore((snapshot) => snapshot.restaurant.name);
@@ -78,6 +197,9 @@ function Impressao() {
   const [message, setMessage] = useState<string | null>(null);
   const [originalError, setOriginalError] = useState<string | null>(null);
   const [showAllUsb, setShowAllUsb] = useState(false);
+  const [modeBeforeSimulation, setModeBeforeSimulation] = useState<
+    Exclude<PrintSettings["printerMode"], "simulacao">
+  >(() => getDefaultPrintSettings().printerMode as "direct" | "browser");
   const [recentTickets, setRecentTickets] = useState<
     (KitchenTicket & { printedAt: number | null })[]
   >([]);
@@ -224,6 +346,10 @@ function Impressao() {
     };
   }, [role]);
 
+  // Rascunho das colunas: deixa digitar "4" a caminho de "48" sem pular para 16.
+  const [columnsDraft, setColumnsDraft] = useState<number | null>(settings.columns);
+  useEffect(() => setColumnsDraft(settings.columns), [settings.columns]);
+
   const updateSettings = (update: Partial<PrintSettings>) => {
     const next = { ...settings, ...update };
     try {
@@ -274,11 +400,13 @@ function Impressao() {
     try {
       const result = await printTestPage(settings, false, restaurantName || "Mesari");
       setMessage(
-        result.method === "desktop"
-          ? "Página de teste enviada pelo driver do Windows."
-          : result.method === "direct"
-            ? "Página de teste enviada diretamente para a impressora."
-            : `Página de teste aberta na impressão do navegador.${result.fallbackReason ? ` Impressão direta indisponível: ${result.fallbackReason}` : ""}`,
+        result.method === "simulacao"
+          ? "Página de teste enviada para a impressora virtual."
+          : result.method === "desktop"
+            ? "Página de teste enviada pelo driver do Windows."
+            : result.method === "direct"
+              ? "Página de teste enviada diretamente para a impressora."
+              : `Página de teste aberta na impressão do navegador.${result.fallbackReason ? ` Impressão direta indisponível: ${result.fallbackReason}` : ""}`,
       );
     } catch (cause) {
       const details = cause instanceof Error ? cause.message : String(cause);
@@ -289,22 +417,115 @@ function Impressao() {
     }
   };
 
-  const statusText = desktop
-    ? settings.printerMode === "direct"
-      ? printer.connected
-        ? `Conexão direta · ${printer.name}`
-        : "Conexão direta · desconectada"
-      : `Driver do Windows · ${printers.length} impressora(s)`
-    : printer.connected
-      ? `Conectada: ${printer.name}`
-      : "Não conectada";
+  const simulating = settings.printerMode === "simulacao";
+  const toggleSimulation = (enabled: boolean) => {
+    if (enabled) {
+      if (settings.printerMode !== "simulacao") setModeBeforeSimulation(settings.printerMode);
+      updateSettings({ printerMode: "simulacao" });
+    } else {
+      updateSettings({ printerMode: modeBeforeSimulation });
+    }
+    void initializePrinter();
+  };
+  const statusText = simulating
+    ? printer.connected
+      ? "Impressora virtual pronta"
+      : (printer.error ?? "Impressora virtual com problema")
+    : desktop
+      ? settings.printerMode === "direct"
+        ? printer.connected
+          ? `Conexão direta · ${printer.name}`
+          : "Conexão direta · desconectada"
+        : `Driver do Windows · ${printers.length} impressora(s)`
+      : printer.connected
+        ? `Conectada: ${printer.name}`
+        : "Não conectada";
   if (role !== "caixa") return null;
 
   return (
     <AppShell center="Impressão">
       <main className="mx-auto max-w-3xl p-5">
         <div className="rounded-lg border bg-card px-6">
-          {desktop && (
+          <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
+            <div>
+              <div className="text-xs text-muted-foreground">Testar sem impressora</div>
+              <h2 className="font-semibold text-ink">Impressora virtual</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Nada sai no papel: comandas, recibos e testes aparecem na tela, do jeito que a
+                impressora imprimiria.
+              </p>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <label className="flex items-center gap-3 text-sm font-medium text-ink sm:col-span-2">
+                <Switch
+                  checked={simulating}
+                  disabled={busy || isDemoSimulation()}
+                  onCheckedChange={toggleSimulation}
+                />
+                Simular impressora (modo de teste)
+              </label>
+              {isDemoSimulation() && (
+                <p className="text-xs text-muted-foreground sm:col-span-2">
+                  Modo demonstração ativo: a simulação vale só até fechar esta aba.
+                </p>
+              )}
+              {simulating && (
+                <>
+                  <Field label="Comportamento">
+                    <AppSelect
+                      className="field"
+                      ariaLabel="Comportamento da impressora simulada"
+                      value={settings.simulationBehavior ?? "normal"}
+                      onValueChange={(value) => {
+                        updateSettings({ simulationBehavior: value as SimulationBehavior });
+                        void initializePrinter();
+                      }}
+                      options={[
+                        { value: "normal", label: "Normal" },
+                        { value: "desconectada", label: "Impressora desconectada" },
+                        { value: "sem_papel", label: "Sem papel (erro na 3ª impressão)" },
+                      ]}
+                    />
+                  </Field>
+                  <Field label="Tabela de caracteres">
+                    <AppSelect
+                      className="field"
+                      value={settings.characterTable}
+                      onValueChange={(value) =>
+                        updateSettings({
+                          characterTable: value as PrintSettings["characterTable"],
+                        })
+                      }
+                      options={[
+                        { value: "CP860", label: "CP860 (padrão)" },
+                        { value: "CP850", label: "CP850" },
+                        { value: "WPC1252", label: "WPC1252" },
+                      ]}
+                    />
+                  </Field>
+                  <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+                    <span
+                      className={`rounded-sm px-2 py-0.5 text-xs font-semibold ${printer.connected ? "bg-free-bg text-free" : "bg-bill-bg text-bill"}`}
+                    >
+                      {statusText}
+                    </span>
+                    {settings.simulationBehavior === "sem_papel" && (
+                      <Btn variant="outline" size="sm" onClick={() => resetSimulatedPaper()}>
+                        Trocar bobina
+                      </Btn>
+                    )}
+                  </div>
+                </>
+              )}
+              <Link
+                to="/impressora-virtual"
+                className="text-sm font-semibold text-primary underline sm:col-span-2"
+              >
+                Abrir impressora virtual
+              </Link>
+            </div>
+          </section>
+          {desktop && !simulating && (
             <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
               <div>
                 <div className="text-xs text-muted-foreground">Método ativo</div>
@@ -471,7 +692,7 @@ function Impressao() {
               </div>
             </section>
           )}
-          {(!desktop || settings.printerMode === "direct") && (
+          {!simulating && (!desktop || settings.printerMode === "direct") && (
             <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
               <div>
                 <div className="text-xs text-muted-foreground">Conexão</div>
@@ -614,17 +835,18 @@ function Impressao() {
                 </Field>
               )}
               <Field label="Colunas (avançado)">
-                <input
-                  className="field"
-                  type="number"
+                <IntegerInput
                   min={16}
                   max={64}
-                  value={settings.columns}
-                  onChange={(event) =>
-                    updateSettings({
-                      columns: Math.max(16, Math.min(64, Number(event.target.value) || 32)),
-                    })
-                  }
+                  enterKeyHint="done"
+                  value={columnsDraft}
+                  onChange={(columns) => {
+                    setColumnsDraft(columns);
+                    if (columns !== null && columns >= 16 && columns <= 64) {
+                      updateSettings({ columns });
+                    }
+                  }}
+                  onBlur={() => setColumnsDraft(settings.columns)}
                 />
               </Field>
               <Field label="Número de vias da nota">
@@ -656,6 +878,16 @@ function Impressao() {
               </label>
               <label className="flex items-center gap-3 py-2 text-sm text-ink">
                 <Switch
+                  aria-label="Imprimir conferência automaticamente quando o garçom pedir a conta"
+                  checked={settings.autoPrintConferenceOnRequest}
+                  onCheckedChange={(checked) =>
+                    updateSettings({ autoPrintConferenceOnRequest: checked })
+                  }
+                />
+                Imprimir conferência automaticamente quando o garçom pedir a conta
+              </label>
+              <label className="flex items-center gap-3 py-2 text-sm text-ink">
+                <Switch
                   aria-label="Mostrar valores na comanda"
                   checked={settings.showKitchenPrices}
                   onCheckedChange={(checked) => updateSettings({ showKitchenPrices: checked })}
@@ -669,12 +901,19 @@ function Impressao() {
                 />
                 Imprimir comandas neste computador
               </label>
-              {settings.printKitchenEnabled && (
-                <p className="text-xs text-muted-foreground">
-                  Setores ativos: Cozinha e Bar (uma comanda por pedido).
-                </p>
-              )}
+              <TicketModeField />
             </div>
+          </section>
+
+          <section className="grid grid-cols-1 gap-5 border-b py-5 md:grid-cols-[200px_1fr] md:gap-6">
+            <div>
+              <div className="text-xs text-muted-foreground">Preferências locais</div>
+              <h2 className="font-semibold text-ink">Aviso pelo WhatsApp</h2>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Usado no delivery para avisar o cliente. Vale só neste computador.
+              </p>
+            </div>
+            <WhatsappModeField />
           </section>
 
           <section className="grid grid-cols-1 gap-5 py-5 md:grid-cols-[200px_1fr] md:gap-6">

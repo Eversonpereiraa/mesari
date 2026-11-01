@@ -38,7 +38,7 @@ export function AppSelect({
   return (
     <Select
       value={selectedValue}
-      disabled={disabled}
+      disabled={disabled ?? false}
       onValueChange={(next) => onValueChange(next === EMPTY_VALUE ? "" : next)}
     >
       <SelectTrigger

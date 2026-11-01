@@ -3,6 +3,24 @@ import { useEffect, useRef, useState, type PointerEvent } from "react";
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Table } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
+import { IntegerInput } from "@/components/inputs";
+import { integerError } from "@/lib/masks";
+
+const TABLE_NUMBER = { min: 1, max: 999 };
+const TABLE_SEATS = { min: 1, max: 50 };
+
+/** Problemas de uma mesa: número/capacidade fora do limite ou número repetido. */
+function tableProblems(table: Table, all: Table[]) {
+  const number = integerError(table.number || null, TABLE_NUMBER);
+  const duplicate =
+    !number && all.some((other) => other.id !== table.id && other.number === table.number)
+      ? `Já existe a mesa ${String(table.number).padStart(2, "0")}.`
+      : null;
+  return {
+    number: number ?? duplicate,
+    seats: integerError(table.seats || null, TABLE_SEATS),
+  };
+}
 
 export const Route = createFileRoute("/layout")({
   head: () => ({
@@ -24,6 +42,7 @@ function LayoutPage() {
   const [tables, setTables] = useState<Table[]>(saved);
   const [sel, setSel] = useState<string | null>(null);
   const [msg, setMsg] = useState("");
+  const [saveError, setSaveError] = useState("");
   const drag = useRef<{ id: string; dx: number; dy: number } | null>(null);
   const area = useRef<HTMLDivElement>(null);
   useEffect(() => setTables(saved), [saved]);
@@ -72,6 +91,16 @@ function LayoutPage() {
             variant="success"
             size="sm"
             onClick={async () => {
+              const invalid = tables.find((table) => {
+                const problems = tableProblems(table, tables);
+                return problems.number || problems.seats;
+              });
+              if (invalid) {
+                setSel(invalid.id);
+                setSaveError("Corrija a mesa destacada antes de salvar.");
+                return;
+              }
+              setSaveError("");
               await actions.saveTables(tables);
               setMsg("Layout salvo.");
               setTimeout(() => setMsg(""), 2000);
@@ -127,26 +156,36 @@ function LayoutPage() {
             Propriedades
           </h2>
           {msg && <p className="mb-4 rounded-md bg-free-bg px-3 py-2 text-sm text-free">{msg}</p>}
+          {saveError && (
+            <p
+              role="alert"
+              className="mb-4 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"
+            >
+              {saveError}
+            </p>
+          )}
           {!cur ? (
             <p className="text-sm text-muted-foreground">Selecione uma mesa</p>
           ) : (
             <div className="space-y-4">
               <Field label="Número da mesa">
-                <input
-                  className="field num"
-                  type="number"
-                  min={1}
-                  value={cur.number}
-                  onChange={(e) => patch({ number: +e.target.value })}
+                <IntegerInput
+                  key={`numero-${cur.id}`}
+                  {...TABLE_NUMBER}
+                  value={cur.number || null}
+                  onChange={(number) => patch({ number: number ?? 0 })}
+                  error={tableProblems(cur, tables).number}
+                  showError={Boolean(saveError)}
                 />
               </Field>
               <Field label="Capacidade (lugares)">
-                <input
-                  className="field num"
-                  type="number"
-                  min={1}
-                  value={cur.seats}
-                  onChange={(e) => patch({ seats: +e.target.value })}
+                <IntegerInput
+                  key={`lugares-${cur.id}`}
+                  {...TABLE_SEATS}
+                  enterKeyHint="done"
+                  value={cur.seats || null}
+                  onChange={(seats) => patch({ seats: seats ?? 0 })}
+                  showError={Boolean(saveError)}
                 />
               </Field>
               <Btn

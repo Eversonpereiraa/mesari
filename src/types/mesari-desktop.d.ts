@@ -21,6 +21,8 @@ interface Window {
       printerName: string;
       widthMm: number;
       copies: number;
+      /** Usado pela impressora virtual (PDF) do desktop para nomear o arquivo. */
+      tipo?: "comanda" | "recibo" | "teste";
     }): Promise<{ ok: boolean; error?: string }>;
     getSettings(): Promise<MesariDesktopSettings>;
     setSettings(settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings>;
@@ -30,5 +32,10 @@ interface Window {
       widthMm: number,
       restaurantName?: string,
     ): Promise<{ ok: boolean; error?: string }>;
+    /**
+     * Abre a conversa no WhatsApp instalado no PC (whatsapp://send). `ok: false`
+     * quando o app não está instalado. Ausente em versões antigas do desktop.
+     */
+    openWhatsApp?(phone: string, text: string): Promise<{ ok: boolean; error?: string }>;
   };
 }

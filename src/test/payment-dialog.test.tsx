@@ -14,7 +14,7 @@ describe("modal de pagamento", () => {
 
     expect(screen.getByText("TROCO")).toBeInTheDocument();
     expect(screen.getByText(/19,95/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Confirmar e imprimir" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pagamento" }));
 
     await waitFor(() =>
       expect(onConfirm).toHaveBeenCalledWith([{ forma: "dinheiro", valor: 100.05, recebido: 120 }]),
@@ -26,7 +26,7 @@ describe("modal de pagamento", () => {
     render(<PaymentDialog table={4} totalCents={2500} onClose={vi.fn()} onConfirm={onConfirm} />);
 
     fireEvent.click(screen.getByRole("button", { name: "Pix" }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirmar e imprimir" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pagamento" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Falha ao fechar no banco");
     expect(screen.getByRole("dialog", { name: "Pagamento – Mesa 4" })).toBeInTheDocument();

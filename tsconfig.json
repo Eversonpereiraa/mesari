@@ -31,7 +31,8 @@
     "exactOptionalPropertyTypes": true,
     "noUncheckedSideEffectImports": true,
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "electron": ["./src/test/electron-stub.ts"]
     }
   }
 }

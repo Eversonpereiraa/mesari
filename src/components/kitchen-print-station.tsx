@@ -11,93 +11,14 @@ import {
   type KitchenTicket,
 } from "@/lib/printing";
 import { errorMessage, useStore } from "@/lib/store";
+import { mapStationTicket as mapTicket, type StationTicket } from "@/lib/kitchen-ticket-row";
+import { trackKitchenStation, untrackKitchenStation } from "@/lib/kitchen-presence";
 import { Btn } from "@/components/ui-kit";
+import { demoRequested } from "@/lib/demo-mode";
 
-type TicketRow = KitchenTicket & { printedAt: number | null };
+type TicketRow = StationTicket;
 const FAILED_KEY = "mesari-unprinted-kitchen-orders";
 const THREE_HOURS = 3 * 60 * 60 * 1000;
-
-function mapTicket(value: unknown): TicketRow {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("O Supabase retornou uma comanda em formato inválido.");
-  }
-  const row = value as Record<string, unknown>;
-  const origin = row["origem"];
-  const externalOrder = origin === "entrega" || origin === "retirada";
-  if (!externalOrder && row["setor"] !== "cozinha" && row["setor"] !== "bar") {
-    throw new Error(`Setor inválido na comanda: ${String(row["setor"])}.`);
-  }
-  if (!Array.isArray(row["itens"])) throw new Error("A comanda não contém itens válidos.");
-  const details =
-    typeof row["dados"] === "object" && row["dados"] !== null && !Array.isArray(row["dados"])
-      ? (row["dados"] as Record<string, unknown>)
-      : {};
-  const paymentValue = details["pagamento_previsto"];
-  const payment =
-    typeof paymentValue === "object" && paymentValue !== null && !Array.isArray(paymentValue)
-      ? (paymentValue as Record<string, unknown>)
-      : {};
-  const getText = (key: string) => {
-    const value = details[key];
-    return typeof value === "string" ? value : "";
-  };
-  const getNumber = (key: string, fallback = 0) => {
-    const value = Number(details[key]);
-    return Number.isFinite(value) ? value : fallback;
-  };
-  return {
-    id: String(row["id"]),
-    number: externalOrder ? getNumber("numero_dia", Number(row["numero"])) : Number(row["numero"]),
-    table:
-      row["mesa_numero"] === null || row["mesa_numero"] === undefined
-        ? null
-        : Number(row["mesa_numero"]),
-    sector: row["setor"] === "bar" ? "bar" : "cozinha",
-    waiter: typeof row["garcom_nome"] === "string" ? row["garcom_nome"] : "",
-    additional: row["adicional"] === true,
-    createdAt: new Date(String(row["criado_em"])).getTime(),
-    printedAt: row["impresso_em"] ? new Date(String(row["impresso_em"])).getTime() : null,
-    items: row["itens"].map((value: unknown) => {
-      if (typeof value !== "object" || value === null || Array.isArray(value)) {
-        throw new Error("Um item da comanda está em formato inválido.");
-      }
-      const item = value as Record<string, unknown>;
-      return {
-        product: typeof item["produto"] === "string" ? item["produto"] : "",
-        quantity: Number(item["quantidade"]),
-        note: typeof item["observacao"] === "string" ? item["observacao"] : "",
-        ...(typeof item["valor_unitario"] === "number" && Number.isFinite(item["valor_unitario"])
-          ? { unitPrice: item["valor_unitario"] }
-          : {}),
-      };
-    }),
-    ...(externalOrder
-      ? {
-          external: {
-            origin,
-            dayNumber: getNumber("numero_dia", Number(row["numero"])),
-            channel: getText("canal"),
-            customerName:
-              typeof details["cliente_nome"] === "string" ? details["cliente_nome"] : "",
-            phone: getText("telefone"),
-            address: getText("endereco"),
-            observation: getText("observacao"),
-            subtotal: getNumber("subtotal"),
-            deliveryFee: getNumber("taxa_entrega"),
-            total: getNumber("total"),
-            payment: {
-              forma: typeof payment["forma"] === "string" ? payment["forma"] : null,
-              pago: payment["pago"] === true,
-              trocoPara:
-                payment["troco_para"] === null || payment["troco_para"] === undefined
-                  ? null
-                  : Number(payment["troco_para"]),
-            },
-          },
-        }
-      : {}),
-  };
-}
 
 function readFailed(): TicketRow[] {
   const stored = localStorage.getItem(FAILED_KEY);
@@ -149,7 +70,6 @@ export function KitchenPrintStation() {
   const busy = useRef(new Set<string>());
   const recovering = useRef(false);
   const channel = useRef<ReturnType<typeof supabase.channel> | null>(null);
-  const presence = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   const reloadFailed = useCallback(() => {
     try {
@@ -280,8 +200,6 @@ export function KitchenPrintStation() {
       active.current = false;
       if (channel.current) void supabase.removeChannel(channel.current);
       channel.current = null;
-      if (presence.current) void supabase.removeChannel(presence.current);
-      presence.current = null;
     };
   }, [reloadFailed]);
 
@@ -357,41 +275,19 @@ export function KitchenPrintStation() {
 
   useEffect(() => {
     if (user?.role !== "caixa") return;
-    const station = supabase.channel("estacao-impressao", {
-      config: { presence: { key: user.id } },
-    });
-    presence.current = station;
-    station.subscribe((status) => {
-      if (status === "SUBSCRIBED") {
-        void station
-          .track({
-            tipo: "estacao-impressao",
-            pronta: getPrinterStatus().connected,
-            usuario: user.username,
-          })
-          .catch((cause: unknown) =>
-            toast.error(`Não foi possível publicar o estado da impressora: ${errorMessage(cause)}`),
-          );
-      }
-    });
-    return () => {
-      if (presence.current === station) presence.current = null;
-      void supabase.removeChannel(station);
-    };
-  }, [user?.id, user?.role, user?.username]);
+    void trackKitchenStation({
+      tipo: "estacao-impressao",
+      pronta: printer.connected,
+      usuario: user.username,
+    }).catch((cause: unknown) =>
+      toast.error(`Não foi possível publicar o estado da impressora: ${errorMessage(cause)}`),
+    );
+  }, [printer.connected, user?.role, user?.username]);
 
   useEffect(() => {
-    if (!presence.current) return;
-    void presence.current
-      .track({
-        tipo: "estacao-impressao",
-        pronta: printer.connected,
-        usuario: user?.username ?? "",
-      })
-      .catch((cause: unknown) =>
-        toast.error(`Não foi possível atualizar o estado da impressora: ${errorMessage(cause)}`),
-      );
-  }, [printer.connected, user?.username]);
+    if (user?.role !== "caixa") return;
+    return () => untrackKitchenStation();
+  }, [user?.role]);
 
   useEffect(() => {
     if (user?.role !== "caixa" || !settings.printKitchenEnabled) return;
@@ -415,7 +311,12 @@ export function KitchenPrintStation() {
   if (user?.role !== "caixa") return null;
   const retryInWindows = async (ticket: TicketRow) => {
     try {
-      await printKitchenTicket(ticket, { ...getPrintSettings(), printerMode: "browser" }, true);
+      const current = getPrintSettings();
+      await printKitchenTicket(
+        ticket,
+        current.printerMode === "simulacao" ? current : { ...current, printerMode: "browser" },
+        true,
+      );
       setFailed((current) => {
         const next = current.filter((item) => item.id !== ticket.id);
         writeFailed(next);
@@ -429,9 +330,12 @@ export function KitchenPrintStation() {
 
   return (
     <>
-      <div className="border-b bg-muted/60 px-4 py-2 text-center text-xs text-muted-foreground">
-        Mantenha o Mesari aberto neste computador para imprimir os pedidos
-      </div>
+      {/* No modo demonstração (?demo=1) a faixa some para as telas saírem limpas nos prints. */}
+      {!demoRequested() && (
+        <div className="border-b bg-muted/60 px-4 py-2 text-center text-xs text-muted-foreground">
+          Mantenha o Mesari aberto neste computador para imprimir os pedidos
+        </div>
+      )}
       {warning && (
         <div
           role="alert"
@@ -468,19 +372,21 @@ export function KitchenPrintStation() {
       <div className="sr-only" aria-live="polite">
         {printer.connected ? "Impressora pronta" : "Impressora desconectada"}
       </div>
-      <div
-        className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : settings.printerDeviceId || settings.connectionType ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
-      >
-        {printer.connected ? (
-          <span className="font-semibold">Impressora pronta · {printer.name}</span>
-        ) : settings.printerDeviceId || settings.connectionType ? (
-          <span className="font-semibold">Reconectando...</span>
-        ) : (
-          <Link to="/impressao" className="font-semibold underline">
-            Impressora desconectada
-          </Link>
-        )}
-      </div>
+      {!demoRequested() && (
+        <div
+          className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : settings.printerDeviceId || settings.connectionType ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
+        >
+          {printer.connected ? (
+            <span className="font-semibold">Impressora pronta · {printer.name}</span>
+          ) : settings.printerDeviceId || settings.connectionType ? (
+            <span className="font-semibold">Reconectando...</span>
+          ) : (
+            <Link to="/impressao" className="font-semibold underline">
+              Impressora desconectada
+            </Link>
+          )}
+        </div>
+      )}
       {recent.length > 0 && (
         <details className="border-b px-4 py-2 text-xs text-muted-foreground">
           <summary className="cursor-pointer font-semibold">

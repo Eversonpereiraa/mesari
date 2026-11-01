@@ -1,5 +1,13 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
+import {
+  cleanCpfCnpj,
+  cleanInstagram,
+  cleanPhone,
+  cpfCnpjError,
+  instagramError,
+  phoneError,
+} from "@/lib/masks";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
@@ -12,7 +20,23 @@ export type Table = {
   status?: Status;
   active: boolean;
 };
-export type Category = { id: string; name: string; sector: "cozinha" | "bar" | "nenhum" };
+export type Category = { id: string; name: string; sector: "cozinha" | "bar" };
+export const categorySectorOptions: { value: Category["sector"]; label: string }[] = [
+  { value: "cozinha", label: "Cozinha" },
+  { value: "bar", label: "Bar" },
+];
+
+/**
+ * Setor da categoria vindo do banco. Todo item sai na comanda: registros
+ * antigos sem setor ou com "nenhum" (antigo "Não imprimir") viram cozinha.
+ */
+export function parseCategorySector(value: unknown, categoryName: string): Category["sector"] {
+  if (value === "bar") return "bar";
+  if (value === "cozinha" || value === "nenhum" || value === null || value === undefined) {
+    return "cozinha";
+  }
+  throw new Error(`Setor inválido recebido para a categoria ${categoryName}.`);
+}
 export type MenuItem = {
   id: string;
   name: string;
@@ -31,7 +55,7 @@ export type OrderLine = {
   note: string;
   at: number;
   waiter: string;
-  waiterId?: string;
+  waiterId?: string | undefined;
 };
 export type StaffMember = {
   id: string;
@@ -149,6 +173,11 @@ let refreshPromise: Promise<void> | null = null;
 
 type DatabaseRow = Record<string, unknown>;
 
+/** Coluna inexistente no banco (Postgres 42703 / cache de schema do PostgREST). */
+function isMissingColumn(error: { code?: string; message?: string }) {
+  return error.code === "42703" || error.code === "PGRST204";
+}
+
 function asRow(value: unknown): DatabaseRow {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("O Supabase retornou um registro em formato inválido.");
@@ -164,7 +193,7 @@ function mapPayments(value: unknown): Payment[] {
   if (!Array.isArray(value)) return [];
   return value.map((payment) => {
     const row = asRow(payment);
-    const form = row.forma;
+    const form = row["forma"];
     if (
       form !== "dinheiro" &&
       form !== "pix" &&
@@ -176,9 +205,9 @@ function mapPayments(value: unknown): Payment[] {
     }
     return {
       forma: form,
-      valor: Number(row.valor),
-      ...(row.recebido == null ? {} : { recebido: Number(row.recebido) }),
-      ...(row.troco == null ? {} : { troco: Number(row.troco) }),
+      valor: Number(row["valor"]),
+      ...(row["recebido"] == null ? {} : { recebido: Number(row["recebido"]) }),
+      ...(row["troco"] == null ? {} : { troco: Number(row["troco"]) }),
     };
   });
 }
@@ -203,65 +232,79 @@ export function errorMessage(error: unknown) {
 
 const mapTable = (value: unknown): Table => {
   const row = asRow(value);
-  const status = row.status;
+  const status = row["status"];
   if (status !== "livre" && status !== "ocupada" && status !== "conta") {
-    throw new Error(`Status inválido recebido para a mesa ${stringValue(row.id)}.`);
+    throw new Error(`Status inválido recebido para a mesa ${stringValue(row["id"])}.`);
   }
   return {
-    id: stringValue(row.id),
-    number: Number(row.numero),
-    seats: Number(row.lugares),
-    x: Number(row.pos_x ?? 0),
-    y: Number(row.pos_y ?? 0),
+    id: stringValue(row["id"]),
+    number: Number(row["numero"]),
+    seats: Number(row["lugares"]),
+    x: Number(row["pos_x"] ?? 0),
+    y: Number(row["pos_y"] ?? 0),
     status,
-    active: row.ativa === true,
+    active: row["ativa"] === true,
   };
 };
 
 const mapOrderLine = (value: unknown): OrderLine => {
   const row = asRow(value);
   return {
-    id: stringValue(row.id),
-    itemId: stringValue(row.produto_id),
-    name: stringValue(row.produto_nome),
-    qty: Number(row.quantidade),
-    price: Number(row.valor_unitario),
-    note: stringValue(row.observacao),
-    at: new Date(stringValue(row.criado_em)).getTime(),
-    waiter: stringValue(row.garcom_nome),
-    waiterId: stringValue(row.garcom_id) || undefined,
+    id: stringValue(row["id"]),
+    itemId: stringValue(row["produto_id"]),
+    name: stringValue(row["produto_nome"]),
+    qty: Number(row["quantidade"]),
+    price: Number(row["valor_unitario"]),
+    note: stringValue(row["observacao"]),
+    at: new Date(stringValue(row["criado_em"])).getTime(),
+    waiter: stringValue(row["garcom_nome"]),
+    waiterId: stringValue(row["garcom_id"]) || undefined,
   };
 };
 
+/** Primeiro texto não vazio entre as chaves (o formato de vendas.itens mudou com o tempo). */
+const firstText = (row: DatabaseRow, keys: string[]) =>
+  keys.map((key) => stringValue(row[key]).trim()).find(Boolean) ?? "";
+
+/**
+ * Item de vendas.itens. fechar_conta e concluir_pedido_externo gravam "produto" e
+ * "garcom"; vendas antigas usam "produto_nome"/"garcom_nome" ou "name"/"waiter".
+ */
 const mapSaleLine = (value: unknown): OrderLine => {
   const line = asRow(value);
-  const createdAt = stringValue(line.criado_em);
+  const createdAt = stringValue(line["criado_em"]);
   return {
-    id: stringValue(line.id),
-    itemId: stringValue(line.produto_id ?? line.itemId),
-    name: stringValue(line.produto_nome ?? line.name),
-    qty: Number(line.quantidade ?? line.qty),
-    price: Number(line.valor_unitario ?? line.price),
-    note: stringValue(line.observacao ?? line.note),
-    at: createdAt ? new Date(createdAt).getTime() : Number(line.at ?? 0),
-    waiter: stringValue(line.garcom_nome ?? line.waiter),
-    waiterId: stringValue(line.garcom_id ?? line.waiterId) || undefined,
+    id: stringValue(line["id"]),
+    itemId: stringValue(line["produto_id"] ?? line["itemId"]),
+    name: firstText(line, ["produto", "produto_nome", "nome", "name"]),
+    qty: Number(line["quantidade"] ?? line["qty"]),
+    price: Number(line["valor_unitario"] ?? line["price"]),
+    note: stringValue(line["observacao"] ?? line["note"]),
+    at: createdAt ? new Date(createdAt).getTime() : Number(line["at"] ?? 0),
+    waiter: firstText(line, ["garcom", "garcom_nome", "waiter"]),
+    waiterId: stringValue(line["garcom_id"] ?? line["waiterId"]) || undefined,
   };
 };
 
 const mapClosing = (value: unknown): Closing => {
   const row = asRow(value);
   const origin = row["origem"];
+  // Sem garçom no item (ex.: delivery), vale quem atendeu/fechou a venda.
+  const saleWaiter = firstText(row, ["garcom_nome", "fechado_por_nome"]);
   return {
-    id: stringValue(row.id),
-    at: new Date(stringValue(row.fechada_em)).getTime(),
-    table: Number(row.mesa_numero ?? 0),
-    saleNumber: Number(row.numero),
-    lines: Array.isArray(row.itens) ? row.itens.map(mapSaleLine) : [],
-    subtotal: Number(row.subtotal),
-    serviceCharge: Number(row.taxa_servico),
-    total: Number(row.total),
-    payments: mapPayments(row.pagamentos),
+    id: stringValue(row["id"]),
+    at: new Date(stringValue(row["fechada_em"])).getTime(),
+    table: Number(row["mesa_numero"] ?? 0),
+    saleNumber: Number(row["numero"]),
+    lines: Array.isArray(row["itens"])
+      ? row["itens"]
+          .map(mapSaleLine)
+          .map((line) => (line.waiter || !saleWaiter ? line : { ...line, waiter: saleWaiter }))
+      : [],
+    subtotal: Number(row["subtotal"]),
+    serviceCharge: Number(row["taxa_servico"]),
+    total: Number(row["total"]),
+    payments: mapPayments(row["pagamentos"]),
     ...(origin === "mesa" || origin === "entrega" || origin === "retirada" || origin === "balcao"
       ? { origin }
       : {}),
@@ -361,11 +404,15 @@ async function loadRemoteData() {
   if (failed?.error) throw failed.error;
 
   const profile = profileRes.data ? asRow(profileRes.data) : null;
-  if (!profile || profile.ativo !== true) {
+  if (!profile || profile["ativo"] !== true) {
     throw new Error("O usuário autenticado não possui um perfil ativo em public.profiles.");
   }
-  if (profile.papel !== "caixa" && profile.papel !== "garcom" && profile.papel !== "cozinha") {
-    throw new Error(`Papel inválido no perfil autenticado: ${String(profile.papel)}.`);
+  if (
+    profile["papel"] !== "caixa" &&
+    profile["papel"] !== "garcom" &&
+    profile["papel"] !== "cozinha"
+  ) {
+    throw new Error(`Papel inválido no perfil autenticado: ${String(profile["papel"])}.`);
   }
   if (!restaurantRes.data)
     throw new Error("Não foi encontrado o registro id=1 em public.restaurante.");
@@ -373,7 +420,7 @@ async function loadRemoteData() {
   const orders = (ordersRes.data ?? []).reduce<Record<string, OrderLine[]>>(
     (grouped, value: unknown) => {
       const row = asRow(value);
-      const tableId = stringValue(row.mesa_id);
+      const tableId = stringValue(row["mesa_id"]);
       (grouped[tableId] ??= []).push(mapOrderLine(row));
       return grouped;
     },
@@ -384,50 +431,48 @@ async function loadRemoteData() {
   publish({
     user: {
       id: session.user.id,
-      username: stringValue(profile.usuario),
-      name: stringValue(profile.nome),
-      role: profile.papel,
+      username: stringValue(profile["usuario"]),
+      name: stringValue(profile["nome"]),
+      role: profile["papel"],
     },
     staff: (staffRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
       return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        username: stringValue(row.usuario),
-        role: row.papel as "caixa" | "garcom",
-        active: row.ativo === true,
+        id: stringValue(row["id"]),
+        name: stringValue(row["nome"]),
+        username: stringValue(row["usuario"]),
+        role: row["papel"] as "caixa" | "garcom",
+        active: row["ativo"] === true,
       };
     }),
     restaurant: {
-      name: stringValue(restaurant.nome),
-      phone: stringValue(restaurant.telefone),
-      address: stringValue(restaurant.endereco),
-      cnpj: stringValue(restaurant.cnpj),
-      instagram: stringValue(restaurant.instagram),
-      logo: stringValue(restaurant.logo_url),
-      serviceChargeEnabled: restaurant.taxa_servico_ativa === true,
-      serviceChargePercent: Number(restaurant.taxa_servico_percentual),
+      name: stringValue(restaurant["nome"]),
+      // Dados antigos podem estar formatados ou sujos: no estado ficam limpos.
+      phone: cleanPhone(stringValue(restaurant["telefone"])),
+      address: stringValue(restaurant["endereco"]),
+      cnpj: cleanCpfCnpj(stringValue(restaurant["cnpj"])),
+      instagram: cleanInstagram(stringValue(restaurant["instagram"])),
+      logo: stringValue(restaurant["logo_url"]),
+      serviceChargeEnabled: restaurant["taxa_servico_ativa"] === true,
+      serviceChargePercent: Number(restaurant["taxa_servico_percentual"]),
       deliveryFee: Number(restaurant["taxa_entrega"] ?? 0),
     },
     tables: (tablesRes.data ?? []).map(mapTable),
     categories: (categoriesRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
-      const sector = row.setor ?? "nenhum";
-      if (sector !== "cozinha" && sector !== "bar" && sector !== "nenhum") {
-        throw new Error(`Setor inválido recebido para a categoria ${stringValue(row.nome)}.`);
-      }
-      return { id: stringValue(row.id), name: stringValue(row.nome), sector };
+      const name = stringValue(row["nome"]);
+      return { id: stringValue(row["id"]), name, sector: parseCategorySector(row["setor"], name) };
     }),
     items: (productsRes.data ?? []).map((value: unknown) => {
       const row = asRow(value);
       return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        categoryId: stringValue(row.categoria_id),
-        price: Number(row.preco),
-        description: stringValue(row.descricao),
-        active: row.ativo === true,
-        order: Number(row.ordem),
+        id: stringValue(row["id"]),
+        name: stringValue(row["nome"]),
+        categoryId: stringValue(row["categoria_id"]),
+        price: Number(row["preco"]),
+        description: stringValue(row["descricao"]),
+        active: row["ativo"] === true,
+        order: Number(row["ordem"]),
       };
     }),
     orders,
@@ -446,7 +491,7 @@ export async function refreshData() {
       publish({
         loading: false,
         configured: true,
-        connection: "reconnecting",
+        connection: disconnectedStatus(),
         error: errorMessage(error),
       });
     })
@@ -454,6 +499,13 @@ export async function refreshData() {
       refreshPromise = null;
     });
   return refreshPromise;
+}
+
+/** Sem rede no aparelho é "offline"; com rede, mas sem resposta do servidor, é "reconectando". */
+function disconnectedStatus(): RealtimeStatus {
+  return typeof navigator !== "undefined" && navigator.onLine === false
+    ? "offline"
+    : "reconnecting";
 }
 
 function queueRefresh() {
@@ -479,7 +531,7 @@ function startRealtime() {
         queueRefresh();
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         publish({
-          connection: "reconnecting",
+          connection: disconnectedStatus(),
           error: error ? errorMessage(error) : `Falha na conexão Realtime do Supabase: ${status}.`,
         });
       }
@@ -497,6 +549,15 @@ export function initializeStore() {
       error: "Supabase não configurado. Defina VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY.",
     });
     return;
+  }
+  if (typeof window !== "undefined") {
+    if (navigator.onLine === false) publish({ connection: "offline" });
+    window.addEventListener("offline", () => publish({ connection: "offline" }));
+    window.addEventListener("online", () => {
+      // Volta para "reconectando" até o Realtime confirmar SUBSCRIBED.
+      publish({ connection: "reconnecting" });
+      void refreshData();
+    });
   }
   const { data } = supabase.auth.onAuthStateChange((_event, session) => {
     window.setTimeout(() => {
@@ -526,6 +587,16 @@ export function initializeStore() {
     .catch((error) =>
       publish({ loading: false, error: errorMessage(error), connection: "reconnecting" }),
     );
+}
+
+/** Escuta mudanças do store fora do React (ex.: aplicar o modo demonstração). */
+export function onStoreChange(listener: (snapshot: State) => void) {
+  const notify = () => listener(state);
+  subs.add(notify);
+  notify();
+  return () => {
+    subs.delete(notify);
+  };
 }
 
 export function useStore<T>(select: (snapshot: State) => T): T {
@@ -669,7 +740,7 @@ export const actions = {
     }
     return data.map((value: unknown) => {
       const row = asRow(value);
-      const form = row.forma;
+      const form = row["forma"];
       if (
         form !== "dinheiro" &&
         form !== "pix" &&
@@ -679,7 +750,7 @@ export const actions = {
       ) {
         throw new Error(`Forma de pagamento inválida recebida no resumo: ${String(form)}.`);
       }
-      return { forma: form, total: Number(row.total), contas: Number(row.contas) };
+      return { forma: form, total: Number(row["total"]), contas: Number(row["contas"]) };
     });
   },
   async originSummary(start: string, end: string): Promise<OriginSummary[]> {
@@ -772,11 +843,11 @@ export const actions = {
       if (error) throw error;
     });
   },
-  async addCategory(name: string): Promise<string> {
+  async addCategory(name: string, sector: Category["sector"] = "cozinha"): Promise<string> {
     return writeRemote(async () => {
       const { data, error } = await supabase
         .from("categorias")
-        .insert({ nome: name, ordem: state.categories.length, setor: "nenhum" })
+        .insert({ nome: name, ordem: state.categories.length, setor: sector })
         .select("id")
         .single();
       if (error) throw error;
@@ -833,16 +904,46 @@ export const actions = {
   clearOrderSent() {
     publish({ orderSentMesaId: null });
   },
+  /**
+   * Comanda única (restaurante.comanda_unica): um envio do garçom vira uma
+   * comanda só, com os itens agrupados por setor. Retorna null enquanto a
+   * coluna ainda não existe no banco (migração não aplicada).
+   */
+  async getSingleTicketMode(): Promise<boolean | null> {
+    const { data, error } = await supabase
+      .from("restaurante")
+      .select("comanda_unica")
+      .eq("id", 1)
+      .maybeSingle();
+    if (error) {
+      if (isMissingColumn(error)) return null;
+      throw error;
+    }
+    return asRow(data ?? {})["comanda_unica"] !== false;
+  },
+  async setSingleTicketMode(enabled: boolean) {
+    const { error } = await supabase
+      .from("restaurante")
+      .update({ comanda_unica: enabled })
+      .eq("id", 1);
+    if (error) throw error;
+  },
   async updateRestaurant(restaurant: State["restaurant"]) {
+    // Mesma regra das máscaras: nada de telefone incompleto ou documento inválido no banco.
+    const invalid =
+      phoneError(restaurant.phone) ??
+      cpfCnpjError(restaurant.cnpj) ??
+      instagramError(restaurant.instagram);
+    if (invalid) throw new Error(invalid);
     return writeRemote(async () => {
       const { error } = await supabase
         .from("restaurante")
         .update({
           nome: restaurant.name,
-          telefone: restaurant.phone,
+          telefone: cleanPhone(restaurant.phone),
           endereco: restaurant.address,
-          cnpj: restaurant.cnpj,
-          instagram: restaurant.instagram,
+          cnpj: cleanCpfCnpj(restaurant.cnpj),
+          instagram: cleanInstagram(restaurant.instagram),
           logo_url: restaurant.logo,
           taxa_servico_ativa: restaurant.serviceChargeEnabled,
           taxa_servico_percentual: restaurant.serviceChargePercent,

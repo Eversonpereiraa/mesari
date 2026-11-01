@@ -2,10 +2,20 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { BookOpen, Pencil, Plus, Search, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { actions, brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
+import {
+  actions,
+  brl,
+  categorySectorOptions,
+  errorMessage,
+  useStore,
+  type Category,
+  type MenuItem,
+} from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
-import { useConfirm, usePrompt } from "@/components/system-dialog-provider";
+import { MoneyInput, TextInput } from "@/components/inputs";
+import { TEXT_LIMITS, cleanText, moneyError, requiredTextError } from "@/lib/masks";
+import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/cardapio")({
   head: () => ({
@@ -19,7 +29,9 @@ export const Route = createFileRoute("/cardapio")({
   component: Cardapio,
 });
 
-type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: string };
+/** Rascunho do item: preço em centavos (null = vazio). */
+type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: number | null };
+type CategoryDraft = { name: string; sector: Category["sector"]; saving: boolean; error: string };
 
 function Cardapio() {
   const cats = useStore((s) => s.categories);
@@ -27,11 +39,12 @@ function Cardapio() {
   const role = useStore((s) => s.user?.role);
   const navigate = useNavigate();
   const confirmar = useConfirm();
-  const pedirTexto = usePrompt();
   const [cat, setCat] = useState(cats[0]?.id ?? "");
   const [q, setQ] = useState("");
   const [draft, setDraft] = useState<Draft | null>(null);
   const [categoryError, setCategoryError] = useState("");
+  const [newCategory, setNewCategory] = useState<CategoryDraft | null>(null);
+  const [triedSave, setTriedSave] = useState(false);
   useEffect(() => {
     if (role && role !== "caixa") void navigate({ to: "/garcom", replace: true });
   }, [navigate, role]);
@@ -39,22 +52,34 @@ function Cardapio() {
   const t = q.trim().toLowerCase();
   const list = items.filter((i) => (t ? i.name.toLowerCase().includes(t) : i.categoryId === cat));
 
-  const newCat = async () => {
-    const n = await pedirTexto({
-      title: "Nova categoria",
-      description: "Informe o nome que será exibido no cardápio.",
-      label: "Nome da categoria",
-      placeholder: "Ex.: Bebidas",
-      required: true,
-      maxLength: 60,
-      confirmText: "Criar categoria",
-    });
-    if (n?.trim()) setCat(await actions.addCategory(n.trim()));
+  const newCat = () => setNewCategory({ name: "", sector: "cozinha", saving: false, error: "" });
+  const createCategory = async () => {
+    const name = cleanText(newCategory?.name, TEXT_LIMITS.name);
+    if (!newCategory || newCategory.saving || !name) return;
+    setNewCategory({ ...newCategory, saving: true, error: "" });
+    try {
+      setCat(await actions.addCategory(name, newCategory.sector));
+      setNewCategory(null);
+    } catch (cause) {
+      setNewCategory({ ...newCategory, saving: false, error: errorMessage(cause) });
+    }
+  };
+  const draftNameError = draft ? requiredTextError(draft.name, "Informe o nome do item.") : null;
+  const draftPriceError = draft ? moneyError(draft.price, { required: true }) : null;
+  const openDraft = (next: Draft) => {
+    setTriedSave(false);
+    setDraft(next);
   };
   const save = async () => {
-    if (!draft || !draft.name.trim()) return;
-    const price = parseFloat(draft.price.replace(",", ".")) || 0;
-    await actions.saveItem({ ...draft, name: draft.name.trim(), price });
+    if (!draft) return;
+    setTriedSave(true);
+    if (draftNameError || draftPriceError || draft.price === null) return;
+    await actions.saveItem({
+      ...draft,
+      name: cleanText(draft.name, TEXT_LIMITS.name),
+      description: cleanText(draft.description, TEXT_LIMITS.description),
+      price: draft.price / 100,
+    });
     setDraft(null);
   };
 
@@ -71,7 +96,7 @@ function Cardapio() {
             size="sm"
             className="whitespace-nowrap"
             onClick={() =>
-              setDraft({ name: "", categoryId: cat, price: "", description: "", active: true })
+              openDraft({ name: "", categoryId: cat, price: null, description: "", active: true })
             }
           >
             <Plus className="h-4 w-4" />
@@ -85,6 +110,9 @@ function Cardapio() {
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <input
             className="field h-11 max-w-sm pl-10"
+            type="search"
+            enterKeyHint="search"
+            maxLength={60}
             aria-label="Buscar item"
             placeholder="Buscar item"
             value={q}
@@ -117,11 +145,11 @@ function Cardapio() {
                 </span>
               </button>
               {role === "caixa" && (
-                <label className="flex items-center justify-between gap-2 px-3 pb-2 text-xs text-muted-foreground">
+                <label className="flex flex-col gap-1 px-3 pb-2 text-xs text-muted-foreground">
                   Setor
                   <AppSelect
-                    aria-label={`Setor de ${c.name}`}
-                    className="h-8 max-w-32 rounded-lg px-2 text-xs"
+                    ariaLabel={`Setor de ${c.name}`}
+                    className="h-8 w-full rounded-lg px-2 text-xs"
                     value={c.sector}
                     onValueChange={async (value) => {
                       const sector = value as typeof c.sector;
@@ -132,11 +160,7 @@ function Cardapio() {
                         setCategoryError(errorMessage(cause));
                       }
                     }}
-                    options={[
-                      { value: "cozinha", label: "Cozinha" },
-                      { value: "bar", label: "Bar" },
-                      { value: "nenhum", label: "Não imprimir" },
-                    ]}
+                    options={categorySectorOptions}
                   />
                 </label>
               )}
@@ -183,9 +207,7 @@ function Cardapio() {
                       <button
                         aria-label={`Editar ${i.name}`}
                         className="mr-2 inline-flex h-9 w-9 items-center justify-center rounded-lg text-primary hover:bg-accent"
-                        onClick={() =>
-                          setDraft({ ...i, price: i.price.toFixed(2).replace(".", ",") })
-                        }
+                        onClick={() => openDraft({ ...i, price: Math.round(i.price * 100) })}
                       >
                         <Pencil className="h-4 w-4" />
                       </button>
@@ -224,6 +246,85 @@ function Cardapio() {
         </div>
       </div>
 
+      {newCategory && (
+        <div
+          className="fixed inset-0 z-20 grid place-items-center bg-ink/40 p-4"
+          onClick={() => setNewCategory(null)}
+        >
+          <form
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="nova-categoria-titulo"
+            className="w-full max-w-md overflow-hidden rounded-[14px] border bg-card shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+            onSubmit={(e) => {
+              e.preventDefault();
+              void createCategory();
+            }}
+          >
+            <h2
+              id="nova-categoria-titulo"
+              className="border-b bg-background px-5 py-4 font-display font-bold text-ink"
+            >
+              Nova categoria
+            </h2>
+            <div className="space-y-4 p-5">
+              <Field label="Nome da categoria">
+                <TextInput
+                  autoFocus
+                  aria-required
+                  enterKeyHint="done"
+                  maxLength={TEXT_LIMITS.name}
+                  placeholder="Ex.: Bebidas"
+                  value={newCategory.name}
+                  onChange={(name) => setNewCategory({ ...newCategory, name })}
+                />
+              </Field>
+              <fieldset>
+                <legend className="mb-1.5 text-sm font-medium text-ink">
+                  Onde sai a comanda destes itens?
+                </legend>
+                <div className="grid gap-1.5">
+                  {categorySectorOptions.map((option) => (
+                    <label
+                      key={option.value}
+                      className={cn(
+                        "flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border px-3 text-sm",
+                        newCategory.sector === option.value
+                          ? "border-primary bg-accent font-semibold text-primary"
+                          : "text-ink hover:bg-muted",
+                      )}
+                    >
+                      <input
+                        type="radio"
+                        name="setor-nova-categoria"
+                        value={option.value}
+                        checked={newCategory.sector === option.value}
+                        onChange={() => setNewCategory({ ...newCategory, sector: option.value })}
+                      />
+                      {option.label}
+                    </label>
+                  ))}
+                </div>
+              </fieldset>
+              {newCategory.error && (
+                <p role="alert" className="text-sm text-destructive">
+                  {newCategory.error}
+                </p>
+              )}
+            </div>
+            <div className="flex justify-end gap-2 border-t bg-background px-5 py-3">
+              <Btn type="button" variant="ghost" onClick={() => setNewCategory(null)}>
+                Cancelar
+              </Btn>
+              <Btn type="submit" disabled={!newCategory.name.trim() || newCategory.saving}>
+                {newCategory.saving ? "Criando..." : "Criar categoria"}
+              </Btn>
+            </div>
+          </form>
+        </div>
+      )}
+
       {draft && (
         <div
           className="fixed inset-0 z-20 grid place-items-center bg-ink/40 p-4"
@@ -238,11 +339,15 @@ function Cardapio() {
             </h2>
             <div className="space-y-4 p-5">
               <Field label="Nome do item">
-                <input
-                  className="field"
+                <TextInput
                   autoFocus
+                  aria-required
+                  enterKeyHint="next"
+                  maxLength={TEXT_LIMITS.name}
                   value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  onChange={(name) => setDraft({ ...draft, name })}
+                  error={draftNameError}
+                  showError={triedSave}
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
@@ -255,20 +360,22 @@ function Cardapio() {
                   />
                 </Field>
                 <Field label="Preço (R$)">
-                  <input
-                    className="field num"
-                    inputMode="decimal"
-                    placeholder="0,00"
+                  <MoneyInput
+                    required
                     value={draft.price}
-                    onChange={(e) => setDraft({ ...draft, price: e.target.value })}
+                    onChange={(price) => setDraft({ ...draft, price })}
+                    showError={triedSave}
                   />
                 </Field>
               </div>
               <Field label="Descrição (opcional)">
-                <textarea
-                  className="field h-20 py-2"
+                <TextInput
+                  multiline
+                  className="h-20"
+                  maxLength={TEXT_LIMITS.description}
+                  counterFrom={TEXT_LIMITS.description - 40}
                   value={draft.description}
-                  onChange={(e) => setDraft({ ...draft, description: e.target.value })}
+                  onChange={(description) => setDraft({ ...draft, description })}
                 />
               </Field>
               <Field label="Status">

@@ -6,6 +6,7 @@ import {
   Check,
   Clock3,
   CreditCard,
+  MessageCircle,
   PackageCheck,
   Plus,
   Printer,
@@ -17,10 +18,43 @@ import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
 import { MenuPicker, type MenuCartEntry } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { IntegerInput, MoneyInput, PhoneInput, TextInput } from "@/components/inputs";
+import {
+  TEXT_LIMITS,
+  cleanText,
+  displayPhone,
+  formatCents,
+  integerError,
+  moneyError,
+  phoneError,
+  requiredTextError,
+} from "@/lib/masks";
 import { usePrompt } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
-import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
+import { brl, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
 import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import {
+  EXTERNAL_ORDER_BOARD,
+  EXTERNAL_ORDER_MESSAGES,
+  EXTERNAL_ORDER_STATUS,
+  EXTERNAL_ORDER_STATUS_LABEL,
+  belongsToColumn,
+  isFinishedExternalOrder,
+  nextExternalOrderStatus,
+  parseExternalOrderStatus,
+  type ExternalOrderStatus,
+} from "@/lib/external-order-status";
+import {
+  WHATSAPP_NOT_FOUND_MESSAGE,
+  WHATSAPP_NOTICE_BUTTON,
+  markNotified,
+  noticeForStatus,
+  openWhatsapp,
+  wasNotified,
+  whatsappMessage,
+  type WhatsappNotice,
+} from "@/lib/whatsapp-notify";
+import { isValidPhone } from "@/lib/masks";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/delivery")({
@@ -34,7 +68,7 @@ export const Route = createFileRoute("/delivery")({
 });
 
 type Channel = "whatsapp" | "telefone" | "papel";
-type OrderStatus = "novo" | "em_preparo" | "pronto" | "saiu" | "entregue" | "cancelado";
+type OrderStatus = ExternalOrderStatus;
 type OrderType = "entrega" | "retirada";
 type ExtraItem = { id: string; name: string; price: number; quantity: number; note: string };
 type DeliveryOrder = {
@@ -60,15 +94,6 @@ const channelLabel: Record<Channel, string> = {
   telefone: "Telefone",
   papel: "Papel",
 };
-const statusLabel: Record<OrderStatus, string> = {
-  novo: "Novo",
-  em_preparo: "Em preparo",
-  pronto: "Pronto",
-  saiu: "Saiu",
-  entregue: "Entregue",
-  cancelado: "Cancelado",
-};
-const stageOrder: OrderStatus[] = ["novo", "em_preparo", "pronto", "saiu"];
 const paymentOptions: { value: Exclude<PaymentMethod, "nao_informado">; label: string }[] = [
   { value: "dinheiro", label: "Dinheiro" },
   { value: "pix", label: "Pix" },
@@ -93,26 +118,22 @@ function numeric(value: unknown, fallback = 0) {
   return Number.isFinite(result) ? result : fallback;
 }
 
-function mapOrder(value: unknown): DeliveryOrder {
+/**
+ * Linha de pedidos_externos. Um registro estranho (tipo, origem ou status
+ * desconhecido) fica de fora do quadro e vai para o console, sem derrubar a lista.
+ */
+function mapOrder(value: unknown): DeliveryOrder | null {
   const row = asRecord(value);
   const type = row["tipo"];
   const channel = row["canal"];
-  const status = row["status"];
-  if (type !== "entrega" && type !== "retirada") {
-    throw new Error("O pedido de delivery retornou um tipo inválido.");
-  }
-  if (channel !== "whatsapp" && channel !== "telefone" && channel !== "papel") {
-    throw new Error("O pedido de delivery retornou uma origem inválida.");
-  }
+  const status = parseExternalOrderStatus(row["status"]);
   if (
-    status !== "novo" &&
-    status !== "em_preparo" &&
-    status !== "pronto" &&
-    status !== "saiu" &&
-    status !== "entregue" &&
-    status !== "cancelado"
+    (type !== "entrega" && type !== "retirada") ||
+    (channel !== "whatsapp" && channel !== "telefone" && channel !== "papel") ||
+    status === null
   ) {
-    throw new Error(`Status de pedido de delivery inválido: ${String(status)}.`);
+    console.error("Pedido de delivery ignorado: dados inválidos.", row);
+    return null;
   }
   return {
     id: String(row["id"] ?? ""),
@@ -133,17 +154,10 @@ function mapOrder(value: unknown): DeliveryOrder {
   };
 }
 
-function amountFromInput(value: string): number | null {
-  const normalized = value.trim().replace(/\s/g, "").replace(",", ".");
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const amount = Number(normalized);
-  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
-}
-
 function paymentData(order: DeliveryOrder) {
   const raw = asRecord(order.raw["pagamento_previsto"]);
   const forma = raw["forma"];
-  const payment =
+  const payment: Exclude<PaymentMethod, "nao_informado"> | null =
     forma === "dinheiro" || forma === "pix" || forma === "credito" || forma === "debito"
       ? forma
       : null;
@@ -163,6 +177,12 @@ function Delivery() {
   const [loadingOrders, setLoadingOrders] = useState(true);
   const [listError, setListError] = useState("");
   const [notice, setNotice] = useState("");
+  /** Logo depois de avançar para "Saiu"/"Pronto": oferece avisar o cliente. */
+  const [noticePrompt, setNoticePrompt] = useState<{
+    orderId: string;
+    kind: WhatsappNotice;
+  } | null>(null);
+  const [, setNotifiedVersion] = useState(0);
   const [formOpen, setFormOpen] = useState(false);
   const [showFinalized, setShowFinalized] = useState(false);
   const [paymentOrder, setPaymentOrder] = useState<DeliveryOrder | null>(null);
@@ -175,15 +195,20 @@ function Delivery() {
   const [observation, setObservation] = useState("");
   const [paymentForm, setPaymentForm] = useState<Exclude<PaymentMethod, "nao_informado"> | "">("");
   const [isPaid, setIsPaid] = useState(false);
-  const [changeFor, setChangeFor] = useState("");
+  /** Centavos; null = sem troco informado. */
+  const [changeFor, setChangeFor] = useState<number | null>(null);
   const [menuCart, setMenuCart] = useState<MenuCartEntry[]>([]);
   const [extras, setExtras] = useState<ExtraItem[]>([]);
   const [extraOpen, setExtraOpen] = useState(false);
   const [extraName, setExtraName] = useState("");
-  const [extraPrice, setExtraPrice] = useState("");
-  const [extraQuantity, setExtraQuantity] = useState("1");
+  const [extraPrice, setExtraPrice] = useState<number | null>(null);
+  const [extraQuantity, setExtraQuantity] = useState<number | null>(1);
+  const [extraTried, setExtraTried] = useState(false);
   const [formError, setFormError] = useState("");
+  const [triedSave, setTriedSave] = useState(false);
   const formRef = useRef<HTMLFormElement>(null);
+  /** Pedidos com mudança de status em andamento: evita clique duplo. */
+  const pendingOrders = useRef(new Set<string>());
 
   const loadOrders = useCallback(async () => {
     const { data, error } = await supabase
@@ -192,7 +217,9 @@ function Delivery() {
       .order("criado_em", { ascending: false })
       .limit(300);
     if (error) throw error;
-    const next = (data ?? []).map(mapOrder);
+    const next = (data ?? [])
+      .map(mapOrder)
+      .filter((order): order is DeliveryOrder => order !== null);
     setOrders(next);
     setListError("");
     setLoadingOrders(false);
@@ -210,7 +237,8 @@ function Delivery() {
     let active = true;
     void loadOrders().catch((cause: unknown) => {
       if (!active) return;
-      setListError(errorMessage(cause));
+      console.error("Falha ao carregar pedidos de delivery.", cause);
+      setListError(EXTERNAL_ORDER_MESSAGES.loadFailed);
       setLoadingOrders(false);
     });
     const realtime = supabase
@@ -226,15 +254,17 @@ function Delivery() {
               return;
             }
             const order = mapOrder(payload.new);
+            if (!order) return;
             setOrders((current) => [order, ...current.filter((entry) => entry.id !== order.id)]);
           } catch (cause) {
-            setListError(errorMessage(cause));
+            console.error("Falha na atualização automática do delivery.", cause);
           }
         },
       )
       .subscribe((status, cause) => {
         if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
-          setListError(cause ? errorMessage(cause) : "Falha na atualização em tempo real.");
+          if (cause) console.error("Falha na atualização automática do delivery.", cause);
+          setListError(EXTERNAL_ORDER_MESSAGES.liveFailed);
         }
       });
     return () => {
@@ -267,6 +297,26 @@ function Delivery() {
   const deliveryFee = type === "entrega" ? Number(snapshot.restaurant.deliveryFee || 0) : 0;
   const totalAmount = Math.round((subtotal + deliveryFee) * 100) / 100;
 
+  const totalCents = Math.round(totalAmount * 100);
+  const errors = {
+    customerName: requiredTextError(customerName, "Informe o nome do cliente."),
+    phone: phoneError(phone),
+    address:
+      type === "entrega" ? requiredTextError(address, "Informe o endereço para a entrega.") : null,
+    changeFor:
+      paymentForm !== "dinheiro"
+        ? null
+        : (moneyError(changeFor) ??
+          (changeFor !== null && changeFor < totalCents
+            ? `O troco deve ser para R$ ${formatCents(totalCents)} ou mais.`
+            : null)),
+  };
+  const extraErrors = {
+    name: requiredTextError(extraName, "Informe o nome do item."),
+    price: moneyError(extraPrice, { required: true }),
+    quantity: integerError(extraQuantity, { min: 1, max: 99 }),
+  };
+
   const resetForm = () => {
     setType("entrega");
     setChannel("whatsapp");
@@ -276,42 +326,36 @@ function Delivery() {
     setObservation("");
     setPaymentForm("");
     setIsPaid(false);
-    setChangeFor("");
+    setChangeFor(null);
     setMenuCart([]);
     setExtras([]);
     setExtraOpen(false);
     setFormError("");
+    setTriedSave(false);
   };
 
   const saveOrder = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError("");
-    if (!customerName.trim()) {
-      setFormError("Informe o nome do cliente.");
-      return;
-    }
-    if (type === "entrega" && !address.trim()) {
-      setFormError("Informe o endereço para a entrega.");
+    setTriedSave(true);
+    if (Object.values(errors).some(Boolean)) {
+      setFormError("Corrija os campos destacados antes de salvar.");
       return;
     }
     if (menuCart.length + extras.length === 0) {
       setFormError("Adicione pelo menos um item ao pedido.");
       return;
     }
-    const troco = changeFor.trim() ? amountFromInput(changeFor) : null;
-    if (changeFor.trim() && (troco === null || paymentForm !== "dinheiro")) {
-      setFormError("Informe um valor de troco válido para pagamento em dinheiro.");
-      return;
-    }
+    const troco = paymentForm === "dinheiro" && changeFor !== null ? changeFor / 100 : null;
     setBusy(true);
     try {
       const p_dados = {
         canal: channel,
         tipo: type,
-        cliente_nome: customerName.trim(),
-        telefone: phone.replace(/\D/g, "") || null,
-        endereco: type === "entrega" ? address.trim() : "",
-        observacao: observation.trim(),
+        cliente_nome: cleanText(customerName, TEXT_LIMITS.name),
+        telefone: phone || null,
+        endereco: type === "entrega" ? cleanText(address, TEXT_LIMITS.address) : "",
+        observacao: cleanText(observation, TEXT_LIMITS.note),
         pagamento_previsto: {
           forma: paymentForm || null,
           pago: isPaid,
@@ -321,13 +365,13 @@ function Delivery() {
           ...menuCart.map(({ item, qty, note }) => ({
             produto_id: item.id,
             quantidade: qty,
-            observacao: note.trim(),
+            observacao: cleanText(note, TEXT_LIMITS.note),
           })),
           ...extras.map((item) => ({
             nome: item.name,
             valor_unitario: item.price,
             quantidade: item.quantity,
-            observacao: item.note.trim(),
+            observacao: cleanText(item.note, TEXT_LIMITS.note),
           })),
         ],
       };
@@ -357,20 +401,31 @@ function Delivery() {
             setNotice(`Pedido #${createdOrder.number} enviado para impressão`);
           }
         })
-        .catch((cause: unknown) => setListError(errorMessage(cause)));
+        .catch((cause: unknown) => {
+          console.error("Falha ao recarregar pedidos de delivery.", cause);
+          setListError(EXTERNAL_ORDER_MESSAGES.loadFailed);
+        });
     } catch (cause) {
-      setFormError(errorMessage(cause));
+      console.error("Falha ao salvar pedido de delivery.", cause);
+      setFormError(EXTERNAL_ORDER_MESSAGES.saveFailed);
     } finally {
       setBusy(false);
     }
   };
 
+  /**
+   * Muda o status no banco e só depois mexe na tela. Nunca imprime: a comanda do
+   * pedido sai uma vez, quando ele é criado. Com erro (ex.: sem internet) o card
+   * fica onde estava e o erro técnico vai só para o console.
+   */
   const runOrderAction = async (
     order: DeliveryOrder,
-    status: OrderStatus,
-    courier: string | null = "",
+    status: Exclude<OrderStatus, typeof EXTERNAL_ORDER_STATUS.entregue>,
+    courier: string | null = null,
     reason: string | null = null,
   ) => {
+    if (pendingOrders.current.has(order.id)) return false;
+    pendingOrders.current.add(order.id);
     setBusy(true);
     setListError("");
     try {
@@ -381,24 +436,43 @@ function Delivery() {
         p_motivo: reason,
       });
       if (error) throw error;
-      if (status === "cancelado") toast.success(`Pedido #${order.number} cancelado.`);
-      await loadOrders().catch((cause: unknown) => setListError(errorMessage(cause)));
-    } catch (cause) {
-      setListError(errorMessage(cause));
-      if (status === "cancelado") {
-        toast.error(`Não foi possível cancelar o pedido: ${errorMessage(cause)}`);
+      setOrders((current) =>
+        current.map((entry) =>
+          entry.id === order.id ? { ...entry, status, ...(courier ? { courier } : {}) } : entry,
+        ),
+      );
+      if (status === EXTERNAL_ORDER_STATUS.cancelado) {
+        toast.success(`Pedido #${order.number} cancelado.`);
       }
+      const kind = noticeForStatus(status, order.type);
+      setNoticePrompt(
+        kind && kind !== "confirmado" && isValidPhone(order.phone)
+          ? { orderId: order.id, kind }
+          : null,
+      );
+      void loadOrders().catch((cause: unknown) =>
+        console.error("Falha ao recarregar pedidos de delivery.", cause),
+      );
+      return true;
+    } catch (cause) {
+      console.error(`Falha ao mudar o pedido #${order.number} para "${status}".`, cause);
+      toast.error(
+        status === EXTERNAL_ORDER_STATUS.cancelado
+          ? EXTERNAL_ORDER_MESSAGES.cancelFailed
+          : EXTERNAL_ORDER_MESSAGES.statusFailed,
+      );
+      return false;
     } finally {
+      pendingOrders.current.delete(order.id);
       setBusy(false);
     }
   };
 
   const advanceOrder = async (order: DeliveryOrder) => {
-    const index = stageOrder.indexOf(order.status);
-    const next = stageOrder[index + 1];
-    if (!next) return;
-    let courier: string | null = "";
-    if (next === "saiu") {
+    const next = nextExternalOrderStatus(order.status, order.type);
+    if (!next || next === EXTERNAL_ORDER_STATUS.entregue) return;
+    let courier: string | null = null;
+    if (next === EXTERNAL_ORDER_STATUS.saiu) {
       const answer = await pedirTexto({
         title: `Pedido #${order.number} saiu para entrega`,
         description: "Informe o nome do entregador, se desejar.",
@@ -408,10 +482,37 @@ function Delivery() {
         confirmText: "Confirmar saída",
       });
       if (answer === null) return;
-      courier = answer.trim();
+      courier = answer.trim() || null;
     }
-    void runOrderAction(order, next, courier);
+    await runOrderAction(order, next, courier);
   };
+
+  /** Abre o WhatsApp do cliente com a mensagem pronta e marca "Cliente avisado". */
+  const notifyCustomer = async (order: DeliveryOrder, kind: WhatsappNotice) => {
+    const text = whatsappMessage(
+      kind,
+      { ...order, payment: paymentData(order) },
+      snapshot.restaurant.name,
+    );
+    if (!isValidPhone(order.phone)) {
+      toast.error("O telefone deste cliente não é válido para o WhatsApp.");
+      return;
+    }
+    try {
+      const { fellBack } = await openWhatsapp(order.phone, text);
+      if (fellBack) toast.warning(WHATSAPP_NOT_FOUND_MESSAGE);
+      markNotified(order.id, kind);
+      setNotifiedVersion((version) => version + 1);
+      setNoticePrompt((current) => (current?.orderId === order.id ? null : current));
+    } catch (cause) {
+      console.error(`Falha ao abrir o WhatsApp do pedido #${order.number}.`, cause);
+      toast.error("Não foi possível abrir o WhatsApp. Tente novamente.");
+    }
+  };
+
+  const promptedOrder = noticePrompt
+    ? orders.find((order) => order.id === noticePrompt.orderId)
+    : undefined;
 
   const cancelOrder = async (order: DeliveryOrder) => {
     const reason = await pedirTexto({
@@ -438,7 +539,11 @@ function Delivery() {
       variant: "danger",
     });
     if (reason === null) return;
-    await runOrderAction(order, "cancelado", null, reason);
+    if (!reason.trim()) {
+      toast.error(EXTERNAL_ORDER_MESSAGES.cancelNeedsReason);
+      return;
+    }
+    await runOrderAction(order, EXTERNAL_ORDER_STATUS.cancelado, null, reason.trim());
   };
 
   const completeOrder = async (payments: PaymentInput[]) => {
@@ -453,27 +558,40 @@ function Delivery() {
           : {}),
       })),
     });
-    if (error) throw error;
+    if (error) {
+      console.error(`Falha ao concluir o pedido #${paymentOrder.number}.`, error);
+      // A janela de pagamento mostra esta mensagem e continua aberta.
+      throw new Error(EXTERNAL_ORDER_MESSAGES.completeFailed);
+    }
+    const done = paymentOrder;
     setPaymentOrder(null);
-    await loadOrders();
-    setNotice(`Pedido #${paymentOrder.number} concluído e recebido.`);
+    setOrders((current) =>
+      current.map((entry) =>
+        entry.id === done.id ? { ...entry, status: EXTERNAL_ORDER_STATUS.entregue } : entry,
+      ),
+    );
+    setNotice(`Pedido #${done.number} concluído e recebido.`);
+    void loadOrders().catch((cause: unknown) =>
+      console.error("Falha ao recarregar pedidos de delivery.", cause),
+    );
   };
 
   const addExtra = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const price = amountFromInput(extraPrice);
-    const quantity = Number(extraQuantity);
-    if (!extraName.trim() || price === null || !Number.isInteger(quantity) || quantity < 1) {
-      setFormError("Informe nome, valor válido e quantidade do item avulso.");
+    event.stopPropagation();
+    setExtraTried(true);
+    if (Object.values(extraErrors).some(Boolean) || extraPrice === null || extraQuantity === null) {
       return;
     }
+    const name = cleanText(extraName, TEXT_LIMITS.name);
     setExtras((current) => [
       ...current,
-      { id: crypto.randomUUID(), name: extraName.trim(), price, quantity, note: "" },
+      { id: crypto.randomUUID(), name, price: extraPrice / 100, quantity: extraQuantity, note: "" },
     ]);
     setExtraName("");
-    setExtraPrice("");
-    setExtraQuantity("1");
+    setExtraPrice(null);
+    setExtraQuantity(1);
+    setExtraTried(false);
     setExtraOpen(false);
   };
 
@@ -528,7 +646,8 @@ function Delivery() {
       await printKitchenTicket(ticket, getPrintSettings(), false);
       setNotice(`Pedido #${order.number} enviado para reimpressão.`);
     } catch (cause) {
-      setListError(`Não foi possível reimprimir o pedido #${order.number}: ${errorMessage(cause)}`);
+      console.error(`Falha ao reimprimir o pedido #${order.number}.`, cause);
+      setListError(EXTERNAL_ORDER_MESSAGES.reprintFailed(order.number));
     } finally {
       setBusy(false);
     }
@@ -537,7 +656,9 @@ function Delivery() {
   const addAvulsoQuantity = (id: string, change: number) =>
     setExtras((current) =>
       current
-        .map((item) => (item.id === id ? { ...item, quantity: item.quantity + change } : item))
+        .map((item) =>
+          item.id === id ? { ...item, quantity: Math.min(99, item.quantity + change) } : item,
+        )
         .filter((item) => item.quantity > 0),
     );
 
@@ -548,14 +669,12 @@ function Delivery() {
     end.setDate(end.getDate() + 1);
     return orders.filter(
       (order) =>
-        (order.status === "entregue" || order.status === "cancelado") &&
+        isFinishedExternalOrder(order.status) &&
         order.createdAt >= start.getTime() &&
         order.createdAt < end.getTime(),
     );
   }, [orders]);
-  const activeOrders = orders.filter(
-    (order) => order.status !== "entregue" && order.status !== "cancelado",
-  );
+  const activeOrders = orders.filter((order) => !isFinishedExternalOrder(order.status));
 
   if (snapshot.user?.role !== "caixa") return null;
 
@@ -604,6 +723,32 @@ function Delivery() {
               </button>
             </div>
           )}
+          {noticePrompt && promptedOrder && (
+            <div
+              role="status"
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-950"
+            >
+              <span className="font-semibold">
+                Pedido #{promptedOrder.number}{" "}
+                {noticePrompt.kind === "saiu" ? "saiu para entrega." : "está pronto para retirada."}
+              </span>
+              <Btn
+                size="sm"
+                className="bg-emerald-600 text-white hover:bg-emerald-700"
+                onClick={() => void notifyCustomer(promptedOrder, noticePrompt.kind)}
+              >
+                <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON[noticePrompt.kind]}
+              </Btn>
+              <button
+                type="button"
+                className="ml-auto"
+                aria-label="Fechar aviso do WhatsApp"
+                onClick={() => setNoticePrompt(null)}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           {listError && (
             <p role="alert" className="rounded-lg bg-destructive/10 p-3 text-sm text-destructive">
               {listError}
@@ -624,6 +769,7 @@ function Delivery() {
                   onComplete={setPaymentOrder}
                   onReprint={() => void reprintOrder(order)}
                   onCancel={() => cancelOrder(order)}
+                  onNotify={(kind) => void notifyCustomer(order, kind)}
                 />
               ))}
               {finalizedToday.length === 0 && (
@@ -635,15 +781,16 @@ function Delivery() {
           ) : (
             <div className="overflow-x-auto pb-2">
               <div className="grid min-w-[1050px] grid-cols-4 gap-3">
-                {stageOrder.map((stage) => {
-                  const stageOrders = activeOrders.filter(
-                    (order) =>
-                      order.status === stage && (stage !== "saiu" || order.type === "entrega"),
+                {EXTERNAL_ORDER_BOARD.map((stage) => {
+                  const stageOrders = activeOrders.filter((order) =>
+                    belongsToColumn(order.status, order.type, stage),
                   );
                   return (
                     <section key={stage} className="min-h-[60vh] rounded-xl bg-muted/50 p-3">
                       <header className="mb-3 flex items-center justify-between">
-                        <h2 className="font-display font-bold text-ink">{statusLabel[stage]}</h2>
+                        <h2 className="font-display font-bold text-ink">
+                          {EXTERNAL_ORDER_STATUS_LABEL[stage]}
+                        </h2>
                         <span className="rounded-full bg-card px-2 py-0.5 text-xs font-bold text-muted-foreground">
                           {stageOrders.length}
                         </span>
@@ -658,6 +805,7 @@ function Delivery() {
                             onComplete={setPaymentOrder}
                             onReprint={() => void reprintOrder(order)}
                             onCancel={() => cancelOrder(order)}
+                            onNotify={(kind) => void notifyCustomer(order, kind)}
                           />
                         ))}
                         {stageOrders.length === 0 && (
@@ -723,40 +871,42 @@ function Delivery() {
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
                     <Field label="Nome do cliente *">
-                      <input
-                        className="field"
+                      <TextInput
                         autoComplete="name"
+                        enterKeyHint="next"
+                        aria-required
+                        maxLength={TEXT_LIMITS.name}
                         value={customerName}
-                        onChange={(event) => setCustomerName(event.target.value)}
-                        required
+                        onChange={setCustomerName}
+                        error={errors.customerName}
+                        showError={triedSave}
                       />
                     </Field>
                     <Field label="Telefone">
-                      <input
-                        className="field"
-                        type="tel"
-                        autoComplete="tel"
-                        value={phone}
-                        onChange={(event) => setPhone(event.target.value)}
-                      />
+                      <PhoneInput value={phone} onChange={setPhone} showError={triedSave} />
                     </Field>
                     {type === "entrega" && (
                       <Field label="Endereço *">
-                        <input
-                          className="field"
+                        <TextInput
                           autoComplete="street-address"
+                          enterKeyHint="next"
+                          aria-required
+                          maxLength={TEXT_LIMITS.address}
                           value={address}
-                          onChange={(event) => setAddress(event.target.value)}
-                          required
+                          onChange={setAddress}
+                          error={errors.address}
+                          showError={triedSave}
                         />
                       </Field>
                     )}
                     <Field label="Observação geral">
-                      <input
-                        className="field"
+                      <TextInput
                         placeholder="Referência, instruções..."
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
                         value={observation}
-                        onChange={(event) => setObservation(event.target.value)}
+                        onChange={setObservation}
                       />
                     </Field>
                   </div>
@@ -792,21 +942,24 @@ function Delivery() {
                               {brl(item.price)} cada
                             </div>
                           </div>
-                          <input
-                            className="field h-10 w-24"
-                            aria-label={`Observação de ${item.name}`}
-                            placeholder="Observação"
-                            value={item.note}
-                            onChange={(event) =>
-                              setExtras((current) =>
-                                current.map((line) =>
-                                  line.id === item.id
-                                    ? { ...line, note: event.target.value }
-                                    : line,
-                                ),
-                              )
-                            }
-                          />
+                          <div className="w-32">
+                            <TextInput
+                              className="h-10"
+                              aria-label={`Observação de ${item.name}`}
+                              placeholder="Observação"
+                              enterKeyHint="done"
+                              maxLength={TEXT_LIMITS.note}
+                              counterFrom={100}
+                              value={item.note}
+                              onChange={(note) =>
+                                setExtras((current) =>
+                                  current.map((line) =>
+                                    line.id === item.id ? { ...line, note } : line,
+                                  ),
+                                )
+                              }
+                            />
+                          </div>
                           <div className="flex items-center gap-2">
                             <button
                               type="button"
@@ -852,12 +1005,13 @@ function Delivery() {
                 </Field>
                 {paymentForm === "dinheiro" && (
                   <Field label="Troco para quanto?">
-                    <input
-                      className="field"
-                      inputMode="decimal"
+                    <MoneyInput
                       placeholder="Ex.: 100,00"
+                      enterKeyHint="done"
                       value={changeFor}
-                      onChange={(event) => setChangeFor(event.target.value)}
+                      onChange={setChangeFor}
+                      error={errors.changeFor}
+                      showError={triedSave}
                     />
                   </Field>
                 )}
@@ -926,34 +1080,34 @@ function Delivery() {
               >
                 <h2 className="font-display text-xl font-bold text-ink">Adicionar item avulso</h2>
                 <Field label="Nome do item">
-                  <input
-                    className="field"
+                  <TextInput
                     autoFocus
+                    aria-required
+                    enterKeyHint="next"
+                    maxLength={TEXT_LIMITS.name}
                     value={extraName}
-                    onChange={(event) => setExtraName(event.target.value)}
-                    required
+                    onChange={setExtraName}
+                    error={extraErrors.name}
+                    showError={extraTried}
                   />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Valor unitário (R$)">
-                    <input
-                      className="field"
-                      inputMode="decimal"
-                      placeholder="0,00"
-                      value={extraPrice}
-                      onChange={(event) => setExtraPrice(event.target.value)}
+                    <MoneyInput
                       required
+                      value={extraPrice}
+                      onChange={setExtraPrice}
+                      showError={extraTried}
                     />
                   </Field>
                   <Field label="Quantidade">
-                    <input
-                      className="field"
-                      type="number"
-                      min="1"
-                      step="1"
+                    <IntegerInput
+                      min={1}
+                      max={99}
+                      enterKeyHint="done"
                       value={extraQuantity}
-                      onChange={(event) => setExtraQuantity(event.target.value)}
-                      required
+                      onChange={setExtraQuantity}
+                      showError={extraTried}
                     />
                   </Field>
                 </div>
@@ -988,6 +1142,7 @@ function OrderCard({
   onComplete,
   onReprint,
   onCancel,
+  onNotify,
 }: {
   order: DeliveryOrder;
   busy: boolean;
@@ -995,10 +1150,15 @@ function OrderCard({
   onComplete: (order: DeliveryOrder) => void;
   onReprint: () => void;
   onCancel: () => void;
+  onNotify: (kind: WhatsappNotice) => void;
 }) {
-  const index = stageOrder.indexOf(order.status);
-  const nextStatus = stageOrder[index + 1];
-  const isFinalized = order.status === "entregue" || order.status === "cancelado";
+  const nextStatus = nextExternalOrderStatus(order.status, order.type);
+  const isFinalized = isFinishedExternalOrder(order.status);
+  // Aviso pelo WhatsApp desta etapa; sem telefone válido, nenhum botão.
+  const whatsappNotice = isValidPhone(order.phone)
+    ? noticeForStatus(order.status, order.type)
+    : null;
+  const notified = whatsappNotice ? wasNotified(order.id, whatsappNotice) : false;
   return (
     <article className="rounded-xl border bg-card p-4 shadow-sm">
       <header className="flex items-start justify-between gap-2">
@@ -1024,13 +1184,15 @@ function OrderCard({
       </header>
       <div className="mt-3 border-t pt-3">
         <div className="font-semibold text-ink">{order.customerName}</div>
-        {order.phone && <div className="mt-0.5 text-xs text-muted-foreground">{order.phone}</div>}
+        {order.phone && (
+          <div className="mt-0.5 text-xs text-muted-foreground">{displayPhone(order.phone)}</div>
+        )}
         {order.type === "entrega" && order.address && (
           <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{order.address}</div>
         )}
         <div className="mt-3 flex items-center justify-between">
           <span className="text-xs font-semibold text-muted-foreground">
-            {statusLabel[order.status]}
+            {EXTERNAL_ORDER_STATUS_LABEL[order.status]}
           </span>
           <strong className="font-display text-lg font-extrabold text-ink">
             {brl(order.total)}
@@ -1043,12 +1205,14 @@ function OrderCard({
       <div className="mt-3 flex flex-wrap gap-2 border-t pt-3">
         {nextStatus && (
           <Btn size="sm" disabled={busy} onClick={() => onAdvance(order)}>
-            {nextStatus === "saiu" ? (
+            {nextStatus === EXTERNAL_ORDER_STATUS.saiu ? (
               <Bike className="h-4 w-4" />
             ) : (
               <PackageCheck className="h-4 w-4" />
             )}
-            {nextStatus === "saiu" ? "Saiu" : `Avançar: ${statusLabel[nextStatus]}`}
+            {nextStatus === EXTERNAL_ORDER_STATUS.saiu
+              ? EXTERNAL_ORDER_STATUS_LABEL.saiu
+              : `Avançar: ${EXTERNAL_ORDER_STATUS_LABEL[nextStatus]}`}
           </Btn>
         )}
         {!isFinalized && (
@@ -1065,6 +1229,36 @@ function OrderCard({
           </Btn>
         )}
       </div>
+      {whatsappNotice && (
+        <div className="mt-2 flex flex-wrap items-center gap-2">
+          {whatsappNotice === "confirmado" ? (
+            <Btn
+              size="sm"
+              variant="ghost"
+              className="px-2"
+              onClick={() => onNotify(whatsappNotice)}
+            >
+              <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON.confirmado}
+            </Btn>
+          ) : (
+            <Btn
+              size="sm"
+              className="bg-emerald-600 text-white hover:bg-emerald-700"
+              onClick={() => onNotify(whatsappNotice)}
+            >
+              <MessageCircle className="h-4 w-4" /> {WHATSAPP_NOTICE_BUTTON[whatsappNotice]}
+            </Btn>
+          )}
+          {notified && (
+            <span
+              className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700"
+              title="O WhatsApp foi aberto com a mensagem. Confirme no WhatsApp se foi enviada."
+            >
+              <Check className="h-3.5 w-3.5" /> Cliente avisado
+            </span>
+          )}
+        </div>
+      )}
     </article>
   );
 }

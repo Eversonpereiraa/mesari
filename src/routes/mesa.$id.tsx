@@ -23,7 +23,6 @@ function Mesa() {
   const nav = useNavigate();
   const t = s.tables.find((x) => x.id === id);
   const lines = s.orders[id] ?? [];
-  const st = tableStatus(s, id);
   const [orderSent, setOrderSent] = useState(false);
   const [kitchenOffline, setKitchenOffline] = useState(false);
 
@@ -37,7 +36,16 @@ function Mesa() {
     return () => window.clearTimeout(timer);
   }, [id]);
 
-  if (!t) return <p className="p-8 text-center">Mesa não encontrada.</p>;
+  if (!t) {
+    return (
+      <MobileFrame title="Mesa" subtitle="Detalhe da mesa" onBack={() => nav({ to: "/garcom" })}>
+        <p role="status" className="p-8 text-center text-muted-foreground">
+          {s.loading ? "Carregando..." : "Mesa não encontrada ou desativada."}
+        </p>
+      </MobileFrame>
+    );
+  }
+  const st = tableStatus(s, id);
 
   return (
     <MobileFrame
@@ -61,7 +69,7 @@ function Mesa() {
               disabled={!lines.length || st === "conta"}
               onClick={() => actions.requestBill(id)}
             >
-              {st === "conta" ? "Conta pedida" : "Fechar Conta"}
+              {st === "conta" ? "Conta pedida" : "Pedir conta"}
             </Btn>
             <Btn size="lg" variant="neutral" onClick={() => nav({ to: "/garcom" })}>
               Voltar
@@ -71,7 +79,7 @@ function Mesa() {
       }
     >
       <div className="px-4 pt-4">
-        <StatusTag s={st} />
+        <StatusTag s={st} variant="garcom" />
       </div>
       {orderSent && (
         <div

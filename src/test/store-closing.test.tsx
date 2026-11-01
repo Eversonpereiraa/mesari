@@ -1,4 +1,4 @@
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, render, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -25,7 +25,18 @@ vi.mock("@/lib/supabase", () => ({
   usernameEmail: (username: string) => `${username.trim().toLowerCase()}@mesari.local`,
 }));
 
-import { actions, refreshData, tableStatus, useStore, type MenuItem } from "@/lib/store";
+import {
+  actions,
+  categorySectorOptions,
+  parseCategorySector,
+  refreshData,
+  tableStatus,
+  useStore,
+  type MenuItem,
+} from "@/lib/store";
+import { ReceiptContent } from "@/components/receipt-content";
+import { escPosConference, getDefaultPrintSettings } from "@/lib/printing";
+import { decodeEscPos, previewToText } from "@/lib/escpos-preview";
 
 const item: MenuItem = {
   id: "item-1",
@@ -174,11 +185,11 @@ afterEach(() => {
 describe("integração do store com o schema existente", () => {
   it("carrega status direto de mesas e perfis de profiles", async () => {
     mocks.session = authenticatedSession;
-    mocks.rows.profiles = [
+    mocks.rows["profiles"] = [
       { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
       { id: "profile-2", usuario: "carlos", nome: "Carlos", papel: "garcom", ativo: true },
     ];
-    mocks.rows.mesas = [
+    mocks.rows["mesas"] = [
       {
         id: "table-1",
         numero: 16,
@@ -189,7 +200,7 @@ describe("integração do store com o schema existente", () => {
         pos_y: 30,
       },
     ];
-    mocks.rows.restaurante = [
+    mocks.rows["restaurante"] = [
       {
         id: 1,
         nome: "Mesari",
@@ -211,10 +222,10 @@ describe("integração do store com o schema existente", () => {
   });
 
   it("autentica usando usuario@mesari.local e escolhe papel do profile", async () => {
-    mocks.rows.profiles = [
+    mocks.rows["profiles"] = [
       { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
     ];
-    mocks.rows.restaurante = [{ id: 1, nome: "Mesari" }];
+    mocks.rows["restaurante"] = [{ id: 1, nome: "Mesari" }];
 
     await expect(actions.login("Caixa", "senha")).resolves.toBe("caixa");
 
@@ -310,6 +321,62 @@ describe("integração do store com o schema existente", () => {
     });
   });
 
+  it("cria categoria nova no setor cozinha, ou no setor escolhido", async () => {
+    mocks.rows["categorias"] = [{ id: "category-new" }];
+    await act(async () => actions.addCategory("Bebidas"));
+    await act(async () => actions.addCategory("Drinks", "bar"));
+
+    const inserts = mocks.calls.filter(
+      (call) => call.table === "categorias" && call.method === "insert",
+    );
+    expect(inserts.map((call) => (call.args[0] as { setor: string }).setor)).toEqual([
+      "cozinha",
+      "bar",
+    ]);
+  });
+
+  it("setor da categoria só tem Cozinha e Bar; registro antigo 'nenhum' vira cozinha", () => {
+    expect(categorySectorOptions.map((option) => option.value)).toEqual(["cozinha", "bar"]);
+    expect(parseCategorySector("nenhum", "Balcão")).toBe("cozinha");
+    expect(parseCategorySector(null, "Sem setor")).toBe("cozinha");
+    expect(parseCategorySector("bar", "Drinks")).toBe("bar");
+    expect(() => parseCategorySector("copa", "Copa")).toThrow("Setor inválido");
+  });
+
+  it("não salva telefone incompleto do restaurante e grava o válido só com dígitos", async () => {
+    const base = {
+      name: "Restaurante Sabor do Agreste",
+      phone: "(81) 9790-01",
+      address: "",
+      cnpj: "",
+      instagram: "",
+      logo: "",
+      serviceChargeEnabled: false,
+      serviceChargePercent: 10,
+      deliveryFee: 0,
+    };
+    await expect(actions.updateRestaurant(base)).rejects.toThrow("Informe o telefone com DDD");
+    expect(mocks.calls.some((call) => call.table === "restaurante")).toBe(false);
+
+    await act(async () => actions.updateRestaurant({ ...base, phone: "(81) 9 9790-0123" }));
+    const update = mocks.calls.find(
+      (call) => call.table === "restaurante" && call.method === "update",
+    );
+    expect((update?.args[0] as { telefone: string }).telefone).toBe("81997900123");
+  });
+
+  it("lê comanda_unica e trata a coluna ausente (banco sem migração) como indisponível", async () => {
+    mocks.rows["restaurante"] = [{ id: 1, comanda_unica: false }];
+    await expect(actions.getSingleTicketMode()).resolves.toBe(false);
+
+    mocks.errors["restaurante"] = {
+      code: "42703",
+      message: "column restaurante.comanda_unica does not exist",
+    };
+    await expect(actions.getSingleTicketMode()).resolves.toBeNull();
+    delete mocks.errors["restaurante"];
+  });
+
   it("limpa comandas antigas chamando a função existente", async () => {
     await act(async () => actions.cleanKitchenOrders());
 
@@ -361,6 +428,86 @@ describe("integração do store com o schema existente", () => {
     });
   });
 
+  it("nota da venda do fechar_conta mostra o nome de cada item e o garçom", async () => {
+    // Formato que o fechar_conta grava em vendas.itens.
+    mocks.rpc.mockResolvedValue({
+      data: {
+        ...sale,
+        itens: [
+          {
+            produto_id: "item-1",
+            produto: "Carne de sol com macaxeira",
+            quantidade: 2,
+            valor_unitario: 25,
+            observacao: "",
+            garcom: "Carlos",
+          },
+        ],
+      },
+      error: null,
+    });
+    let receipt!: Awaited<ReturnType<typeof actions.closeBill>>;
+    await act(async () => {
+      receipt = await actions.closeBill("table-1", [{ forma: "pix", valor: 55 }]);
+    });
+    expect(receipt.lines).toMatchObject([{ name: "Carne de sol com macaxeira", waiter: "Carlos" }]);
+
+    const restaurant = {
+      name: "Sabor do Agreste",
+      address: "",
+      phone: "",
+      cnpj: "",
+      instagram: "",
+    };
+    const { container } = render(
+      <ReceiptContent receipt={receipt} restaurant={restaurant} via2={false} width={80} />,
+    );
+    expect(container).toHaveTextContent("Carne de sol com macaxeira");
+    expect(container).toHaveTextContent("Atendido por: Carlos");
+    // Sem Instagram do restaurante, a nota não mostra a marca do sistema.
+    expect(container).not.toHaveTextContent("@mesari");
+
+    const escpos = escPosConference(receipt, restaurant, {
+      ...getDefaultPrintSettings(),
+      columns: 48,
+    });
+    const text = previewToText(decodeEscPos(escpos, { columns: 48 }), 48);
+    expect(text).toContain("2x Carne de sol com macaxeira");
+    expect(text).toContain("Atendido por: Carlos");
+  });
+
+  it("venda de delivery concluída mostra o nome dos itens e quem atendeu no histórico", async () => {
+    mocks.session = authenticatedSession;
+    mocks.rows["profiles"] = [
+      { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
+    ];
+    mocks.rows["restaurante"] = [{ id: 1, nome: "Mesari" }];
+    // Formato que o concluir_pedido_externo grava: "produto", sem garçom no item.
+    mocks.rows["vendas"] = [
+      {
+        id: "sale-delivery",
+        numero: 43,
+        mesa_numero: null,
+        origem: "entrega",
+        cliente_nome: "Ana Paula",
+        fechado_por_nome: "Caixa",
+        itens: [{ produto: "Baião de dois", quantidade: 1, valor_unitario: 32 }],
+        subtotal: 32,
+        taxa_servico: 0,
+        taxa_entrega: 6,
+        total: 38,
+        pagamentos: [{ forma: "pix", valor: 38 }],
+        fechada_em: "2026-10-19T23:00:00.000Z",
+      },
+    ];
+
+    await act(async () => refreshData());
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.history));
+    expect(result.current[0]?.lines).toMatchObject([
+      { name: "Baião de dois", qty: 1, price: 32, waiter: "Caixa" },
+    ]);
+  });
+
   it("consulta o resumo de vendas por forma no período sem criar novas funções", async () => {
     mocks.rpc.mockResolvedValue({
       data: [{ forma: "pix", total: 100, contas: 2 }],
@@ -377,7 +524,7 @@ describe("integração do store com o schema existente", () => {
   });
 
   it("não envia o status do cliente ao salvar posições das mesas", async () => {
-    mocks.rows.mesas = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
+    mocks.rows["mesas"] = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
     await act(async () => refreshData());
 
     await act(async () =>
@@ -409,7 +556,7 @@ describe("integração do store com o schema existente", () => {
 
   it("exibe o erro exato da API quando o perfil não está disponível", async () => {
     mocks.session = authenticatedSession;
-    mocks.errors.profiles = {
+    mocks.errors["profiles"] = {
       code: "PGRST205",
       message: "Could not find the table 'public.profiles' in the schema cache",
     };

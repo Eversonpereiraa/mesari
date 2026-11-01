@@ -24,11 +24,14 @@ type AppSettings = {
   impedirSuspensao: boolean;
 };
 
+type PrintKind = "comanda" | "recibo" | "teste";
+
 type PrintRequest = {
   html: string;
   printerName: string;
   widthMm: number;
   copies: number;
+  tipo?: PrintKind;
 };
 
 type PrinterInfo = {
@@ -49,6 +52,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   manterEmSegundoPlano: true,
   impedirSuspensao: true,
 };
+/** Impressora especial: salva PDF em %APPDATA%/Mesari/impressoes, sem diálogo. */
+const VIRTUAL_PDF_PRINTER = "Mesari - Impressora virtual (PDF)";
 const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const PRINT_TIMEOUT_MS = 30_000;
 const LOG_MAX_BYTES = 1024 * 1024;
@@ -397,12 +402,17 @@ function validatePrintRequest(value: unknown): { request?: PrintRequest; error?:
   if (typeof request.printerName !== "string") {
     return { error: "Nome de impressora inválido." };
   }
+  const tipo =
+    request.tipo === "comanda" || request.tipo === "recibo" || request.tipo === "teste"
+      ? request.tipo
+      : undefined;
   return {
     request: {
       html: request.html,
       printerName: request.printerName,
       widthMm: Number(request.widthMm),
       copies: Number(request.copies),
+      ...(tipo ? { tipo } : {}),
     },
   };
 }
@@ -418,7 +428,12 @@ async function printHtml(request: PrintRequest) {
         remainingTimeout(),
         "Tempo esgotado ao consultar as impressoras.",
       )) ?? [];
-    if (request.printerName && !printers.some((printer) => printer.name === request.printerName)) {
+    const virtualPdf = request.printerName === VIRTUAL_PDF_PRINTER;
+    if (
+      request.printerName &&
+      !virtualPdf &&
+      !printers.some((printer) => printer.name === request.printerName)
+    ) {
       throw new Error("A impressora selecionada não está disponível.");
     }
     printWindow = new BrowserWindow({
@@ -443,6 +458,11 @@ async function printHtml(request: PrintRequest) {
       "Promise.all([document.fonts?.ready ?? Promise.resolve(), ...Array.from(document.images, image => image.decode().catch(() => undefined))]).then(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))",
     )) as number;
     const heightMicrons = Math.max(1000, Math.ceil(contentHeight * (25_400 / 96)));
+    if (virtualPdf) {
+      const files = await savePdf(printWindow.webContents, request, heightMicrons);
+      log(`Impressão virtual salva em PDF: ${files.join(", ")}`);
+      return { ok: true };
+    }
     const printed = await timeout(
       new Promise<boolean>((resolve) => {
         printWindow?.webContents.print(
@@ -480,6 +500,52 @@ async function printHtml(request: PrintRequest) {
   } finally {
     if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
   }
+}
+
+function printsFolder() {
+  return userDataPath("impressoes");
+}
+
+/** Deduz o tipo quando o site (versão antiga) não informa: pela impressora escolhida. */
+function printKind(request: PrintRequest): PrintKind | "impressao" {
+  if (request.tipo) return request.tipo;
+  const settings = readSettings();
+  if (request.printerName === settings.printerComanda) return "comanda";
+  if (request.printerName === settings.printerNota) return "recibo";
+  return "impressao";
+}
+
+async function savePdf(contents: WebContents, request: PrintRequest, heightMicrons: number) {
+  const pdf = await contents.printToPDF({
+    printBackground: true,
+    margins: { top: 0, bottom: 0, left: 0, right: 0 },
+    // printToPDF usa polegadas.
+    pageSize: { width: request.widthMm / 25.4, height: heightMicrons / 25_400 },
+  });
+  fs.mkdirSync(printsFolder(), { recursive: true });
+  const now = new Date();
+  const pad = (value: number) => String(value).padStart(2, "0");
+  const stamp = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const kind = printKind(request);
+  const files: string[] = [];
+  for (let copy = 1; copy <= request.copies; copy += 1) {
+    const base = `${stamp}_${kind}${request.copies > 1 ? `_via${copy}` : ""}`;
+    let filePath = path.join(printsFolder(), `${base}.pdf`);
+    // Duas impressões no mesmo segundo não se sobrescrevem.
+    for (let extra = 2; fs.existsSync(filePath); extra += 1) {
+      filePath = path.join(printsFolder(), `${base}-${extra}.pdf`);
+    }
+    fs.writeFileSync(filePath, pdf);
+    files.push(filePath);
+  }
+  return files;
+}
+
+function openPrintsFolder() {
+  fs.mkdirSync(printsFolder(), { recursive: true });
+  void shell.openPath(printsFolder()).then((result) => {
+    if (result) log("Falha ao abrir a pasta de impressões", result);
+  });
 }
 
 function escapeHtml(value: string) {
@@ -708,11 +774,13 @@ function createTray() {
               printerName: settings.printerNota,
               widthMm: 80,
               copies: 1,
+              tipo: "teste",
             }),
           );
         },
       },
       { label: "Abrir pasta de logs", click: openLogFolder },
+      { label: "Abrir pasta de impressões", click: openPrintsFolder },
       { type: "separator" },
       {
         label: "Sair",
@@ -807,11 +875,14 @@ function registerIpcHandlers() {
       const optionIsDefault = Reflect.get(printer.options, "isDefault");
       return isDefault === true || optionIsDefault === true || optionIsDefault === "true";
     });
-    return printers.map((printer) => ({
-      name: printer.name,
-      displayName: printer.displayName,
-      isDefault: printer.name === defaultPrinter?.name,
-    }));
+    return [
+      ...printers.map((printer) => ({
+        name: printer.name,
+        displayName: printer.displayName,
+        isDefault: printer.name === defaultPrinter?.name,
+      })),
+      { name: VIRTUAL_PDF_PRINTER, displayName: VIRTUAL_PDF_PRINTER, isDefault: false },
+    ];
   });
   registerHandler("mesari:get-settings", () => readSettings());
   registerHandler("mesari:set-settings", (_event, value) => {
@@ -820,6 +891,32 @@ function registerIpcHandlers() {
     updateSystemSettings(settings);
     log("Configurações do aplicativo atualizadas.");
     return settings;
+  });
+  // Abre o WhatsApp instalado (aviso ao cliente do delivery). Só whatsapp://send
+  // e https://wa.me; o preload já valida, aqui confere de novo.
+  registerHandler("mesari:open-whatsapp", async (_event, value) => {
+    let target: URL;
+    try {
+      target = new URL(String(value));
+    } catch {
+      return { ok: false, error: "Link do WhatsApp inválido." };
+    }
+    const isApp = target.protocol === "whatsapp:" && target.hostname === "send";
+    const isWaMe = target.protocol === "https:" && target.hostname === "wa.me";
+    if ((!isApp && !isWaMe) || target.username || target.password || target.port) {
+      return { ok: false, error: "Link externo não permitido." };
+    }
+    // Sem app registrado para whatsapp://, o Windows mostraria "procurar um app".
+    if (isApp && !app.getApplicationNameForProtocol("whatsapp://")) {
+      return { ok: false, error: "WhatsApp não encontrado neste PC." };
+    }
+    try {
+      await shell.openExternal(target.toString());
+      return { ok: true };
+    } catch (cause) {
+      log("Falha ao abrir o WhatsApp", cause);
+      return { ok: false, error: "Não foi possível abrir o WhatsApp." };
+    }
   });
   registerHandler("mesari:forget-direct-device", (_event, value) => {
     if (value !== "serial" && value !== "usb") {
@@ -858,6 +955,7 @@ function registerIpcHandlers() {
       printerName: request.printerName,
       widthMm: request.widthMm,
       copies: 1,
+      tipo: "teste",
     });
     if (!validation.request) {
       log("Solicitação de teste inválida", validation.error);

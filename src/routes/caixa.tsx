@@ -9,7 +9,9 @@ import {
   ReceiptText,
   RotateCw,
   Trash2,
+  TriangleAlert,
   Utensils,
+  Wallet,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -23,7 +25,6 @@ import {
   tableStatus,
   total,
   useStore,
-  type Closing,
   type OriginSummary,
   type PaymentSummary,
   type PaymentInput,
@@ -32,9 +33,15 @@ import {
 } from "@/lib/store";
 import { AppShell, Btn, StatusTag } from "@/components/ui-kit";
 import { MenuPicker } from "@/components/menu-picker";
-import { BillViewer } from "@/components/bill-viewer";
-import { getPrintSettings, printReceiptOnce } from "@/lib/printing";
+import {
+  billAmounts,
+  clearConference,
+  isConferenceOutdated,
+  printTableConference,
+  useConferenceVersion,
+} from "@/lib/conference";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { IntegerInput } from "@/components/inputs";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const Route = createFileRoute("/caixa")({
@@ -77,10 +84,12 @@ function Caixa() {
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [spin, setSpin] = useState(false);
-  const [viewer, setViewer] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [receipt, setReceipt] = useState<Closing | null>(null);
+  const [splitBy, setSplitBy] = useState(1);
+  const [splitDraft, setSplitDraft] = useState<number | null>(1);
+  const [printingBill, setPrintingBill] = useState(false);
   const [salesVersion, setSalesVersion] = useState(0);
+  useConferenceVersion();
   const closing = useRef(false);
   const cleanedOrders = useRef(false);
   useEffect(() => {
@@ -98,16 +107,11 @@ function Caixa() {
     .filter((t) => f === "todas" || tableStatus(s, t.id) === f);
   const sel = s.tables.find((t) => t.id === open);
   const lines = open ? (s.orders[open] ?? []) : [];
-  const subtotalCents = Math.round(total(lines) * 100);
-  const serviceChargeCents = s.restaurant.serviceChargeEnabled
-    ? Math.round((subtotalCents * s.restaurant.serviceChargePercent) / 100)
-    : 0;
-  const amountDueCents = subtotalCents + serviceChargeCents;
+  const { serviceChargeCents, totalCents: amountDueCents } = billAmounts(lines, s.restaurant);
   const amountDue = amountDueCents / 100;
-  const closeViewer = () => {
-    setViewer(false);
-    setReceipt(null);
-  };
+  const billOutdated = Boolean(
+    sel && lines.length && isConferenceOutdated(sel.id, lines, s.restaurant),
+  );
   const statusCounts: Record<Status, number> = { livre: 0, ocupada: 0, conta: 0 };
   for (const table of s.tables) statusCounts[tableStatus(s, table.id)] += 1;
   const openTotal = s.tables.reduce((sum, table) => {
@@ -137,32 +141,34 @@ function Caixa() {
     },
   ];
 
-  const closeAndPrint = async (payments: PaymentInput[]) => {
+  /** Conferência de consumo: imprime sem fechar a conta e sem pedir pagamento. */
+  const printBill = async () => {
+    if (printingBill || !sel || !lines.length) return;
+    const table = sel;
+    setPrintingBill(true);
+    try {
+      const result = await printTableConference(table, lines, s.restaurant, splitBy);
+      if (result.fallbackReason) {
+        toast.warning(`Impressora direta indisponível: ${result.fallbackReason}`);
+      }
+      if (tableStatus(s, table.id) !== "conta") await actions.requestBill(table.id);
+    } catch (error) {
+      toast.error(`Não foi possível imprimir a conta: ${errorMessage(error)}`);
+    } finally {
+      setPrintingBill(false);
+    }
+  };
+
+  /** Registra o pagamento e fecha a conta. Não imprime nada. */
+  const receivePayment = async (payments: PaymentInput[]) => {
     if (closing.current || !sel || !lines.length) return;
     closing.current = true;
     try {
       const closedSale = await actions.closeBill(sel.id, payments);
-      setReceipt(closedSale);
+      clearConference(sel.id);
       setPaymentOpen(false);
-      setViewer(true);
       setSalesVersion((version) => version + 1);
       toast.success(`Mesa ${closedSale.table} fechada e venda salva`);
-      try {
-        const printSettings = getPrintSettings();
-        void printReceiptOnce(closedSale, s.restaurant, printSettings)
-          .then((result) => {
-            if (result.method === "browser") {
-              toast.warning("Impressora direta indisponível. A nota será impressa pelo Windows.");
-            }
-          })
-          .catch((error: unknown) => {
-            const detail = error instanceof Error ? error.message : String(error);
-            toast.error(`A venda foi salva, mas não foi possível imprimir: ${detail}`);
-          });
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        toast.error(`A venda foi salva, mas não foi possível iniciar a impressão: ${detail}`);
-      }
     } finally {
       closing.current = false;
     }
@@ -261,6 +267,7 @@ function Caixa() {
                   key={t.id}
                   aria-label={`Mesa ${t.number}, ${st === "conta" ? "conta solicitada" : st}`}
                   onClick={() => {
+                    if (open !== t.id) setSplitBy(1);
                     setOpen(t.id);
                     setAdding(false);
                   }}
@@ -284,7 +291,7 @@ function Caixa() {
                     </span>
                   </div>
                   <div className="mt-3 flex items-center justify-between gap-2">
-                    <StatusTag s={st} />
+                    <StatusTag s={st} short />
                     {st === "livre" ? (
                       <span
                         aria-label="Mesa livre"
@@ -294,7 +301,7 @@ function Caixa() {
                         <Armchair className="h-4 w-4" />
                       </span>
                     ) : (
-                      <span className="text-xs text-muted-foreground">
+                      <span className="shrink-0 whitespace-nowrap text-xs text-muted-foreground">
                         {itemCount} {itemCount === 1 ? "item" : "itens"}
                       </span>
                     )}
@@ -426,11 +433,60 @@ function Caixa() {
                       <span>{brl(serviceChargeCents / 100)}</span>
                     </div>
                   )}
+                  {billOutdated && (
+                    <div
+                      role="alert"
+                      className="mb-3 flex items-start gap-2 rounded-lg border border-bill bg-bill-bg px-3 py-2 text-sm font-semibold text-ink"
+                    >
+                      <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-bill" />A conta mudou
+                      depois da impressão. Reimprima antes de receber.
+                    </div>
+                  )}
                   <div className="grid gap-2">
-                    <Btn size="lg" className="w-full" onClick={() => setAdding(true)}>
+                    <Btn
+                      size="lg"
+                      variant="outline"
+                      className="w-full"
+                      onClick={() => setAdding(true)}
+                    >
                       <Plus className="h-5 w-5" />
                       Adicionar Item
                     </Btn>
+                    <div className="flex gap-2">
+                      <Btn
+                        size="lg"
+                        className={cn(
+                          "min-w-0 flex-1",
+                          billOutdated && "ring-2 ring-bill ring-offset-2 ring-offset-card",
+                        )}
+                        disabled={!lines.length || printingBill}
+                        onClick={() => void printBill()}
+                      >
+                        <Printer className="h-5 w-5" />
+                        {printingBill ? "Imprimindo..." : "Imprimir conta"}
+                      </Btn>
+                      <label
+                        className="flex shrink-0 flex-col justify-center text-[11px] leading-tight text-muted-foreground"
+                        title="Mostra na conta o valor por pessoa"
+                      >
+                        Dividir por
+                        <span className="mt-0.5 block w-16">
+                          <IntegerInput
+                            min={1}
+                            max={50}
+                            aria-label="Dividir a conta por quantas pessoas"
+                            className="h-8 px-2 text-sm text-ink"
+                            enterKeyHint="done"
+                            value={splitDraft}
+                            onChange={(value) => {
+                              setSplitDraft(value);
+                              if (value !== null && value >= 1 && value <= 50) setSplitBy(value);
+                            }}
+                            onBlur={() => setSplitDraft(splitBy)}
+                          />
+                        </span>
+                      </label>
+                    </div>
                     <Btn
                       size="lg"
                       variant="success"
@@ -438,8 +494,8 @@ function Caixa() {
                       disabled={!lines.length}
                       onClick={() => setPaymentOpen(true)}
                     >
-                      <Printer className="h-5 w-5" />
-                      Fechar Conta e Imprimir
+                      <Wallet className="h-5 w-5" />
+                      Receber pagamento
                     </Btn>
                   </div>
                 </div>
@@ -453,10 +509,9 @@ function Caixa() {
           table={sel.number}
           totalCents={amountDueCents}
           onClose={() => setPaymentOpen(false)}
-          onConfirm={closeAndPrint}
+          onConfirm={receivePayment}
         />
       )}
-      {viewer && receipt && <BillViewer s={s} receipt={receipt} onClose={closeViewer} />}
     </AppShell>
   );
 }

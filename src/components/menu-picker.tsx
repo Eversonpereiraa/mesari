@@ -12,8 +12,51 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
-import { isKitchenStationOnline, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
+import { getKitchenStationStatus, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import { Btn } from "./ui-kit";
+import { TextInput } from "@/components/inputs";
+import { TEXT_LIMITS } from "@/lib/masks";
+
+/** Limite de quantidade por item aceito pelo banco. */
+const MAX_QTY = 99;
+
+function sendErrorMessage(cause: unknown) {
+  const offline = typeof navigator !== "undefined" && navigator.onLine === false;
+  const message = errorMessage(cause);
+  if (offline || /failed to fetch|network|fetch failed/i.test(message)) {
+    return "Sem internet: o pedido NÃO foi enviado. Os itens continuam no carrinho.";
+  }
+  return `O pedido NÃO foi enviado: ${message}. Os itens continuam no carrinho.`;
+}
+
+function SendErrorNotice({
+  message,
+  retrying,
+  onRetry,
+}: {
+  message: string;
+  retrying: boolean;
+  onRetry: () => void;
+}) {
+  return (
+    <div
+      role="alert"
+      className="mt-2 rounded-xl border border-destructive/30 bg-destructive/10 p-3"
+    >
+      <p className="text-center text-sm font-semibold text-destructive">{message}</p>
+      <Btn
+        type="button"
+        size="lg"
+        variant="outline"
+        className="mt-2 w-full"
+        disabled={retrying}
+        onClick={onRetry}
+      >
+        {retrying ? "Enviando..." : "Tentar de novo"}
+      </Btn>
+    </div>
+  );
+}
 
 export type MenuCartEntry = { item: MenuItem; qty: number; note: string };
 
@@ -88,7 +131,7 @@ export function MenuPicker({
   const adjustCart = (item: MenuItem, delta: number) => {
     setCart((current) => {
       const existing = current.find((entry) => entry.item.id === item.id);
-      const nextQty = (existing?.qty ?? 0) + delta;
+      const nextQty = Math.min(MAX_QTY, (existing?.qty ?? 0) + delta);
       if (nextQty <= 0) return current.filter((entry) => entry.item.id !== item.id);
       const nextNote = existing?.note ?? (selected?.id === item.id ? note.trim() : "");
       if (existing)
@@ -125,19 +168,20 @@ export function MenuPicker({
     }
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    // "desconhecido" (canal ainda sincronizando) não é offline: sem aviso falso.
+    const stationOffline = getKitchenStationStatus() === "offline";
     try {
       await onAdd(selected, qty, note.trim(), true);
       setFlash(
         printOrders
-          ? stationOnline
-            ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa."
+          ? stationOffline
+            ? "Impressora desconectada. O pedido foi enviado, avise o caixa."
+            : "Pedido enviado para a cozinha"
           : "Pedido enviado para a mesa.",
       );
       setSelected(null);
     } catch (cause) {
-      setSubmitError(errorMessage(cause));
+      setSubmitError(sendErrorMessage(cause));
     } finally {
       setSending(false);
     }
@@ -148,7 +192,8 @@ export function MenuPicker({
     if (!cart.length || sending) return;
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    // "desconhecido" (canal ainda sincronizando) não é offline: sem aviso falso.
+    const stationOffline = getKitchenStationStatus() === "offline";
     try {
       if (onSubmit) await onSubmit(cart, printOrders);
       else for (const entry of cart) await onAdd(entry.item, entry.qty, entry.note, true);
@@ -158,13 +203,13 @@ export function MenuPicker({
       setFlash(
         !printOrders
           ? "Pedido enviado para a mesa."
-          : stationOnline
-            ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa.",
+          : stationOffline
+            ? "Impressora desconectada. O pedido foi enviado, avise o caixa."
+            : "Pedido enviado para a cozinha",
       );
       window.setTimeout(() => setFlash(""), 4000);
     } catch (cause) {
-      setSubmitError(errorMessage(cause));
+      setSubmitError(sendErrorMessage(cause));
     } finally {
       setSending(false);
     }
@@ -182,6 +227,9 @@ export function MenuPicker({
           <Search className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
           <input
             className="field h-11 pl-10"
+            type="search"
+            enterKeyHint="search"
+            maxLength={60}
             aria-label="Buscar item do cardápio"
             placeholder="Buscar item do cardápio"
             value={q}
@@ -309,19 +357,22 @@ export function MenuPicker({
                               className="h-12 w-12 rounded-l-none"
                               aria-label="Aumentar quantidade"
                               type="button"
-                              onClick={() => setQty(qty + 1)}
+                              onClick={() => setQty(Math.min(MAX_QTY, qty + 1))}
                             >
                               <Plus className="h-4 w-4" />
                             </Btn>
                           </div>
                         </div>
                       )}
-                      <input
-                        className="field h-11"
+                      <TextInput
+                        className="h-11"
                         aria-label={`Observação para ${item.name}`}
                         placeholder="Observação (ex.: sem cebola)"
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
                         value={note}
-                        onChange={(event) => updateNote(event.target.value)}
+                        onChange={updateNote}
                       />
                       {!mobile && (
                         <Btn
@@ -390,9 +441,11 @@ export function MenuPicker({
             {sending ? "Enviando..." : "Enviar pedido"}
           </Btn>
           {submitError && (
-            <p role="alert" className="mt-2 text-center text-xs text-destructive">
-              {submitError}
-            </p>
+            <SendErrorNotice
+              message={submitError}
+              retrying={sending}
+              onRetry={() => void sendCart()}
+            />
           )}
         </div>
       )}
@@ -462,21 +515,24 @@ export function MenuPicker({
                     >
                       <Plus className="h-4 w-4" />
                     </button>
-                    <input
-                      className="field ml-auto h-11 max-w-[190px]"
-                      aria-label={`Observação para ${entry.item.name}`}
-                      placeholder="Observação"
-                      value={entry.note}
-                      onChange={(event) =>
-                        setCart((current) =>
-                          current.map((line) =>
-                            line.item.id === entry.item.id
-                              ? { ...line, note: event.target.value }
-                              : line,
-                          ),
-                        )
-                      }
-                    />
+                    <span className="ml-auto block w-full max-w-[190px]">
+                      <TextInput
+                        className="h-11"
+                        aria-label={`Observação para ${entry.item.name}`}
+                        placeholder="Observação"
+                        enterKeyHint="done"
+                        maxLength={TEXT_LIMITS.note}
+                        counterFrom={100}
+                        value={entry.note}
+                        onChange={(note) =>
+                          setCart((current) =>
+                            current.map((line) =>
+                              line.item.id === entry.item.id ? { ...line, note } : line,
+                            ),
+                          )
+                        }
+                      />
+                    </span>
                   </div>
                 </div>
               ))}
@@ -500,9 +556,11 @@ export function MenuPicker({
                   : `Enviar ${cartCount} ${cartCount === 1 ? "item" : "itens"} — ${brl(cartTotal)}`}
               </Btn>
               {submitError && (
-                <p role="alert" className="mt-2 text-center text-xs text-destructive">
-                  {submitError}
-                </p>
+                <SendErrorNotice
+                  message={submitError}
+                  retrying={sending}
+                  onRetry={() => void sendCart()}
+                />
               )}
               <Btn
                 type="button"

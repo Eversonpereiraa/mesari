@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { actions, useStore } from "@/lib/store";
 import { Btn, Field } from "@/components/ui-kit";
+import { PasswordInput, UsernameInput } from "@/components/inputs";
+import { loginUsername } from "@/lib/masks";
 import { MesariLogo } from "@/components/mesari-logo";
 
 export const Route = createFileRoute("/")({
@@ -26,14 +28,15 @@ function Login() {
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const role = await actions.login(u, c);
+    const username = loginUsername(u);
+    const role = await actions.login(username, c);
     if (!role) {
       setErr("Não foi possível autenticar o usuário.");
       return;
     }
     nav({
       to:
-        role === "cozinha" || u.trim().toLowerCase() === "cozinha"
+        role === "cozinha" || username === "cozinha"
           ? "/cozinha"
           : role === "garcom"
             ? "/garcom"
@@ -50,22 +53,15 @@ function Login() {
         </div>
         <div className="space-y-4">
           <Field label="Nome de usuário">
-            <input
-              className="field"
-              autoFocus
-              autoComplete="username"
-              value={u}
-              onChange={(e) => setU(e.target.value)}
-            />
+            <UsernameInput mode="login" autoFocus value={u} onChange={setU} />
           </Field>
           <Field label="Senha">
-            <input
-              className="field num tracking-widest"
-              type="password"
+            <PasswordInput
+              mode="current"
+              className="num tracking-widest"
               inputMode="numeric"
-              autoComplete="current-password"
               value={c}
-              onChange={(e) => setC(e.target.value)}
+              onChange={setC}
             />
           </Field>
           {(!configured || err || storeError) && (

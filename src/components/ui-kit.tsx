@@ -17,8 +17,14 @@ import {
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
-import { getPrintSettings } from "@/lib/printing";
+import { getPrintSettings, isDemoSimulation } from "@/lib/printing";
+import {
+  leaveDemoMode,
+  openVirtualPrinterWindow,
+  openVirtualPrinterWindowOnce,
+} from "@/lib/demo-mode";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
+import { BillRequestPrintStation } from "@/components/bill-request-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const btn = cva(
@@ -53,16 +59,38 @@ const statusMap: Record<Status, { label: string; cls: string }> = {
   ocupada: { label: "Ocupada", cls: "bg-busy text-white" },
   conta: { label: "Conta solicitada", cls: "bg-bill text-white" },
 };
-export function StatusTag({ s, className }: { s: Status; className?: string }) {
+/** Rótulos curtos (app do garçom e cards do caixa): cabem no card sem cortar nada. */
+const shortLabels: Record<Status, string> = {
+  livre: "Livre",
+  ocupada: "Ocupada",
+  conta: "Pedindo conta",
+};
+
+export function StatusTag({
+  s,
+  className,
+  variant = "default",
+  short = variant === "garcom",
+}: {
+  s: Status;
+  className?: string;
+  /** "garcom": rótulo curto e selo compacto, que nunca é cortado. */
+  variant?: "default" | "garcom";
+  /** Rótulo curto ("Pedindo conta") no tamanho normal, para cards apertados. */
+  short?: boolean;
+}) {
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold whitespace-nowrap",
+        "inline-flex shrink-0 items-center rounded-full font-bold whitespace-nowrap",
+        variant === "garcom"
+          ? "px-2 py-0.5 text-[11px] leading-4 tracking-tight @max-[96px]:px-1.5 @max-[96px]:text-[10px]"
+          : "px-2.5 py-1 text-xs",
         statusMap[s].cls,
         className,
       )}
     >
-      {statusMap[s].label}
+      {short ? shortLabels[s] : statusMap[s].label}
     </span>
   );
 }
@@ -109,7 +137,6 @@ export function Check({
 }
 
 export function useRequireAuth() {
-  const confirmar = useConfirm();
   const user = useStore((s) => s.user);
   const loading = useStore((s) => s.loading);
   const configured = useStore((s) => s.configured);
@@ -186,6 +213,7 @@ export function AppShell({
   right?: ReactNode;
 }) {
   const user = useRequireAuth();
+  const confirmar = useConfirm();
   const name = useStore((s) => s.restaurant.name);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const [collapsed, setCollapsed] = useState(false);
@@ -303,10 +331,56 @@ export function AppShell({
         </header>
         <main className="flex-1">
           <StoreErrorBanner />
+          {user?.role === "caixa" && <DemoModeBanner />}
           {user?.role === "caixa" && <KitchenPrintStation />}
+          {user?.role === "caixa" && <BillRequestPrintStation />}
           {children}
         </main>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Modo demonstração (?demo=1): tudo imprime na impressora virtual, que abre numa
+ * janela lateral. Sem faixa na tela, para os prints e a apresentação saírem limpos;
+ * a faixa só aparece se o navegador bloquear a janela. Para sair: ?demo=0.
+ */
+function DemoModeBanner() {
+  const [active, setActive] = useState(isDemoSimulation);
+  const [blocked, setBlocked] = useState(false);
+  useEffect(() => {
+    if (!active) return;
+    // Não abre a janela lateral se esta já é a própria impressora virtual.
+    if (new URLSearchParams(window.location.search).get("janela") === "1") return;
+    setBlocked(!openVirtualPrinterWindowOnce());
+  }, [active]);
+  if (!active || !blocked) return null;
+  return (
+    <div
+      role="status"
+      className="flex flex-wrap items-center gap-2 border-b border-primary/30 bg-primary/10 px-4 py-2 text-sm text-ink"
+    >
+      <strong>Modo demonstração:</strong>
+      <span className="mr-auto">nada sai no papel, tudo aparece na impressora virtual.</span>
+      <Btn size="sm" onClick={() => setBlocked(!openVirtualPrinterWindow())}>
+        Abrir impressora virtual
+      </Btn>
+      <Btn
+        size="sm"
+        variant="outline"
+        onClick={() => {
+          leaveDemoMode();
+          setActive(false);
+        }}
+      >
+        Sair da demonstração
+      </Btn>
+      {blocked && (
+        <span className="w-full text-xs text-muted-foreground">
+          O navegador bloqueou a janela. Clique em “Abrir impressora virtual” ou permita pop-ups.
+        </span>
+      )}
     </div>
   );
 }
