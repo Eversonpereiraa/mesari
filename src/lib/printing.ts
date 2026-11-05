@@ -48,6 +48,8 @@ export type PrintReceipt = {
     troco?: number;
   }[];
   partial?: boolean;
+  /** Nota de consumo (pré-conta): sem número de venda nem pagamentos. */
+  preBill?: boolean;
   reprint?: boolean;
   origin?: "mesa" | "entrega" | "retirada" | "balcao";
   customerName?: string;
@@ -825,8 +827,22 @@ function escapeHtml(value: string) {
   });
 }
 
-async function assetDataUri(src: string) {
-  if (src.startsWith("data:")) return src;
+/** Logo e fontes convertidos uma vez por sessão: cada impressão não baixa de novo. */
+const assetCache = new Map<string, Promise<string>>();
+
+function assetDataUri(src: string) {
+  if (src.startsWith("data:")) return Promise.resolve(src);
+  let cached = assetCache.get(src);
+  if (!cached) {
+    cached = fetchDataUri(src);
+    // Falha não fica guardada: a próxima impressão tenta de novo.
+    cached.catch(() => assetCache.delete(src));
+    assetCache.set(src, cached);
+  }
+  return cached;
+}
+
+async function fetchDataUri(src: string) {
   const response = await fetch(new URL(src, window.location.href));
   if (!response.ok)
     throw new Error("Não foi possível carregar um recurso do recibo para impressão.");
@@ -845,7 +861,10 @@ async function receiptHtml(
   settings: PrintSettings,
 ) {
   const [logo, regularFont, boldFont] = await Promise.all([
-    assetDataUri(restaurant.logo || defaultReceiptLogo),
+    // Logo do Storage indisponível (rede): imprime com o logo padrão em vez de falhar o cupom.
+    assetDataUri(restaurant.logo || defaultReceiptLogo).catch(() =>
+      assetDataUri(defaultReceiptLogo),
+    ),
     assetDataUri(receiptFontRegularUrl),
     assetDataUri(receiptFontBoldUrl),
   ]);

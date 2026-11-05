@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   rows: {} as Record<string, Record<string, unknown>[]>,
   errors: {} as Record<string, { code?: string; message: string }>,
-  calls: [] as { table: string; method: string; args: unknown[] }[],
+  calls: [] as { table: string; method: string; args: unknown[]; extras?: unknown[][] }[],
   session: null as null | { user: { id: string; email: string } },
   auth: {
     getSession: vi.fn(),
@@ -17,12 +17,24 @@ const mocks = vi.hoisted(() => ({
   rpc: vi.fn(),
   channel: vi.fn(),
   removeChannel: vi.fn(),
+  logo: {
+    uploadLogo: vi.fn(),
+    removeLogo: vi.fn(),
+  },
 }));
 
 vi.mock("@/lib/supabase", () => ({
   supabase: mocks,
   supabaseConfigured: true,
   usernameEmail: (username: string) => `${username.trim().toLowerCase()}@mesari.local`,
+}));
+
+// Compressão usa canvas (indisponível no jsdom): o envio ao Storage é simulado.
+vi.mock("@/lib/logo-storage", () => ({
+  isDataUrl: (value: string) => value.startsWith("data:"),
+  dataUrlToBlob: async () => new Blob(["imagem"]),
+  uploadLogo: mocks.logo.uploadLogo,
+  removeLogo: mocks.logo.removeLogo,
 }));
 
 import { actions, refreshData, tableStatus, useStore, type MenuItem } from "@/lib/store";
@@ -42,9 +54,16 @@ function makeQuery(table: string) {
   let values: unknown;
   let selection: unknown;
   let filters: [string, unknown][] = [];
+  // Filtros de intervalo/conteúdo e paginação: só registrados (não filtram as linhas do mock).
+  let extras: unknown[][] = [];
 
   const execute = () => {
-    mocks.calls.push({ table, method: operation, args: [values ?? selection, ...filters] });
+    mocks.calls.push({
+      table,
+      method: operation,
+      args: [values ?? selection, ...filters],
+      ...(extras.length ? { extras } : {}),
+    });
     const matchingRows = (mocks.rows[table] ?? []).filter((row) =>
       filters.every(([column, value]) => row[column] === value),
     );
@@ -87,6 +106,22 @@ function makeQuery(table: string) {
       filters = [...filters, [column, value]];
       return query;
     },
+    gte: (...args: unknown[]) => {
+      extras = [...extras, ["gte", ...args]];
+      return query;
+    },
+    lte: (...args: unknown[]) => {
+      extras = [...extras, ["lte", ...args]];
+      return query;
+    },
+    contains: (...args: unknown[]) => {
+      extras = [...extras, ["contains", ...args]];
+      return query;
+    },
+    range: (...args: unknown[]) => {
+      extras = [...extras, ["range", ...args]];
+      return query;
+    },
     order: () => query,
     limit: () => query,
     maybeSingle: async () => {
@@ -108,6 +143,25 @@ function makeQuery(table: string) {
   };
   return query;
 }
+
+const STORAGE = "https://x.supabase.co/storage/v1/object/public/marca";
+
+/** Caixa logado com o logo informado em restaurante.logo_url. */
+async function loginWithLogo(logo: string, role = "caixa") {
+  mocks.session = authenticatedSession;
+  mocks.rows["profiles"] = [
+    { id: "profile-1", usuario: role, nome: "Caixa", papel: role, ativo: true },
+  ];
+  mocks.rows["restaurante"] = [
+    { id: 1, nome: "Mesari", taxa_servico_ativa: false, logo_url: logo },
+  ];
+  await act(async () => refreshData());
+  mocks.calls = [];
+}
+
+const restaurantUpdate = () =>
+  mocks.calls.find((call) => call.table === "restaurante" && call.method === "update")?.args[0] as
+    Record<string, unknown> | undefined;
 
 const authenticatedSession = { user: { id: "profile-1", email: "caixa@mesari.local" } };
 const sale = {
@@ -164,6 +218,8 @@ beforeEach(async () => {
     subscribe: vi.fn().mockReturnThis(),
   });
   mocks.removeChannel.mockResolvedValue("ok");
+  mocks.logo.uploadLogo.mockResolvedValue(`${STORAGE}/logo-novo.webp`);
+  mocks.logo.removeLogo.mockResolvedValue(undefined);
   await refreshData();
 });
 
@@ -361,6 +417,98 @@ describe("integração do store com o schema existente", () => {
     });
   });
 
+  it("lê os itens da venda com as chaves gravadas por fechar_conta (produto/garcom)", async () => {
+    mocks.rpc.mockResolvedValue({
+      data: {
+        ...sale,
+        itens: [
+          {
+            produto: "Baião de dois",
+            quantidade: 1,
+            valor_unitario: 32,
+            observacao: "sem cebola",
+            garcom: "Maria das Dores",
+          },
+        ],
+      },
+      error: null,
+    });
+
+    let receipt;
+    await act(async () => {
+      receipt = await actions.closeBill("table-1", [{ forma: "pix", valor: 55 }]);
+    });
+
+    expect(receipt).toMatchObject({
+      lines: [
+        { name: "Baião de dois", qty: 1, price: 32, note: "sem cebola", waiter: "Maria das Dores" },
+      ],
+    });
+  });
+
+  it("recarrega só a parte pedida (evento de itens não baixa vendas, mesas nem logo)", async () => {
+    mocks.session = authenticatedSession;
+    mocks.calls = [];
+
+    await act(async () => refreshData(["orders"]));
+
+    expect([...new Set(mocks.calls.map((call) => call.table))]).toEqual(["itens_pedido"]);
+  });
+
+  it("não baixa vendas nem o logo na carga do salão", async () => {
+    mocks.session = authenticatedSession;
+    mocks.rows.profiles = [
+      { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
+    ];
+    mocks.rows.restaurante = [{ id: 1, nome: "Mesari", logo_url: "data:image/jpeg;base64,AAA" }];
+    mocks.calls = [];
+
+    await act(async () => refreshData(["base", "tables", "orders", "layout"]));
+
+    expect(mocks.calls.some((call) => call.table === "vendas")).toBe(false);
+    expect(
+      mocks.calls.some(
+        (call) => call.table === "restaurante" && String(call.args[0]).includes("logo_url"),
+      ),
+    ).toBe(false);
+  });
+
+  it("mantém a mesma lista de mesas quando nada mudou (o mapa não re-renderiza)", async () => {
+    mocks.session = authenticatedSession;
+    mocks.rows.mesas = [{ id: "table-1", numero: 3, lugares: 4, status: "livre", ativa: true }];
+    await act(async () => refreshData(["tables"]));
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.tables));
+    const before = result.current;
+
+    await act(async () => refreshData(["tables"]));
+    expect(result.current).toBe(before);
+
+    mocks.rows.mesas = [{ id: "table-1", numero: 3, lugares: 4, status: "ocupada", ativa: true }];
+    await act(async () => refreshData(["tables"]));
+    expect(result.current).not.toBe(before);
+    expect(result.current[0]?.status).toBe("ocupada");
+  });
+
+  it("lista vendas do período paginando no banco e filtrando pela forma", async () => {
+    mocks.rows.vendas = Array.from({ length: 3 }, (_, index) => ({
+      ...sale,
+      id: `sale-${index}`,
+      numero: index,
+    }));
+
+    const page = await actions.listSales("inicio", "fim", "pix", 0, 2);
+
+    expect(page.sales).toHaveLength(2);
+    expect(page.hasMore).toBe(true);
+    const call = mocks.calls.find((entry) => entry.table === "vendas");
+    expect(call?.extras).toEqual([
+      ["gte", "fechada_em", "inicio"],
+      ["lte", "fechada_em", "fim"],
+      ["contains", "pagamentos", [{ forma: "pix" }]],
+      ["range", 0, 2],
+    ]);
+  });
+
   it("consulta o resumo de vendas por forma no período sem criar novas funções", async () => {
     mocks.rpc.mockResolvedValue({
       data: [{ forma: "pix", total: 100, contas: 2 }],
@@ -377,17 +525,20 @@ describe("integração do store com o schema existente", () => {
   });
 
   it("não envia o status do cliente ao salvar posições das mesas", async () => {
-    mocks.rows.mesas = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
+    mocks.rows["mesas"] = [{ id: "table-1", numero: 16, lugares: 4, status: "conta", ativa: true }];
     await act(async () => refreshData());
 
     await act(async () =>
-      actions.saveTables([
+      actions.saveTableLayout([
         {
           id: "table-1",
           number: 16,
-          seats: 4,
-          x: 40,
-          y: 50,
+          seats: 8,
+          x: 4.5,
+          y: 2,
+          shape: "rect",
+          rotation: 1,
+          areaId: null,
           status: "livre",
           active: true,
         },
@@ -399,12 +550,58 @@ describe("integração do store com o schema existente", () => {
       {
         id: "table-1",
         numero: 16,
-        lugares: 4,
+        lugares: 8,
         ativa: true,
-        pos_x: 40,
-        pos_y: 50,
+        pos_x: 4.5,
+        pos_y: 2,
+        shape: "rect",
+        rotation: 1,
       },
     ]);
+  });
+
+  it("lê mesas sem posição e sem colunas do mapa com valores padrão", async () => {
+    mocks.session = authenticatedSession;
+    mocks.rows["profiles"] = [
+      { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
+    ];
+    mocks.rows["restaurante"] = [{ id: 1, nome: "Mesari", taxa_servico_ativa: false }];
+    mocks.rows["mesas"] = [{ id: "table-1", numero: 3, lugares: 4, status: "livre", ativa: true }];
+    await act(async () => refreshData());
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.tables));
+    expect(result.current).toEqual([
+      expect.objectContaining({ x: null, y: null, shape: "square", rotation: 0 }),
+    ]);
+  });
+
+  it("bloqueia excluir mesa com pedido em aberto", async () => {
+    mocks.session = authenticatedSession;
+    mocks.rows["profiles"] = [
+      { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
+    ];
+    mocks.rows["restaurante"] = [{ id: 1, nome: "Mesari", taxa_servico_ativa: false }];
+    mocks.rows["mesas"] = [
+      { id: "table-1", numero: 3, lugares: 4, status: "ocupada", ativa: true },
+    ];
+    mocks.rows["itens_pedido"] = [
+      {
+        id: "line-1",
+        mesa_id: "table-1",
+        produto_id: "item-1",
+        produto_nome: "Prato",
+        quantidade: 1,
+        valor_unitario: 10,
+        observacao: "",
+        criado_em: "2026-11-03T12:00:00Z",
+      },
+    ];
+    await act(async () => refreshData());
+    await expect(actions.deactivateTable("table-1")).rejects.toThrow(
+      "A mesa 03 tem pedido em aberto",
+    );
+    expect(mocks.calls.some((call) => call.table === "mesas" && call.method === "update")).toBe(
+      false,
+    );
   });
 
   it("exibe o erro exato da API quando o perfil não está disponível", async () => {
@@ -420,5 +617,69 @@ describe("integração do store com o schema existente", () => {
     await waitFor(() => {
       expect(result.current).toBe("Could not find the table 'public.profiles' in the schema cache");
     });
+  });
+
+  it("envia o logo novo ao Storage, grava só a URL e apaga o arquivo antigo", async () => {
+    await loginWithLogo(`${STORAGE}/logo-antigo.webp`);
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.restaurant));
+
+    await act(async () =>
+      actions.updateRestaurant({ ...result.current, logo: "data:image/png;base64,AAAA" }),
+    );
+
+    expect(mocks.logo.uploadLogo).toHaveBeenCalledTimes(1);
+    expect(restaurantUpdate()).toEqual(
+      expect.objectContaining({ nome: "Mesari", logo_url: `${STORAGE}/logo-novo.webp` }),
+    );
+    expect(mocks.logo.removeLogo).toHaveBeenCalledWith(`${STORAGE}/logo-antigo.webp`);
+  });
+
+  it("não envia nem apaga nada quando o logo não mudou", async () => {
+    await loginWithLogo(`${STORAGE}/logo-antigo.webp`);
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.restaurant));
+
+    await act(async () => actions.updateRestaurant({ ...result.current, name: "Novo nome" }));
+
+    expect(mocks.logo.uploadLogo).not.toHaveBeenCalled();
+    expect(mocks.logo.removeLogo).not.toHaveBeenCalled();
+    expect(restaurantUpdate()).toEqual(
+      expect.objectContaining({ nome: "Novo nome", logo_url: `${STORAGE}/logo-antigo.webp` }),
+    );
+  });
+
+  it("se a gravação falhar, apaga o arquivo enviado e mantém o antigo", async () => {
+    await loginWithLogo(`${STORAGE}/logo-antigo.webp`);
+    const { result } = renderHook(() => useStore((snapshot) => snapshot.restaurant));
+    mocks.errors["restaurante"] = { message: "Falha ao salvar" };
+
+    await expect(
+      actions.updateRestaurant({ ...result.current, logo: "data:image/png;base64,AAAA" }),
+    ).rejects.toThrow("Falha ao salvar");
+
+    expect(mocks.logo.removeLogo).toHaveBeenCalledTimes(1);
+    expect(mocks.logo.removeLogo).toHaveBeenCalledWith(`${STORAGE}/logo-novo.webp`);
+  });
+
+  it("converte o logo base64 antigo para o Storage alterando só logo_url", async () => {
+    await loginWithLogo("data:image/jpeg;base64,BBBB");
+
+    await act(async () => actions.migrateLogo());
+
+    expect(mocks.logo.uploadLogo).toHaveBeenCalledTimes(1);
+    expect(restaurantUpdate()).toEqual({ logo_url: `${STORAGE}/logo-novo.webp` });
+    // Recarrega só o logo, sem refazer cardápio, mesas ou pedidos.
+    expect(
+      mocks.calls.filter((call) => call.method === "select").map((call) => call.args[0]),
+    ).toEqual(["logo_url"]);
+  });
+
+  it("não converte o logo fora do caixa nem quando já é URL", async () => {
+    await loginWithLogo("data:image/jpeg;base64,BBBB", "garcom");
+    await act(async () => actions.migrateLogo());
+    await loginWithLogo(`${STORAGE}/logo-antigo.webp`);
+    await act(async () => actions.migrateLogo());
+
+    expect(mocks.logo.uploadLogo).not.toHaveBeenCalled();
+    expect(restaurantUpdate()).toBeUndefined();
   });
 });

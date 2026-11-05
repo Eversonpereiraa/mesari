@@ -19,6 +19,7 @@ import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
 import { getPrintSettings } from "@/lib/printing";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
+import { BillPrintStation } from "@/components/bill-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const btn = cva(
@@ -304,6 +305,7 @@ export function AppShell({
         <main className="flex-1">
           <StoreErrorBanner />
           {user?.role === "caixa" && <KitchenPrintStation />}
+          {user?.role === "caixa" && <BillPrintStation />}
           {children}
         </main>
       </div>

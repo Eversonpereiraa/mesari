@@ -1,41 +1,50 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Armchair,
   Banknote,
   CircleDollarSign,
-  Plus,
-  Printer,
   ReceiptText,
   RotateCw,
-  Trash2,
   Utensils,
-  X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
   actions,
   brl,
-  count,
   errorMessage,
   paymentMethodLabel,
   tableStatus,
-  total,
+  billTotals,
   useStore,
-  type Closing,
+  type OrderLine,
   type OriginSummary,
   type PaymentSummary,
   type PaymentInput,
   type PaymentMethod,
   type Status,
 } from "@/lib/store";
-import { AppShell, Btn, StatusTag } from "@/components/ui-kit";
+import { AppShell, Btn } from "@/components/ui-kit";
 import { MenuPicker } from "@/components/menu-picker";
-import { BillViewer } from "@/components/bill-viewer";
-import { getPrintSettings, printReceiptOnce } from "@/lib/printing";
 import { PaymentDialog } from "@/components/payment-dialog";
+import { printPreBill, reprintBill, useBillPrintFailures } from "@/lib/bill-print";
 import { useConfirm } from "@/components/system-dialog-provider";
+import {
+  AreaFilter,
+  MapCard,
+  SalaoMap,
+  StatusLegend,
+  type Selection,
+} from "@/components/salao/SalaoMap";
+import {
+  LiveEmptyPanel,
+  LiveTablePanel,
+  PanelCard,
+  StatusPill,
+} from "@/components/salao/TablePanel";
+import { useLiveInfo, useMinuteClock, useSalaoData } from "@/components/salao/useSalao";
+import { tableNumber } from "@/components/salao/iso";
 
 export const Route = createFileRoute("/caixa")({
   head: () => ({
@@ -55,66 +64,128 @@ export const Route = createFileRoute("/caixa")({
   component: Caixa,
 });
 
-type Filter = "todas" | Status;
-const filters: { k: Filter; l: string }[] = [
-  { k: "todas", l: "Todas" },
-  { k: "livre", l: "Livres" },
-  { k: "ocupada", l: "Ocupadas" },
-  { k: "conta", l: "Conta" },
-];
-const filterActive: Record<Filter, string> = {
-  todas: "bg-primary text-white",
-  livre: "bg-free text-white",
-  ocupada: "bg-busy text-white",
-  conta: "bg-bill text-white",
-};
-
 function Caixa() {
-  const s = useStore((x) => x);
+  // Só o que a tela usa: mudanças em outras partes do store não redesenham o caixa nem o mapa.
+  const user = useStore((x) => x.user);
+  const loading = useStore((x) => x.loading);
+  const tables = useStore((x) => x.tables);
+  const orders = useStore((x) => x.orders);
+  const restaurant = useStore((x) => x.restaurant);
+  const billPrintAvailable = useStore((x) => x.billPrintAvailable);
   const navigate = useNavigate();
   const confirmar = useConfirm();
-  const [f, setF] = useState<Filter>("todas");
+  const salao = useSalaoData();
+  const salaoTables = salao.tables;
+  const liveInfo = useLiveInfo(salaoTables);
+  const [areaFilter, setAreaFilter] = useState<string | null>(null);
+  const tablesPerArea = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const t of salaoTables) if (t.areaId) counts[t.areaId] = (counts[t.areaId] ?? 0) + 1;
+    return counts;
+  }, [salaoTables]);
+  const focusAreaId =
+    areaFilter && salao.areas.some((a) => a.id === areaFilter) ? areaFilter : null;
+  const now = useMinuteClock();
+  const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [spin, setSpin] = useState(false);
-  const [viewer, setViewer] = useState(false);
+  const [reprinting, setReprinting] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
-  const [receipt, setReceipt] = useState<Closing | null>(null);
   const [salesVersion, setSalesVersion] = useState(0);
   const closing = useRef(false);
   const cleanedOrders = useRef(false);
   useEffect(() => {
-    if (!s.loading && !s.user) void navigate({ to: "/", replace: true });
-    if (s.user && s.user.role !== "caixa") void navigate({ to: "/garcom", replace: true });
-  }, [navigate, s.loading, s.user]);
+    if (!loading && !user) void navigate({ to: "/", replace: true });
+    if (user && user.role !== "caixa") void navigate({ to: "/garcom", replace: true });
+  }, [navigate, loading, user]);
   useEffect(() => {
-    if (s.user?.role !== "caixa" || cleanedOrders.current) return;
+    if (user?.role !== "caixa" || cleanedOrders.current) return;
     cleanedOrders.current = true;
     void actions.cleanKitchenOrders().catch((cause: unknown) => toast.error(errorMessage(cause)));
-  }, [s.user?.role]);
+  }, [user?.role]);
 
-  const tables = [...s.tables]
-    .sort((a, b) => a.number - b.number)
-    .filter((t) => f === "todas" || tableStatus(s, t.id) === f);
-  const sel = s.tables.find((t) => t.id === open);
-  const lines = open ? (s.orders[open] ?? []) : [];
-  const subtotalCents = Math.round(total(lines) * 100);
-  const serviceChargeCents = s.restaurant.serviceChargeEnabled
-    ? Math.round((subtotalCents * s.restaurant.serviceChargePercent) / 100)
-    : 0;
-  const amountDueCents = subtotalCents + serviceChargeCents;
+  const sel = salaoTables.find((t) => t.id === open);
+  const selInfo = sel ? liveInfo[sel.id] : undefined;
+  const lines = open ? (orders[open] ?? []) : [];
+  // Mesmo cálculo do mapa e da nota de consumo (com taxa de serviço, se ativa).
+  const { serviceChargeCents, totalCents: amountDueCents } = billTotals(lines, restaurant);
   const amountDue = amountDueCents / 100;
-  const closeViewer = () => {
-    setViewer(false);
-    setReceipt(null);
+  const billFailures = useBillPrintFailures();
+  const billFailed = sel ? billFailures.has(sel.id) : false;
+  const billOutdated =
+    sel?.status === "ocupada" &&
+    sel.billPrintedAt != null &&
+    lines.some((line) => line.at > (sel.billPrintedAt ?? 0));
+  const selectTable = useCallback((id: string | null) => {
+    setOpen(id);
+    setAdding(false);
+    // Em telas estreitas o painel fica embaixo do mapa: leva o caixa até ele.
+    if (id && window.matchMedia("(max-width: 980px)").matches) {
+      requestAnimationFrame(() =>
+        panelRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
+    }
+  }, []);
+  const mapSelection = useMemo<Selection | null>(
+    () => (open ? { kind: "table", id: open } : null),
+    [open],
+  );
+  const onMapSelect = useCallback(
+    (selection: Selection | null) => selectTable(selection?.kind === "table" ? selection.id : null),
+    [selectTable],
+  );
+  const requestBill = async () => {
+    if (!sel) return;
+    const table = sel;
+    const tableLines = lines;
+    try {
+      await actions.requestBill(table.id);
+    } catch (cause) {
+      toast.error(errorMessage(cause));
+      return;
+    }
+    toast.success(`Conta solicitada na mesa ${tableNumber(table.number)}. Imprimindo a nota...`);
+    // Com a migration da nota, a estação de impressão do caixa imprime; antes dela, imprime aqui.
+    if (billPrintAvailable) return;
+    try {
+      await printPreBill(table, tableLines, restaurant);
+    } catch (cause) {
+      toast.error(`Nota não impressa: ${errorMessage(cause)}`);
+    }
+  };
+  const reprint = async () => {
+    if (!sel) return;
+    setReprinting(true);
+    try {
+      await reprintBill(sel, lines, restaurant, billPrintAvailable);
+      toast.success(`Reimprimindo a nota da mesa ${tableNumber(sel.number)}`);
+    } catch (cause) {
+      toast.error(`Nota não impressa: ${errorMessage(cause)}`);
+    } finally {
+      setReprinting(false);
+    }
+  };
+  const removeLine = async (line: OrderLine) => {
+    if (
+      sel &&
+      (await confirmar({
+        title: "Remover item?",
+        description: `Remover ${line.qty}x ${line.name} desta mesa?`,
+        confirmText: "Remover item",
+        variant: "danger",
+      }))
+    ) {
+      actions.removeLine(sel.id, line.id);
+    }
   };
   const statusCounts: Record<Status, number> = { livre: 0, ocupada: 0, conta: 0 };
-  for (const table of s.tables) statusCounts[tableStatus(s, table.id)] += 1;
-  const openTotal = s.tables.reduce((sum, table) => {
-    if (tableStatus(s, table.id) === "livre") return sum;
-    const tableTotal = total(s.orders[table.id]);
-    return sum + tableTotal;
-  }, 0);
+  for (const table of tables) statusCounts[tableStatus({ tables }, table.id)] += 1;
+  const openTotal =
+    tables.reduce((sum, table) => {
+      if (tableStatus({ tables }, table.id) === "livre") return sum;
+      return sum + billTotals(orders[table.id], restaurant).totalCents;
+    }, 0) / 100;
   const summaries = [
     { label: "Livres", value: statusCounts.livre, Icon: Armchair, tone: "text-free bg-free-bg" },
     {
@@ -137,38 +208,23 @@ function Caixa() {
     },
   ];
 
-  const closeAndPrint = async (payments: PaymentInput[]) => {
+  /** Registra o pagamento e libera a mesa. Não imprime: a nota sai ao pedir a conta. */
+  const receivePayment = async (payments: PaymentInput[]) => {
     if (closing.current || !sel || !lines.length) return;
     closing.current = true;
     try {
       const closedSale = await actions.closeBill(sel.id, payments);
-      setReceipt(closedSale);
       setPaymentOpen(false);
-      setViewer(true);
       setSalesVersion((version) => version + 1);
-      toast.success(`Mesa ${closedSale.table} fechada e venda salva`);
-      try {
-        const printSettings = getPrintSettings();
-        void printReceiptOnce(closedSale, s.restaurant, printSettings)
-          .then((result) => {
-            if (result.method === "browser") {
-              toast.warning("Impressora direta indisponível. A nota será impressa pelo Windows.");
-            }
-          })
-          .catch((error: unknown) => {
-            const detail = error instanceof Error ? error.message : String(error);
-            toast.error(`A venda foi salva, mas não foi possível imprimir: ${detail}`);
-          });
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        toast.error(`A venda foi salva, mas não foi possível iniciar a impressão: ${detail}`);
-      }
+      toast.success(
+        `Pagamento recebido. Mesa ${tableNumber(closedSale.table)} liberada e venda salva.`,
+      );
     } finally {
       closing.current = false;
     }
   };
 
-  if (s.user?.role !== "caixa") return null;
+  if (user?.role !== "caixa") return null;
 
   return (
     <AppShell
@@ -187,161 +243,85 @@ function Caixa() {
         </Btn>
       }
     >
-      <div className="flex min-w-0 flex-col xl:flex-row">
-        <div className="min-w-0 flex-1 p-4 md:p-6">
-          <section
-            aria-label="Resumo das mesas"
-            className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4"
-          >
-            {summaries.map(({ label, value, Icon, tone }) => (
-              <div
-                key={label}
-                className="flex min-h-[82px] items-center gap-3 rounded-[14px] border bg-card px-4 py-3 shadow-sm"
-              >
-                <span className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-xl", tone)}>
-                  <Icon className="h-5 w-5" />
-                </span>
-                <div className="min-w-0">
-                  <div className="text-xs font-medium text-muted-foreground">{label}</div>
-                  <div
-                    className={cn(
-                      "mt-1 truncate font-display text-xl font-extrabold text-ink",
-                      label === "Total em aberto" && "text-lg",
-                    )}
-                  >
-                    {value}
-                  </div>
-                </div>
-              </div>
-            ))}
-            <TodaySalesCard refreshKey={salesVersion} />
-          </section>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-            <h2 className="font-display text-lg font-bold text-ink">Salão</h2>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {filters.map((x) => {
-                const filterCount = x.k === "todas" ? s.tables.length : statusCounts[x.k];
-                return (
-                  <button
-                    key={x.k}
-                    aria-pressed={f === x.k}
-                    onClick={() => setF(x.k)}
-                    className={cn(
-                      "inline-flex min-h-10 items-center gap-1.5 rounded-full border border-transparent px-3 text-xs font-semibold transition-colors",
-                      f === x.k
-                        ? filterActive[x.k]
-                        : "text-muted-foreground hover:border-border hover:bg-card hover:text-ink",
-                    )}
-                  >
-                    {x.l}
-                    <span
-                      className={cn(
-                        "rounded-full px-1.5 py-0.5 text-[10px]",
-                        f === x.k ? "bg-white/20" : "bg-muted",
-                      )}
-                    >
-                      {filterCount}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,1fr))] gap-3">
-            {tables.map((t) => {
-              const st = tableStatus(s, t.id);
-              const l = s.orders[t.id];
-              const itemCount = count(l);
-              const cardTone =
-                st === "livre" ? "bg-free-bg" : st === "ocupada" ? "bg-busy-bg" : "bg-bill-bg";
-              const stripeTone =
-                st === "livre" ? "bg-free" : st === "ocupada" ? "bg-busy" : "bg-bill";
-              return (
-                <button
-                  key={t.id}
-                  aria-label={`Mesa ${t.number}, ${st === "conta" ? "conta solicitada" : st}`}
-                  onClick={() => {
-                    setOpen(t.id);
-                    setAdding(false);
-                  }}
+      <div className="min-w-0 p-4 md:p-6">
+        <section
+          aria-label="Resumo das mesas"
+          className="mb-5 grid grid-cols-2 gap-3 xl:grid-cols-4"
+        >
+          {summaries.map(({ label, value, Icon, tone }) => (
+            <div
+              key={label}
+              className="flex min-h-[82px] items-center gap-3 rounded-[14px] border bg-card px-4 py-3 shadow-sm"
+            >
+              <span className={cn("grid h-10 w-10 shrink-0 place-items-center rounded-xl", tone)}>
+                <Icon className="h-5 w-5" />
+              </span>
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-muted-foreground">{label}</div>
+                <div
                   className={cn(
-                    "group relative min-h-[166px] overflow-hidden rounded-[14px] border border-transparent p-4 pl-5 text-left shadow-sm transition duration-150 hover:-translate-y-0.5 hover:shadow-md",
-                    cardTone,
-                    st === "conta" && "table-requested",
-                    open === t.id && "border-2 border-primary shadow-md",
+                    "mt-1 truncate font-display text-xl font-extrabold text-ink",
+                    label === "Total em aberto" && "text-lg",
                   )}
                 >
-                  <span
-                    aria-hidden="true"
-                    className={cn("absolute inset-y-0 left-0 w-[6px]", stripeTone)}
-                  />
-                  <div className="flex items-start justify-between">
-                    <span className="font-display text-4xl font-extrabold leading-none text-ink">
-                      {String(t.number).padStart(2, "0")}
-                    </span>
-                    <span className="text-xs font-medium text-muted-foreground">
-                      {t.seats} lugares
-                    </span>
-                  </div>
-                  <div className="mt-3 flex items-center justify-between gap-2">
-                    <StatusTag s={st} />
-                    {st === "livre" ? (
-                      <span
-                        aria-label="Mesa livre"
-                        title="Mesa livre"
-                        className="text-muted-foreground"
-                      >
-                        <Armchair className="h-4 w-4" />
-                      </span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">
-                        {itemCount} {itemCount === 1 ? "item" : "itens"}
-                      </span>
-                    )}
-                  </div>
-                  {st !== "livre" && (
-                    <div className="num mt-3 truncate text-xl font-extrabold text-ink">
-                      {brl(total(l))}
-                    </div>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-          {tables.length === 0 && (
-            <div className="grid min-h-48 place-items-center text-center text-sm text-muted-foreground">
-              <p>
-                <Armchair className="mx-auto mb-2 h-7 w-7" />
-                Nenhuma mesa neste filtro.
-              </p>
-            </div>
-          )}
-        </div>
-
-        {sel && (
-          <aside className="flex w-full shrink-0 flex-col border-t bg-card xl:sticky xl:top-16 xl:h-[calc(100vh-4rem)] xl:w-[390px] xl:border-l xl:border-t-0">
-            <div className="flex items-center justify-between border-b px-5 py-4">
-              <div className="flex items-center gap-3">
-                <h2 className="font-display text-2xl font-extrabold text-ink">
-                  Mesa {String(sel.number).padStart(2, "0")}
-                </h2>
-                <StatusTag s={tableStatus(s, sel.id)} />
+                  {value}
+                </div>
               </div>
-              <Btn
-                variant="ghost"
-                size="sm"
-                aria-label="Fechar painel"
-                onClick={() => setOpen(null)}
-              >
-                <X className="h-4 w-4" />
-              </Btn>
             </div>
-
-            {adding ? (
-              <div className="flex min-h-0 flex-1 flex-col">
-                <div className="flex items-center justify-between border-b px-4 py-2 text-sm">
-                  <span className="font-medium text-ink">Adicionar item</span>
-                  <button className="text-primary hover:underline" onClick={() => setAdding(false)}>
+          ))}
+          <TodaySalesCard refreshKey={salesVersion} />
+        </section>
+        <div className="grid items-start gap-4 min-[981px]:grid-cols-[minmax(0,1fr)_340px]">
+          <MapCard
+            legend={<StatusLegend />}
+            toolbar={
+              salao.areas.length > 1 ? (
+                <AreaFilter
+                  areas={salao.areas}
+                  counts={tablesPerArea}
+                  value={focusAreaId}
+                  onChange={setAreaFilter}
+                />
+              ) : undefined
+            }
+          >
+            <SalaoMap
+              mode="live"
+              tables={salaoTables}
+              areas={salao.areas}
+              elements={salao.elements}
+              live={liveInfo}
+              now={now}
+              selection={mapSelection}
+              onSelect={onMapSelect}
+              focusAreaId={focusAreaId}
+            />
+            {salaoTables.length === 0 && (
+              <p className="flex items-center justify-center gap-2 border-t p-4 text-sm text-muted-foreground">
+                <Armchair className="h-4 w-4" />
+                Nenhuma mesa cadastrada. Monte o salão em Layout do salão.
+              </p>
+            )}
+          </MapCard>
+          <div
+            ref={panelRef}
+            className="min-w-0 scroll-mt-20 min-[981px]:sticky min-[981px]:top-20"
+          >
+            {!sel || !selInfo ? (
+              <LiveEmptyPanel />
+            ) : adding ? (
+              <PanelCard className="h-[min(640px,80vh)] gap-0 overflow-hidden p-0">
+                <div className="flex items-center justify-between gap-3 border-b px-4 py-3">
+                  <div className="flex items-center gap-2.5">
+                    <h2 className="font-display text-lg font-extrabold text-ink">
+                      Mesa {tableNumber(sel.number)}
+                    </h2>
+                    <StatusPill status={selInfo.status} />
+                  </div>
+                  <button
+                    className="text-sm font-medium text-primary hover:underline"
+                    onClick={() => setAdding(false)}
+                  >
                     Concluir
                   </button>
                 </div>
@@ -354,109 +334,37 @@ function Caixa() {
                     showPrintOption
                   />
                 </div>
-              </div>
+              </PanelCard>
             ) : (
-              <>
-                <div className="min-h-0 flex-1 overflow-y-auto">
-                  {lines.length === 0 ? (
-                    <div className="grid min-h-48 place-items-center p-8 text-center text-sm text-muted-foreground">
-                      <p>
-                        <Utensils className="mx-auto mb-2 h-7 w-7 text-primary" />
-                        Nenhum item lançado. Toque em Adicionar Item.
-                      </p>
-                    </div>
-                  ) : (
-                    <table className="w-full text-sm">
-                      <thead className="text-xs text-muted-foreground">
-                        <tr className="border-b">
-                          <th className="px-4 py-2 text-left font-medium">Item</th>
-                          <th className="py-2 text-right font-medium">Qtd</th>
-                          <th className="py-2 text-right font-medium">Unit.</th>
-                          <th className="px-4 py-2 text-right font-medium">Subtotal</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {lines.map((l) => (
-                          <tr key={l.id} className="border-b align-top">
-                            <td className="px-4 py-2.5 text-ink">
-                              {l.name}
-                              {l.note && (
-                                <div className="text-xs text-muted-foreground">Obs.: {l.note}</div>
-                              )}
-                              <button
-                                aria-label={`Remover ${l.qty}x ${l.name}`}
-                                className="mt-1 inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-xs font-semibold text-destructive hover:bg-destructive/10"
-                                onClick={async () => {
-                                  if (
-                                    await confirmar({
-                                      title: "Remover item?",
-                                      description: `Remover ${l.qty}x ${l.name} desta mesa?`,
-                                      confirmText: "Remover item",
-                                      variant: "danger",
-                                    })
-                                  ) {
-                                    actions.removeLine(sel.id, l.id);
-                                  }
-                                }}
-                              >
-                                <Trash2 className="h-3 w-3" /> Remover
-                              </button>
-                            </td>
-                            <td className="num py-2.5 text-right">{l.qty}</td>
-                            <td className="num py-2.5 text-right text-muted-foreground">
-                              {brl(l.price)}
-                            </td>
-                            <td className="num px-4 py-2.5 text-right font-medium text-ink">
-                              {brl(l.qty * l.price)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  )}
-                </div>
-                <div className="border-t p-4">
-                  <div className="mb-4 flex items-baseline justify-between">
-                    <span className="text-sm text-muted-foreground">Total da mesa</span>
-                    <span className="num text-2xl font-bold text-ink">{brl(amountDue)}</span>
-                  </div>
-                  {serviceChargeCents > 0 && (
-                    <div className="-mt-3 mb-3 flex justify-between text-xs text-muted-foreground">
-                      <span>Inclui taxa de serviço</span>
-                      <span>{brl(serviceChargeCents / 100)}</span>
-                    </div>
-                  )}
-                  <div className="grid gap-2">
-                    <Btn size="lg" className="w-full" onClick={() => setAdding(true)}>
-                      <Plus className="h-5 w-5" />
-                      Adicionar Item
-                    </Btn>
-                    <Btn
-                      size="lg"
-                      variant="success"
-                      className="w-full"
-                      disabled={!lines.length}
-                      onClick={() => setPaymentOpen(true)}
-                    >
-                      <Printer className="h-5 w-5" />
-                      Fechar Conta e Imprimir
-                    </Btn>
-                  </div>
-                </div>
-              </>
+              <LiveTablePanel
+                table={sel}
+                info={selInfo}
+                now={now}
+                amountDue={amountDue}
+                serviceCharge={serviceChargeCents / 100}
+                billFailed={billFailed}
+                billOutdated={billOutdated}
+                reprinting={reprinting}
+                onClose={() => selectTable(null)}
+                onAddItem={() => setAdding(true)}
+                onRequestBill={() => void requestBill()}
+                onReprint={() => void reprint()}
+                onReceivePayment={() => setPaymentOpen(true)}
+                onRemoveLine={(line) => void removeLine(line)}
+              />
             )}
-          </aside>
-        )}
+          </div>
+        </div>
       </div>
       {paymentOpen && sel && (
         <PaymentDialog
           table={sel.number}
           totalCents={amountDueCents}
+          confirmLabel="Receber pagamento"
           onClose={() => setPaymentOpen(false)}
-          onConfirm={closeAndPrint}
+          onConfirm={receivePayment}
         />
       )}
-      {viewer && receipt && <BillViewer s={s} receipt={receipt} onClose={closeViewer} />}
     </AppShell>
   );
 }

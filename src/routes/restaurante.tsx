@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Pencil, Plus, Trash2, Users } from "lucide-react";
 import { actions, refreshData, useStore, type StaffMember } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
@@ -34,6 +34,13 @@ function Restaurante() {
   const [passwordResetDraft, setPasswordResetDraft] = useState("");
   const [passwordResetError, setPasswordResetError] = useState("");
   useEffect(() => setF(r), [r]);
+  // Logo antigo guardado em base64 no banco: vai para o Storage na primeira abertura do caixa.
+  const logoMigrated = useRef(false);
+  useEffect(() => {
+    if (role !== "caixa" || !r.logo.startsWith("data:") || logoMigrated.current) return;
+    logoMigrated.current = true;
+    void actions.migrateLogo().catch(() => undefined);
+  }, [role, r.logo]);
   useEffect(() => {
     setDeliveryFee(
       Number(r.deliveryFee || 0)
@@ -44,6 +51,11 @@ function Restaurante() {
 
   const onLogo = (file?: File) => {
     if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setSaveError("Escolha uma imagem (PNG, JPG ou WebP).");
+      return;
+    }
+    setSaveError("");
     const rd = new FileReader();
     rd.onload = () => setF((x) => ({ ...x, logo: String(rd.result) }));
     rd.readAsDataURL(file);
@@ -147,7 +159,7 @@ function Restaurante() {
                   p_valor: parsedFee,
                 });
                 if (error) throw error;
-                await refreshData();
+                await refreshData(["base"]);
                 setOk(true);
                 setTimeout(() => setOk(false), 2000);
               } catch (cause) {
@@ -237,7 +249,7 @@ function Restaurante() {
                 </Field>
               </Field>
             </div>
-            <Field label="Logo" hint="PNG ou JPG, até 1 MB.">
+            <Field label="Logo" hint="PNG, JPG ou WebP. É reduzido para 400 px ao salvar.">
               <div className="flex items-center gap-3">
                 <div className="grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-md border bg-background text-xs text-muted-foreground">
                   {f.logo ? (

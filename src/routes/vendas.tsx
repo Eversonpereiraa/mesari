@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Banknote, CalendarDays, CreditCard, QrCode, WalletCards } from "lucide-react";
 import { AppShell } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
@@ -81,7 +81,7 @@ function Vendas() {
   const user = useStore((snapshot) => snapshot.user);
   const authLoading = useStore((snapshot) => snapshot.loading);
   const snapshot = useStore((value) => value);
-  const history = useStore((snapshot) => snapshot.history);
+  const salesVersion = useStore((snapshot) => snapshot.salesVersion);
   const navigate = useNavigate();
   const [period, setPeriod] = useState<Period>("hoje");
   const [selectedDate, setSelectedDate] = useState(todayValue);
@@ -93,6 +93,12 @@ function Vendas() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
   const [selectedSale, setSelectedSale] = useState<Closing | null>(null);
+  // Lista carregada sob demanda, 50 por vez; some da memória ao sair da tela.
+  const [sales, setSales] = useState<Closing[]>([]);
+  const [hasMore, setHasMore] = useState(false);
+  const [salesLoading, setSalesLoading] = useState(true);
+  const [salesError, setSalesError] = useState("");
+  const salesRequest = useRef(0);
   const range = useMemo(
     () => periodRange(period, selectedDate, selectedEndDate),
     [period, selectedDate, selectedEndDate],
@@ -135,6 +141,43 @@ function Vendas() {
     };
   }, [range, user?.role]);
 
+  const loadSales = useCallback(
+    async (offset: number) => {
+      const request = ++salesRequest.current;
+      setSalesLoading(true);
+      setSalesError("");
+      try {
+        const page = await actions.listSales(
+          range.start.toISOString(),
+          range.end.toISOString(),
+          filter,
+          offset,
+        );
+        if (request !== salesRequest.current) return;
+        setSales((current) => (offset === 0 ? page.sales : [...current, ...page.sales]));
+        setHasMore(page.hasMore);
+      } catch (cause) {
+        if (request === salesRequest.current) setSalesError(errorMessage(cause));
+      } finally {
+        if (request === salesRequest.current) setSalesLoading(false);
+      }
+    },
+    [range, filter],
+  );
+
+  // Recarrega a primeira página ao trocar período/forma e quando entra venda nova (salesVersion).
+  useEffect(() => {
+    if (user?.role !== "caixa") return;
+    void loadSales(0);
+  }, [loadSales, salesVersion, user?.role]);
+
+  useEffect(
+    () => () => {
+      salesRequest.current += 1;
+    },
+    [],
+  );
+
   const summaryTotal = summary.reduce((sum, row) => sum + Math.round(row.total * 100), 0);
   const visibleSummary = [
     ...methods.map(
@@ -142,16 +185,6 @@ function Vendas() {
     ),
     ...summary.filter((row) => row.forma === "nao_informado"),
   ];
-  const filteredSales = history
-    .filter((sale) => sale.at >= range.start.getTime() && sale.at <= range.end.getTime())
-    .filter((sale) => {
-      if (filter === "todas") return true;
-      const forms = sale.payments.length
-        ? sale.payments.map((payment) => payment.forma)
-        : ["nao_informado"];
-      return forms.includes(filter);
-    });
-
   if (user?.role !== "caixa") return null;
 
   return (
@@ -283,7 +316,8 @@ function Vendas() {
             <div>
               <h2 className="font-display text-lg font-bold text-ink">Vendas do período</h2>
               <p className="text-sm text-muted-foreground">
-                {filteredSales.length} vendas na lista carregada
+                {sales.length} {sales.length === 1 ? "venda carregada" : "vendas carregadas"}
+                {hasMore ? " · há mais" : ""}
               </p>
             </div>
             <label className="flex items-center gap-2 text-sm font-medium text-ink">
@@ -313,13 +347,21 @@ function Vendas() {
               />
             </label>
           </div>
-          {filteredSales.length === 0 ? (
+          {salesError && (
+            <p
+              role="alert"
+              className="m-4 rounded-lg bg-destructive/10 p-3 text-sm text-destructive"
+            >
+              Não foi possível carregar as vendas: {salesError}
+            </p>
+          )}
+          {sales.length === 0 ? (
             <div className="p-10 text-center text-sm text-muted-foreground">
-              Nenhuma venda encontrada nesse período.
+              {salesLoading ? "Carregando vendas…" : "Nenhuma venda encontrada nesse período."}
             </div>
           ) : (
             <div className="divide-y">
-              {filteredSales.map((sale) => {
+              {sales.map((sale) => {
                 const forms = sale.payments.length
                   ? [...new Set(sale.payments.map((payment) => paymentMethodLabel[payment.forma]))]
                   : [];
@@ -367,6 +409,18 @@ function Vendas() {
                   </article>
                 );
               })}
+            </div>
+          )}
+          {hasMore && (
+            <div className="border-t p-4 text-center">
+              <button
+                type="button"
+                disabled={salesLoading}
+                onClick={() => void loadSales(sales.length)}
+                className="rounded-lg border px-4 py-2 text-sm font-semibold text-primary hover:bg-accent disabled:opacity-60"
+              >
+                {salesLoading ? "Carregando…" : "Carregar mais vendas"}
+              </button>
             </div>
           )}
         </section>

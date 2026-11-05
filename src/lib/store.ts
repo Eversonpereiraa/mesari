@@ -1,16 +1,49 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
+import { dataUrlToBlob, isDataUrl, removeLogo, uploadLogo } from "@/lib/logo-storage";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
+export type TableShape = "round" | "square" | "rect";
 export type Table = {
   id: string;
   number: number;
   seats: number;
-  x: number;
-  y: number;
+  /** Posição no mapa do salão, em unidades de grade; null quando ainda não foi posicionada. */
+  x: number | null;
+  y: number | null;
+  shape: TableShape;
+  rotation: 0 | 1;
+  /** Área do salão onde a mesa está (null antes da migration de áreas). */
+  areaId: string | null;
+  /** Quando a nota de consumo foi impressa pela última vez (null = ainda não). */
+  billPrintedAt?: number | null;
   status?: Status;
   active: boolean;
+};
+export type AreaKind = "interna" | "externa";
+/** Retângulo do salão (Salão, Varanda, Calçada...), em unidades de grade. */
+export type FloorArea = {
+  id: string;
+  name: string;
+  kind: AreaKind;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  order: number;
+};
+export type ElementKind = "balcao" | "porta" | "janela" | "caixa" | "cozinha";
+/** Balcão, porta, janela, caixa ou cozinha. Porta/janela: rotation 0 = parede do fundo, 1 = esquerda. */
+export type FloorElement = {
+  id: string;
+  areaId: string;
+  kind: ElementKind;
+  x: number;
+  y: number;
+  width: number;
+  depth: number;
+  rotation: 0 | 1;
 };
 export type Category = { id: string; name: string; sector: "cozinha" | "bar" | "nenhum" };
 export type MenuItem = {
@@ -103,10 +136,17 @@ export type State = {
     deliveryFee: number;
   };
   tables: Table[];
+  areas: FloorArea[];
+  elements: FloorElement[];
+  /** false enquanto a migration de áreas (salao_areas) não foi aplicada. */
+  areasAvailable: boolean;
+  /** false enquanto a migration da nota de consumo (nota_impressa_em) não foi aplicada. */
+  billPrintAvailable: boolean;
   categories: Category[];
   items: MenuItem[];
   orders: Record<string, OrderLine[]>;
-  history: Closing[];
+  /** Sobe a cada venda nova (Realtime). O histórico não fica no store: cada tela busca o seu. */
+  salesVersion: number;
   loading: boolean;
   configured: boolean;
   connection: RealtimeStatus;
@@ -129,10 +169,14 @@ const emptyState = (): State => ({
     deliveryFee: 0,
   },
   tables: [],
+  areas: [],
+  elements: [],
+  areasAvailable: false,
+  billPrintAvailable: false,
   categories: [],
   items: [],
   orders: {},
-  history: [],
+  salesVersion: 0,
   loading: true,
   configured: supabaseConfigured,
   connection: "reconnecting",
@@ -144,6 +188,7 @@ let state = emptyState();
 const subs = new Set<() => void>();
 let initialized = false;
 let realtimeChannel: ReturnType<typeof supabase.channel> | null = null;
+let layoutChannel: ReturnType<typeof supabase.channel> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let refreshPromise: Promise<void> | null = null;
 
@@ -207,16 +252,107 @@ const mapTable = (value: unknown): Table => {
   if (status !== "livre" && status !== "ocupada" && status !== "conta") {
     throw new Error(`Status inválido recebido para a mesa ${stringValue(row.id)}.`);
   }
+  const shape = row["shape"];
   return {
     id: stringValue(row.id),
     number: Number(row.numero),
     seats: Number(row.lugares),
-    x: Number(row.pos_x ?? 0),
-    y: Number(row.pos_y ?? 0),
+    x: row["pos_x"] == null ? null : Number(row["pos_x"]),
+    y: row["pos_y"] == null ? null : Number(row["pos_y"]),
+    shape: shape === "round" || shape === "rect" ? shape : "square",
+    rotation: Number(row["rotation"]) === 1 ? 1 : 0,
+    areaId: typeof row["area_id"] === "string" ? row["area_id"] : null,
+    billPrintedAt:
+      typeof row["nota_impressa_em"] === "string"
+        ? new Date(row["nota_impressa_em"]).getTime()
+        : null,
     status,
     active: row.ativa === true,
   };
 };
+
+const mapArea = (value: unknown): FloorArea => {
+  const row = asRow(value);
+  return {
+    id: stringValue(row["id"]),
+    name: stringValue(row["nome"]),
+    kind: row["tipo"] === "externa" ? "externa" : "interna",
+    x: Number(row["pos_x"]),
+    y: Number(row["pos_y"]),
+    width: Number(row["largura"]),
+    depth: Number(row["profundidade"]),
+    order: Number(row["ordem"] ?? 0),
+  };
+};
+
+const elementKinds: ElementKind[] = ["balcao", "porta", "janela", "caixa", "cozinha"];
+const mapElement = (value: unknown): FloorElement | null => {
+  const row = asRow(value);
+  const kind = elementKinds.find((k) => k === row["tipo"]);
+  if (!kind) return null;
+  return {
+    id: stringValue(row["id"]),
+    areaId: stringValue(row["area_id"]),
+    kind,
+    x: Number(row["pos_x"]),
+    y: Number(row["pos_y"]),
+    width: Number(row["largura"]),
+    depth: Number(row["profundidade"]),
+    rotation: Number(row["rotation"]) === 1 ? 1 : 0,
+  };
+};
+
+const areaRow = (area: FloorArea) => ({
+  id: area.id,
+  nome: area.name,
+  tipo: area.kind,
+  pos_x: area.x,
+  pos_y: area.y,
+  largura: area.width,
+  profundidade: area.depth,
+  ordem: area.order,
+});
+
+const elementRow = (element: FloorElement) => ({
+  id: element.id,
+  area_id: element.areaId,
+  tipo: element.kind,
+  pos_x: element.x,
+  pos_y: element.y,
+  largura: element.width,
+  profundidade: element.depth,
+  rotation: element.rotation,
+});
+
+const MISSING_MAP_COLUMNS =
+  "O banco ainda não tem as colunas do mapa do salão. Aplique a migration 202611030001_mapa_salao.sql no Supabase e recarregue a página.";
+const MISSING_AREAS =
+  "O banco ainda não tem as áreas do salão. Aplique a migration 202611030002_salao_areas.sql no Supabase e recarregue a página.";
+
+function layoutError(error: { message: string }) {
+  if (/'(shape|rotation)' column|type integer/.test(error.message)) {
+    return new Error(MISSING_MAP_COLUMNS);
+  }
+  if (/salao_areas|salao_elementos|'area_id' column/.test(error.message)) {
+    return new Error(MISSING_AREAS);
+  }
+  return error;
+}
+
+const tableRow = (table: Table) => ({
+  id: table.id,
+  numero: table.number,
+  lugares: table.seats,
+  ativa: true,
+  pos_x: table.x,
+  pos_y: table.y,
+  shape: table.shape,
+  rotation: table.rotation,
+  // Só envia a área quando o banco já tem áreas de verdade (não a área provisória do app).
+  ...(state.areasAvailable && table.areaId && state.areas.some((a) => a.id === table.areaId)
+    ? { area_id: table.areaId }
+    : {}),
+});
 
 const mapOrderLine = (value: unknown): OrderLine => {
   const row = asRow(value);
@@ -233,18 +369,19 @@ const mapOrderLine = (value: unknown): OrderLine => {
   };
 };
 
+// fechar_conta e concluir_pedido_externo gravam produto/quantidade/valor_unitario/observacao/garcom.
 const mapSaleLine = (value: unknown): OrderLine => {
   const line = asRow(value);
   const createdAt = stringValue(line.criado_em);
   return {
     id: stringValue(line.id),
     itemId: stringValue(line.produto_id ?? line.itemId),
-    name: stringValue(line.produto_nome ?? line.name),
+    name: stringValue(line.produto ?? line.produto_nome ?? line.name),
     qty: Number(line.quantidade ?? line.qty),
     price: Number(line.valor_unitario ?? line.price),
     note: stringValue(line.observacao ?? line.note),
     at: createdAt ? new Date(createdAt).getTime() : Number(line.at ?? 0),
-    waiter: stringValue(line.garcom_nome ?? line.waiter),
+    waiter: stringValue(line.garcom ?? line.garcom_nome ?? line.waiter),
     waiterId: stringValue(line.garcom_id ?? line.waiterId) || undefined,
   };
 };
@@ -279,7 +416,229 @@ const mapClosing = (value: unknown): Closing => {
   };
 };
 
-async function loadRemoteData() {
+/** Partes do estado que recarregam separadamente: cada evento busca só a parte que mudou. */
+export type RefreshPart = "base" | "logo" | "tables" | "orders" | "layout";
+const ALL_PARTS: readonly RefreshPart[] = ["base", "logo", "tables", "orders", "layout"];
+/** Reconexão do Realtime: tudo menos o logo, que só muda quando o caixa salva o restaurante. */
+const LIVE_PARTS: readonly RefreshPart[] = ["base", "tables", "orders", "layout"];
+/** Cardápio, equipe e restaurante não estão no Realtime: vão junto de um evento a cada 5 min. */
+const BASE_MAX_AGE = 5 * 60 * 1000;
+let lastBaseAt = 0;
+let pendingParts = new Set<RefreshPart>();
+let queuedParts = new Set<RefreshPart>();
+
+/** Colunas da venda usadas pela tela Vendas e pela nota (sem select("*") em tabela que cresce). */
+const SALE_COLUMNS =
+  "id,numero,mesa_numero,itens,subtotal,taxa_servico,taxa_entrega,desconto,total,pagamentos,garcom_nome,fechado_por,fechado_por_nome,fechada_em,origem,cliente_nome";
+
+function sameShallow(a: object, b: object) {
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.is(left[key], right[key]))
+  );
+}
+
+/** Mantém os objetos que não mudaram (e a lista inteira, se nada mudou) para não re-renderizar à toa. */
+function reuseList<T extends { id: string }>(previous: T[], next: T[]): T[] {
+  const byId = new Map(previous.map((entry) => [entry.id, entry]));
+  let changed = previous.length !== next.length;
+  const merged = next.map((entry, index) => {
+    const old = byId.get(entry.id);
+    if (old && sameShallow(old, entry)) {
+      if (previous[index] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    return entry;
+  });
+  return changed ? merged : previous;
+}
+
+function reuseOrders(previous: State["orders"], next: State["orders"]): State["orders"] {
+  const entries = Object.entries(next);
+  let changed = entries.length !== Object.keys(previous).length;
+  const merged: State["orders"] = {};
+  for (const [id, lines] of entries) {
+    const kept = reuseList(previous[id] ?? [], lines);
+    if (kept !== previous[id]) changed = true;
+    merged[id] = kept;
+  }
+  return changed ? merged : previous;
+}
+
+/** Perfil, equipe, cardápio e dados do restaurante (sem o logo). */
+async function loadBase(userId: string) {
+  const [profileRes, staffRes, categoriesRes, productsRes, restaurantRes] = await Promise.all([
+    supabase.from("profiles").select("id,usuario,nome,papel,ativo").eq("id", userId).maybeSingle(),
+    supabase
+      .from("profiles")
+      .select("id,usuario,nome,papel,ativo")
+      .eq("papel", "garcom")
+      .eq("ativo", true)
+      .order("nome"),
+    supabase.from("categorias").select("id,nome,ordem,setor").order("ordem"),
+    supabase
+      .from("produtos")
+      .select("id,categoria_id,nome,descricao,preco,ativo,ordem")
+      .eq("ativo", true)
+      .order("ordem"),
+    supabase
+      .from("restaurante")
+      .select(
+        "id,nome,endereco,telefone,cnpj,instagram,taxa_servico_ativa,taxa_servico_percentual,taxa_entrega",
+      )
+      .eq("id", 1)
+      .maybeSingle(),
+  ]);
+
+  const failed = [profileRes, staffRes, categoriesRes, productsRes, restaurantRes].find(
+    (result) => result.error,
+  );
+  if (failed?.error) throw failed.error;
+
+  const profile = profileRes.data ? asRow(profileRes.data) : null;
+  if (!profile || profile.ativo !== true) {
+    throw new Error("O usuário autenticado não possui um perfil ativo em public.profiles.");
+  }
+  if (profile.papel !== "caixa" && profile.papel !== "garcom" && profile.papel !== "cozinha") {
+    throw new Error(`Papel inválido no perfil autenticado: ${String(profile.papel)}.`);
+  }
+  if (!restaurantRes.data)
+    throw new Error("Não foi encontrado o registro id=1 em public.restaurante.");
+  const restaurant = asRow(restaurantRes.data);
+
+  const user: NonNullable<State["user"]> = {
+    id: userId,
+    username: stringValue(profile.usuario),
+    name: stringValue(profile.nome),
+    role: profile.papel,
+  };
+  return {
+    user: state.user && sameShallow(state.user, user) ? state.user : user,
+    staff: reuseList(
+      state.staff,
+      (staffRes.data ?? []).map((value: unknown): StaffMember => {
+        const row = asRow(value);
+        return {
+          id: stringValue(row.id),
+          name: stringValue(row.nome),
+          username: stringValue(row.usuario),
+          role: row.papel as "caixa" | "garcom",
+          active: row.ativo === true,
+        };
+      }),
+    ),
+    restaurant: {
+      name: stringValue(restaurant.nome),
+      phone: stringValue(restaurant.telefone),
+      address: stringValue(restaurant.endereco),
+      cnpj: stringValue(restaurant.cnpj),
+      instagram: stringValue(restaurant.instagram),
+      serviceChargeEnabled: restaurant.taxa_servico_ativa === true,
+      serviceChargePercent: Number(restaurant.taxa_servico_percentual),
+      deliveryFee: Number(restaurant["taxa_entrega"] ?? 0),
+    },
+    categories: reuseList(
+      state.categories,
+      (categoriesRes.data ?? []).map((value: unknown): Category => {
+        const row = asRow(value);
+        const sector = row.setor ?? "nenhum";
+        if (sector !== "cozinha" && sector !== "bar" && sector !== "nenhum") {
+          throw new Error(`Setor inválido recebido para a categoria ${stringValue(row.nome)}.`);
+        }
+        return { id: stringValue(row.id), name: stringValue(row.nome), sector };
+      }),
+    ),
+    items: reuseList(
+      state.items,
+      (productsRes.data ?? []).map((value: unknown): MenuItem => {
+        const row = asRow(value);
+        return {
+          id: stringValue(row.id),
+          name: stringValue(row.nome),
+          categoryId: stringValue(row.categoria_id),
+          price: Number(row.preco),
+          description: stringValue(row.descricao),
+          active: row.ativo === true,
+          order: Number(row.ordem),
+        };
+      }),
+    ),
+  };
+}
+
+/** O logo fica separado: só muda quando o caixa salva o restaurante (base64 antigo pode ser grande). */
+async function loadLogo() {
+  const { data, error } = await supabase
+    .from("restaurante")
+    .select("logo_url")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? stringValue(asRow(data).logo_url) : "";
+}
+
+async function loadTables() {
+  // "*" mantém o app funcionando mesmo antes da migration do mapa (shape/rotation) ser aplicada.
+  const { data, error } = await supabase
+    .from("mesas")
+    .select("*")
+    .eq("ativa", true)
+    .order("numero");
+  if (error) throw error;
+  const rows = data ?? [];
+  return {
+    tables: reuseList(state.tables, rows.map(mapTable)),
+    billPrintAvailable: rows.some(
+      (value: unknown) =>
+        typeof value === "object" && value !== null && "nota_impressa_em" in value,
+    ),
+  };
+}
+
+/** itens_pedido só guarda pedidos em aberto (fechar_conta apaga), então a tabela é sempre pequena. */
+async function loadOrders() {
+  const { data, error } = await supabase
+    .from("itens_pedido")
+    .select(
+      "id,mesa_id,produto_id,produto_nome,quantidade,valor_unitario,observacao,garcom_id,garcom_nome,criado_em",
+    )
+    .order("criado_em");
+  if (error) throw error;
+  const orders = (data ?? []).reduce<Record<string, OrderLine[]>>((grouped, value: unknown) => {
+    const row = asRow(value);
+    const tableId = stringValue(row.mesa_id);
+    (grouped[tableId] ??= []).push(mapOrderLine(row));
+    return grouped;
+  }, {});
+  return { orders: reuseOrders(state.orders, orders) };
+}
+
+async function loadLayout() {
+  // Áreas e elementos ficam fora da checagem de erro: antes da migration o app segue com a
+  // área provisória "Salão" 12 x 9.
+  const [areasRes, elementsRes] = await Promise.all([
+    supabase.from("salao_areas").select("*").order("ordem"),
+    supabase.from("salao_elementos").select("*"),
+  ]);
+  const areasAvailable = !areasRes.error && !elementsRes.error;
+  if (areasAvailable) startLayoutRealtime();
+  return {
+    areasAvailable,
+    areas: areasAvailable ? reuseList(state.areas, (areasRes.data ?? []).map(mapArea)) : [],
+    elements: areasAvailable
+      ? reuseList(
+          state.elements,
+          (elementsRes.data ?? []).map(mapElement).filter((e): e is FloorElement => e !== null),
+        )
+      : [],
+  };
+}
+
+async function loadRemoteData(parts: ReadonlySet<RefreshPart>) {
   const { data: authData, error: authError } = await supabase.auth.getSession();
   if (authError) throw authError;
   const session = authData.session;
@@ -294,144 +653,28 @@ async function loadRemoteData() {
     return;
   }
 
-  const [
-    profileRes,
-    staffRes,
-    tablesRes,
-    categoriesRes,
-    productsRes,
-    ordersRes,
-    salesRes,
-    restaurantRes,
-  ] = await Promise.all([
-    supabase
-      .from("profiles")
-      .select("id,usuario,nome,papel,ativo")
-      .eq("id", session.user.id)
-      .maybeSingle(),
-    supabase
-      .from("profiles")
-      .select("id,usuario,nome,papel,ativo")
-      .eq("papel", "garcom")
-      .eq("ativo", true)
-      .order("nome"),
-    supabase
-      .from("mesas")
-      .select("id,numero,lugares,status,ativa,pos_x,pos_y")
-      .eq("ativa", true)
-      .order("numero"),
-    supabase.from("categorias").select("id,nome,ordem,setor").order("ordem"),
-    supabase
-      .from("produtos")
-      .select("id,categoria_id,nome,descricao,preco,ativo,ordem")
-      .eq("ativo", true)
-      .order("ordem"),
-    supabase
-      .from("itens_pedido")
-      .select(
-        "id,mesa_id,produto_id,produto_nome,quantidade,valor_unitario,observacao,garcom_id,garcom_nome,criado_em",
-      )
-      .order("criado_em"),
-    supabase
-      .from("vendas")
-      .select(
-        "id,numero,mesa_numero,itens,subtotal,taxa_servico,taxa_entrega,total,pagamentos,garcom_nome,fechado_por,fechado_por_nome,fechada_em,origem,cliente_nome",
-      )
-      .order("fechada_em", { ascending: false })
-      .limit(200),
-    supabase
-      .from("restaurante")
-      .select(
-        "id,nome,endereco,telefone,cnpj,instagram,logo_url,taxa_servico_ativa,taxa_servico_percentual,taxa_entrega",
-      )
-      .eq("id", 1)
-      .maybeSingle(),
+  const [base, logo, tables, orders, layout] = await Promise.all([
+    parts.has("base") ? loadBase(session.user.id) : null,
+    parts.has("logo") ? loadLogo() : null,
+    parts.has("tables") ? loadTables() : null,
+    parts.has("orders") ? loadOrders() : null,
+    parts.has("layout") ? loadLayout() : null,
   ]);
+  if (base) lastBaseAt = Date.now();
 
-  const failed = [
-    profileRes,
-    staffRes,
-    tablesRes,
-    categoriesRes,
-    productsRes,
-    ordersRes,
-    salesRes,
-    restaurantRes,
-  ].find((result) => result.error);
-  if (failed?.error) throw failed.error;
-
-  const profile = profileRes.data ? asRow(profileRes.data) : null;
-  if (!profile || profile.ativo !== true) {
-    throw new Error("O usuário autenticado não possui um perfil ativo em public.profiles.");
-  }
-  if (profile.papel !== "caixa" && profile.papel !== "garcom" && profile.papel !== "cozinha") {
-    throw new Error(`Papel inválido no perfil autenticado: ${String(profile.papel)}.`);
-  }
-  if (!restaurantRes.data)
-    throw new Error("Não foi encontrado o registro id=1 em public.restaurante.");
-
-  const orders = (ordersRes.data ?? []).reduce<Record<string, OrderLine[]>>(
-    (grouped, value: unknown) => {
-      const row = asRow(value);
-      const tableId = stringValue(row.mesa_id);
-      (grouped[tableId] ??= []).push(mapOrderLine(row));
-      return grouped;
-    },
-    {},
-  );
-  const restaurant = asRow(restaurantRes.data);
-
+  const restaurant = {
+    ...state.restaurant,
+    ...(base?.restaurant ?? {}),
+    ...(logo === null ? {} : { logo }),
+  };
   publish({
-    user: {
-      id: session.user.id,
-      username: stringValue(profile.usuario),
-      name: stringValue(profile.nome),
-      role: profile.papel,
-    },
-    staff: (staffRes.data ?? []).map((value: unknown) => {
-      const row = asRow(value);
-      return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        username: stringValue(row.usuario),
-        role: row.papel as "caixa" | "garcom",
-        active: row.ativo === true,
-      };
-    }),
-    restaurant: {
-      name: stringValue(restaurant.nome),
-      phone: stringValue(restaurant.telefone),
-      address: stringValue(restaurant.endereco),
-      cnpj: stringValue(restaurant.cnpj),
-      instagram: stringValue(restaurant.instagram),
-      logo: stringValue(restaurant.logo_url),
-      serviceChargeEnabled: restaurant.taxa_servico_ativa === true,
-      serviceChargePercent: Number(restaurant.taxa_servico_percentual),
-      deliveryFee: Number(restaurant["taxa_entrega"] ?? 0),
-    },
-    tables: (tablesRes.data ?? []).map(mapTable),
-    categories: (categoriesRes.data ?? []).map((value: unknown) => {
-      const row = asRow(value);
-      const sector = row.setor ?? "nenhum";
-      if (sector !== "cozinha" && sector !== "bar" && sector !== "nenhum") {
-        throw new Error(`Setor inválido recebido para a categoria ${stringValue(row.nome)}.`);
-      }
-      return { id: stringValue(row.id), name: stringValue(row.nome), sector };
-    }),
-    items: (productsRes.data ?? []).map((value: unknown) => {
-      const row = asRow(value);
-      return {
-        id: stringValue(row.id),
-        name: stringValue(row.nome),
-        categoryId: stringValue(row.categoria_id),
-        price: Number(row.preco),
-        description: stringValue(row.descricao),
-        active: row.ativo === true,
-        order: Number(row.ordem),
-      };
-    }),
-    orders,
-    history: (salesRes.data ?? []).map(mapClosing),
+    ...(base
+      ? { user: base.user, staff: base.staff, categories: base.categories, items: base.items }
+      : {}),
+    ...(tables ?? {}),
+    ...(orders ?? {}),
+    ...(layout ?? {}),
+    restaurant: sameShallow(restaurant, state.restaurant) ? state.restaurant : restaurant,
     loading: false,
     configured: true,
     connection: "connected",
@@ -439,44 +682,85 @@ async function loadRemoteData() {
   });
 }
 
-export async function refreshData() {
-  if (refreshPromise) return refreshPromise;
-  refreshPromise = loadRemoteData()
-    .catch((error) => {
-      publish({
-        loading: false,
-        configured: true,
-        connection: "reconnecting",
-        error: errorMessage(error),
-      });
-    })
-    .finally(() => {
+/** Recarrega as partes pedidas; pedidos feitos durante uma carga entram na próxima rodada. */
+export function refreshData(parts: readonly RefreshPart[] = ALL_PARTS): Promise<void> {
+  parts.forEach((part) => pendingParts.add(part));
+  if (!refreshPromise && pendingParts.size) {
+    refreshPromise = (async () => {
+      while (pendingParts.size) {
+        const batch = pendingParts;
+        pendingParts = new Set();
+        try {
+          await loadRemoteData(batch);
+        } catch (error) {
+          publish({
+            loading: false,
+            configured: true,
+            connection: "reconnecting",
+            error: errorMessage(error),
+          });
+        }
+      }
       refreshPromise = null;
-    });
-  return refreshPromise;
+    })();
+  }
+  return refreshPromise ?? Promise.resolve();
 }
 
-function queueRefresh() {
+function queueRefresh(parts: readonly RefreshPart[]) {
+  parts.forEach((part) => queuedParts.add(part));
+  if (Date.now() - lastBaseAt > BASE_MAX_AGE) queuedParts.add("base");
   if (refreshTimer) clearTimeout(refreshTimer);
-  refreshTimer = setTimeout(() => void refreshData(), 100);
+  refreshTimer = setTimeout(() => {
+    const batch = [...queuedParts];
+    queuedParts = new Set();
+    void refreshData(batch);
+  }, 100);
 }
 
 function stopRealtime() {
   if (realtimeChannel) void supabase.removeChannel(realtimeChannel);
   realtimeChannel = null;
+  if (layoutChannel) void supabase.removeChannel(layoutChannel);
+  layoutChannel = null;
+  if (refreshTimer) clearTimeout(refreshTimer);
+  refreshTimer = null;
+  queuedParts = new Set();
+}
+
+/** Canal separado: se as tabelas de áreas não existirem, não derruba o canal principal. */
+function startLayoutRealtime() {
+  if (layoutChannel) return;
+  const refreshLayout = () => queueRefresh(["layout"]);
+  layoutChannel = supabase
+    .channel("mesari-salao-layout")
+    .on("postgres_changes", { event: "*", schema: "public", table: "salao_areas" }, refreshLayout)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "salao_elementos" },
+      refreshLayout,
+    )
+    .subscribe();
 }
 
 function startRealtime() {
   if (realtimeChannel) return;
   realtimeChannel = supabase
     .channel("mesari-shared-restaurant-data")
-    .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, queueRefresh)
-    .on("postgres_changes", { event: "*", schema: "public", table: "itens_pedido" }, queueRefresh)
-    .on("postgres_changes", { event: "*", schema: "public", table: "vendas" }, queueRefresh)
+    .on("postgres_changes", { event: "*", schema: "public", table: "mesas" }, () =>
+      queueRefresh(["tables"]),
+    )
+    .on("postgres_changes", { event: "*", schema: "public", table: "itens_pedido" }, () =>
+      queueRefresh(["orders"]),
+    )
+    // Venda nova não baixa nada aqui: só avisa quem mostra vendas (tela Vendas) para recarregar.
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "vendas" }, () =>
+      publish({ salesVersion: state.salesVersion + 1 }),
+    )
     .subscribe((status, error) => {
       if (status === "SUBSCRIBED") {
         publish({ connection: "connected", error: null });
-        queueRefresh();
+        queueRefresh(LIVE_PARTS);
       } else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
         publish({
           connection: "reconnecting",
@@ -542,7 +826,7 @@ export function useStore<T>(select: (snapshot: State) => T): T {
 export const brl = (value: number) =>
   value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 
-export function tableStatus(snapshot: State, id: string): Status {
+export function tableStatus(snapshot: Pick<State, "tables">, id: string): Status {
   const table = snapshot.tables.find((entry) => entry.id === id);
   if (!table?.status) throw new Error(`O status da mesa ${id} não foi carregado do Supabase.`);
   return table.status;
@@ -550,14 +834,62 @@ export function tableStatus(snapshot: State, id: string): Status {
 
 export const total = (lines: OrderLine[] = []) =>
   lines.reduce((sum, line) => sum + line.qty * line.price, 0);
+
+/**
+ * Valores da conta em centavos (subtotal, taxa de serviço e total). Mesma conta usada no
+ * fechamento, no mapa, no painel e na nota de consumo.
+ */
+export function billTotals(lines: OrderLine[] = [], restaurant: State["restaurant"]) {
+  const subtotalCents = Math.round(total(lines) * 100);
+  const serviceChargeCents = restaurant.serviceChargeEnabled
+    ? Math.round((subtotalCents * restaurant.serviceChargePercent) / 100)
+    : 0;
+  return { subtotalCents, serviceChargeCents, totalCents: subtotalCents + serviceChargeCents };
+}
 export const count = (lines: OrderLine[] = []) => lines.reduce((sum, line) => sum + line.qty, 0);
 export const setStoreError = (error: unknown) => publish({ error: errorMessage(error) });
 
-async function writeRemote<T>(work: () => Promise<T>): Promise<T> {
+/** Conversão do logo base64 antigo para o Storage (uma por sessão). */
+let logoMigration: Promise<void> | null = null;
+let migratedLogo: { from: string; to: string } | null = null;
+
+/** Logo em base64 vai para o Storage; URL (ou vazio) passa direto. */
+async function storeLogo(logo: string) {
+  if (!isDataUrl(logo)) return { url: logo, uploaded: null };
+  const url = await uploadLogo(await dataUrlToBlob(logo));
+  return { url, uploaded: url };
+}
+
+/**
+ * Grava logo_url (e os outros campos, se vierem) e só então apaga o arquivo anterior do
+ * bucket. Se a gravação falhar, o arquivo recém-enviado é que sai.
+ */
+async function saveLogo(logo: string, fields: Record<string, unknown> = {}) {
+  const previous = state.restaurant.logo;
+  const { url, uploaded } = await storeLogo(logo);
+  const { error } = await supabase
+    .from("restaurante")
+    .update({ ...fields, logo_url: url })
+    .eq("id", 1);
+  if (error) {
+    if (uploaded) await removeLogo(uploaded).catch(() => undefined);
+    throw error;
+  }
+  // O logo novo já está salvo: falha ao apagar o antigo só deixa um arquivo sobrando.
+  if (previous !== url) {
+    await removeLogo(previous).catch((cause: unknown) =>
+      console.warn("Logo antigo não foi apagado do Storage:", cause),
+    );
+  }
+  return url;
+}
+
+/** Grava e recarrega só as partes que a gravação pode ter mudado. */
+async function writeRemote<T>(parts: readonly RefreshPart[], work: () => Promise<T>): Promise<T> {
   try {
     const result = await work();
     publish({ error: null });
-    await refreshData();
+    await refreshData(parts);
     return result;
   } catch (error) {
     setStoreError(error);
@@ -588,7 +920,7 @@ export const actions = {
     if (error) setStoreError(error);
   },
   async addLine(tableId: string, item: MenuItem, qty: number, note: string, print = true) {
-    return writeRemote(async () => {
+    return writeRemote(["orders", "tables"], async () => {
       const { error } = await supabase.rpc("enviar_pedido", {
         p_mesa_id: tableId,
         p_itens: [{ produto_id: item.id, quantidade: qty, observacao: note }],
@@ -603,7 +935,7 @@ export const actions = {
     print = true,
   ) {
     if (!entries.length) return;
-    return writeRemote(async () => {
+    return writeRemote(["orders", "tables"], async () => {
       const { error } = await supabase.rpc("enviar_pedido", {
         p_mesa_id: tableId,
         p_itens: entries.map(({ item, qty, note }) => ({
@@ -617,31 +949,47 @@ export const actions = {
     });
   },
   async setCategorySector(id: string, sector: Category["sector"]) {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const { error } = await supabase.from("categorias").update({ setor: sector }).eq("id", id);
       if (error) throw error;
     });
   },
   async cleanKitchenOrders() {
-    return writeRemote(async () => {
+    return writeRemote([], async () => {
       const { error } = await supabase.rpc("limpar_pedidos_cozinha");
       if (error) throw error;
     });
   },
   async removeLine(_tableId: string, lineId: string) {
-    return writeRemote(async () => {
+    return writeRemote(["orders", "tables"], async () => {
       const { error } = await supabase.from("itens_pedido").delete().eq("id", lineId);
       if (error) throw error;
     });
   },
+  /** Reserva a impressão da nota no banco; false = outro caixa já imprimiu ou não está pendente. */
+  async reserveBillPrint(tableId: string): Promise<boolean> {
+    const { data, error } = await supabase.rpc("reservar_nota_conta", { p_mesa_id: tableId });
+    if (error) throw error;
+    return data === true;
+  },
+  /** Pede uma nova impressão da nota: a estação de impressão do caixa imprime de novo. */
+  async requestBillReprint(tableId: string) {
+    return writeRemote(["tables"], async () => {
+      const { error } = await supabase
+        .from("mesas")
+        .update({ nota_impressa_em: null })
+        .eq("id", tableId);
+      if (error) throw error;
+    });
+  },
   async requestBill(tableId: string) {
-    return writeRemote(async () => {
+    return writeRemote(["tables"], async () => {
       const { error } = await supabase.rpc("solicitar_conta", { p_mesa_id: tableId });
       if (error) throw error;
     });
   },
   async closeBill(tableId: string, payments: PaymentInput[]): Promise<Closing> {
-    return writeRemote(async () => {
+    return writeRemote(["orders", "tables"], async () => {
       const { data, error } = await supabase.rpc("fechar_conta", {
         p_mesa_id: tableId,
         p_pagamentos: payments.map((payment) => ({
@@ -721,36 +1069,109 @@ export const actions = {
       quantidade: value.count,
     }));
   },
-  async saveTables(tables: Table[]) {
-    return writeRemote(async () => {
-      const currentIds = state.tables.map((table) => table.id);
-      const nextIds = new Set(tables.map((table) => table.id));
-      if (tables.length) {
-        const { error } = await supabase.from("mesas").upsert(
-          tables.map((table) => ({
-            id: table.id,
-            numero: table.number,
-            lugares: table.seats,
-            ativa: true,
-            pos_x: table.x,
-            pos_y: table.y,
-          })),
-          { onConflict: "id" },
-        );
-        if (error) throw error;
+  /** Uma página de vendas do período (mais recentes primeiro), já filtrada pela forma de pagamento. */
+  async listSales(
+    start: string,
+    end: string,
+    form: PaymentMethod | "todas",
+    offset: number,
+    pageSize = 50,
+  ): Promise<{ sales: Closing[]; hasMore: boolean }> {
+    let query = supabase
+      .from("vendas")
+      .select(SALE_COLUMNS)
+      .gte("fechada_em", start)
+      .lte("fechada_em", end);
+    if (form === "nao_informado") query = query.eq("pagamentos", "[]");
+    else if (form !== "todas") query = query.contains("pagamentos", [{ forma: form }]);
+    // Pede um a mais só para saber se existe próxima página.
+    const { data, error } = await query
+      .order("fechada_em", { ascending: false })
+      .range(offset, offset + pageSize);
+    if (error) throw error;
+    const sales = (data ?? []).map(mapClosing);
+    return { sales: sales.slice(0, pageSize), hasMore: sales.length > pageSize };
+  },
+  /** Grava posição, formato, lugares e número das mesas informadas (cria as que forem novas). */
+  async saveTableLayout(tables: Table[]) {
+    if (!tables.length) return;
+    return writeRemote(["tables"], async () => {
+      const { error } = await supabase
+        .from("mesas")
+        .upsert(tables.map(tableRow), { onConflict: "id" });
+      if (error) throw layoutError(error);
+    });
+  },
+  /** Grava áreas, elementos e mesas do editor (nessa ordem, por causa das chaves estrangeiras). */
+  async saveSalaoLayout(change: { tables: Table[]; areas: FloorArea[]; elements: FloorElement[] }) {
+    if (!change.tables.length && !change.areas.length && !change.elements.length) return;
+    if ((change.areas.length || change.elements.length) && !state.areasAvailable) {
+      throw new Error(MISSING_AREAS);
+    }
+    return writeRemote(["layout", "tables"], async () => {
+      if (change.areas.length) {
+        const { error } = await supabase
+          .from("salao_areas")
+          .upsert(change.areas.map(areaRow), { onConflict: "id" });
+        if (error) throw layoutError(error);
+        // Áreas novas entram no estado antes de as mesas apontarem para elas (tableRow).
+        const ids = new Set(state.areas.map((a) => a.id));
+        publish({ areas: [...state.areas, ...change.areas.filter((a) => !ids.has(a.id))] });
       }
-      const removedIds = currentIds.filter((id) => !nextIds.has(id));
-      if (removedIds.length) {
+      if (change.elements.length) {
+        const { error } = await supabase
+          .from("salao_elementos")
+          .upsert(change.elements.map(elementRow), { onConflict: "id" });
+        if (error) throw layoutError(error);
+      }
+      if (change.tables.length) {
         const { error } = await supabase
           .from("mesas")
-          .update({ ativa: false })
-          .in("id", removedIds);
-        if (error) throw error;
+          .upsert(change.tables.map(tableRow), { onConflict: "id" });
+        if (error) throw layoutError(error);
       }
     });
   },
+  /** Exclui a área; o banco recusa se ainda houver mesa ativa dentro. Elementos vão junto. */
+  async deleteArea(areaId: string) {
+    if (state.areas.length <= 1) throw new Error("O salão precisa ter pelo menos uma área.");
+    return writeRemote(["layout", "tables"], async () => {
+      const { error } = await supabase.from("salao_areas").delete().eq("id", areaId);
+      if (error) throw layoutError(error);
+    });
+  },
+  async deleteElement(elementId: string) {
+    return writeRemote(["layout"], async () => {
+      const { error } = await supabase.from("salao_elementos").delete().eq("id", elementId);
+      if (error) throw layoutError(error);
+    });
+  },
+  /** Exclusão lógica (ativa = false), como antes; o banco recusa se houver pedido em aberto. */
+  async deactivateTable(tableId: string) {
+    if (state.orders[tableId]?.length) {
+      const table = state.tables.find((entry) => entry.id === tableId);
+      throw new Error(
+        `A mesa ${String(table?.number ?? "").padStart(2, "0")} tem pedido em aberto. Feche a conta antes de excluir.`,
+      );
+    }
+    return writeRemote(["tables"], async () => {
+      const { error } = await supabase.from("mesas").update({ ativa: false }).eq("id", tableId);
+      if (error) throw error;
+    });
+  },
+  /** Próximo número livre, considerando também mesas desativadas (numero é único no banco). */
+  async nextTableNumber() {
+    const { data, error } = await supabase
+      .from("mesas")
+      .select("numero")
+      .order("numero", { ascending: false })
+      .limit(1);
+    if (error) throw error;
+    const highest = Array.isArray(data) && data[0] ? Number(asRow(data[0])["numero"]) : 0;
+    return Math.max(highest, ...state.tables.map((table) => table.number)) + 1;
+  },
   async saveItem(item: Omit<MenuItem, "id"> & { id?: string }) {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const row = {
         nome: item.name,
         categoria_id: item.categoryId || null,
@@ -767,13 +1188,13 @@ export const actions = {
     });
   },
   async deleteItem(id: string) {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const { error } = await supabase.from("produtos").update({ ativo: false }).eq("id", id);
       if (error) throw error;
     });
   },
   async addCategory(name: string): Promise<string> {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const { data, error } = await supabase
         .from("categorias")
         .insert({ nome: name, ordem: state.categories.length, setor: "nenhum" })
@@ -789,7 +1210,7 @@ export const actions = {
     username: string;
     password: string;
   }): Promise<void> {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const name = member.name.trim();
       const username = member.username.trim().toLowerCase();
       if (member.id) {
@@ -813,7 +1234,7 @@ export const actions = {
     });
   },
   async resetStaffPassword(username: string, password: string) {
-    return writeRemote(async () => {
+    return writeRemote([], async () => {
       const { error } = await supabase.rpc("redefinir_senha", {
         p_usuario: username.trim().toLowerCase(),
         p_senha: password,
@@ -822,7 +1243,7 @@ export const actions = {
     });
   },
   async deleteStaff(id: string) {
-    return writeRemote(async () => {
+    return writeRemote(["base"], async () => {
       const { error } = await supabase.from("profiles").update({ ativo: false }).eq("id", id);
       if (error) throw error;
     });
@@ -834,22 +1255,31 @@ export const actions = {
     publish({ orderSentMesaId: null });
   },
   async updateRestaurant(restaurant: State["restaurant"]) {
-    return writeRemote(async () => {
-      const { error } = await supabase
-        .from("restaurante")
-        .update({
-          nome: restaurant.name,
-          telefone: restaurant.phone,
-          endereco: restaurant.address,
-          cnpj: restaurant.cnpj,
-          instagram: restaurant.instagram,
-          logo_url: restaurant.logo,
-          taxa_servico_ativa: restaurant.serviceChargeEnabled,
-          taxa_servico_percentual: restaurant.serviceChargePercent,
-        })
-        .eq("id", 1);
-      if (error) throw error;
+    // Salvar durante a conversão do logo antigo: espera e usa a URL nova em vez do base64.
+    await logoMigration?.catch(() => undefined);
+    const logo = migratedLogo?.from === restaurant.logo ? migratedLogo.to : restaurant.logo;
+    return writeRemote(["base", "logo"], async () => {
+      await saveLogo(logo, {
+        nome: restaurant.name,
+        telefone: restaurant.phone,
+        endereco: restaurant.address,
+        cnpj: restaurant.cnpj,
+        instagram: restaurant.instagram,
+        taxa_servico_ativa: restaurant.serviceChargeEnabled,
+        taxa_servico_percentual: restaurant.serviceChargePercent,
+      });
     });
+  },
+  /** Logo antigo em base64 no banco: comprime, envia ao Storage e grava só a URL. */
+  migrateLogo() {
+    const from = state.restaurant.logo;
+    if (state.user?.role !== "caixa" || !isDataUrl(from)) return Promise.resolve();
+    logoMigration ??= writeRemote(["logo"], async () => {
+      migratedLogo = { from, to: await saveLogo(from) };
+    }).finally(() => {
+      logoMigration = null;
+    });
+    return logoMigration;
   },
   clearError() {
     publish({ error: null });

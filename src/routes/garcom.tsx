@@ -25,13 +25,16 @@ export const Route = createFileRoute("/garcom")({
 });
 
 function Garcom() {
-  const s = useStore((x) => x);
+  // Só mesas, itens e o garçom logado: o resto do store não redesenha a lista.
+  const storeTables = useStore((x) => x.tables);
+  const orders = useStore((x) => x.orders);
+  const user = useStore((x) => x.user);
   const [myTables, setMyTables] = useState(false);
-  const allTables = [...s.tables].sort((a, b) => a.number - b.number);
+  const allTables = [...storeTables].sort((a, b) => a.number - b.number);
   const tables = myTables
     ? allTables.filter((table) =>
-        s.orders[table.id]?.some((line) =>
-          line.waiterId ? line.waiterId === s.user?.id : line.waiter === s.user?.name,
+        orders[table.id]?.some((line) =>
+          line.waiterId ? line.waiterId === user?.id : line.waiter === user?.name,
         ),
       )
     : allTables;
@@ -69,7 +72,7 @@ function Garcom() {
     >
       <div className="grid grid-cols-2 gap-3 p-4 sm:grid-cols-3">
         {tables.map((t) => {
-          const st = tableStatus(s, t.id);
+          const st = tableStatus({ tables: storeTables }, t.id);
           const tone =
             st === "livre" ? "bg-free-bg" : st === "ocupada" ? "bg-busy-bg" : "bg-bill-bg";
           return (
@@ -96,12 +99,12 @@ function Garcom() {
                     <Armchair className="h-4 w-4" />
                   </span>
                 ) : (
-                  brl(total(s.orders[t.id]))
+                  brl(total(orders[t.id]))
                 )}
               </div>
               {st !== "livre" && (
                 <div className="mt-1 text-xs text-muted-foreground">
-                  {count(s.orders[t.id])} {count(s.orders[t.id]) === 1 ? "item" : "itens"}
+                  {count(orders[t.id])} {count(orders[t.id]) === 1 ? "item" : "itens"}
                 </div>
               )}
             </Link>

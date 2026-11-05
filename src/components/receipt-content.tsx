@@ -78,9 +78,11 @@ export function ReceiptContent({
         <div className="receipt-meta">Endereço: {receipt.customerAddress}</div>
       )}
       <div className="receipt-meta">Atendido por: {waiters}</div>
-      <div className="receipt-small">
-        Nº da venda: {String(receipt.saleNumber).padStart(4, "0")}
-      </div>
+      {!receipt.preBill && (
+        <div className="receipt-small">
+          Nº da venda: {String(receipt.saleNumber).padStart(4, "0")}
+        </div>
+      )}
 
       <div className="receipt-dash" />
       <div className="receipt-items-heading">
@@ -128,7 +130,7 @@ export function ReceiptContent({
           <span>TOTAL</span>
           <span>{brl(receipt.total)}</span>
         </div>
-        {(receipt.payments ?? []).length > 0 && (
+        {!receipt.preBill && (receipt.payments ?? []).length > 0 && (
           <div className="receipt-payments">
             {receipt.payments?.map((payment, index) => (
               <div key={`${payment.forma}-${index}`}>
@@ -163,6 +165,7 @@ export function ReceiptContent({
         </div>
         <div className="receipt-thanks-small">Volte sempre</div>
         <div className="receipt-thanks-small">{restaurant.instagram || "@mesari"}</div>
+        <div className="receipt-thanks-small">Não é documento fiscal</div>
       </footer>
     </article>
   );

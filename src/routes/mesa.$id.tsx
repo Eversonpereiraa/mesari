@@ -1,7 +1,8 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { Armchair, Plus } from "lucide-react";
-import { actions, brl, tableStatus, total, useStore } from "@/lib/store";
+import { toast } from "sonner";
+import { actions, brl, errorMessage, tableStatus, total, useStore } from "@/lib/store";
 import { Btn, StatusTag, btn } from "@/components/ui-kit";
 import { MobileFrame } from "@/components/mobile-frame";
 
@@ -26,6 +27,7 @@ function Mesa() {
   const st = tableStatus(s, id);
   const [orderSent, setOrderSent] = useState(false);
   const [kitchenOffline, setKitchenOffline] = useState(false);
+  const [requesting, setRequesting] = useState(false);
 
   useEffect(() => {
     const sent = sessionStorage.getItem("mesari-order-sent");
@@ -58,10 +60,20 @@ function Mesa() {
             <Btn
               size="lg"
               variant="success"
-              disabled={!lines.length || st === "conta"}
-              onClick={() => actions.requestBill(id)}
+              disabled={!lines.length || st === "conta" || requesting}
+              onClick={async () => {
+                setRequesting(true);
+                try {
+                  await actions.requestBill(id);
+                  toast.success("Conta pedida. A nota será impressa no caixa.");
+                } catch (cause) {
+                  toast.error(errorMessage(cause));
+                } finally {
+                  setRequesting(false);
+                }
+              }}
             >
-              {st === "conta" ? "Conta pedida" : "Fechar Conta"}
+              {st === "conta" ? "Conta pedida" : "Pedir conta"}
             </Btn>
             <Btn size="lg" variant="neutral" onClick={() => nav({ to: "/garcom" })}>
               Voltar

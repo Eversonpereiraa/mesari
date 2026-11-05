@@ -138,6 +138,56 @@
   animation: bill-pulse 2.2s ease-in-out infinite;
 }
 
+/* Mapa do salão: mesa ocupada há 60 min ou mais pisca a borda. */
+@keyframes salao-blink {
+  0%,
+  49% {
+    stroke-width: var(--salao-sw, 1.6);
+  }
+  50%,
+  100% {
+    stroke-width: 3.5;
+  }
+}
+
+.salao-alert {
+  animation: salao-blink 1.2s steps(1) infinite;
+}
+
+/* Aberta há mais de 12 h: borda vermelho-escura, mais grossa e piscando mais rápido. */
+@keyframes salao-blink-long {
+  0%,
+  49% {
+    stroke-width: 3;
+  }
+  50%,
+  100% {
+    stroke-width: 5.5;
+  }
+}
+
+.salao-alert-long {
+  animation: salao-blink-long 0.8s steps(1) infinite;
+}
+
+.salao-table:focus-visible {
+  outline: none;
+}
+
+.salao-table:focus-visible > :not(ellipse:first-child) {
+  filter: drop-shadow(0 0 3px var(--primary));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .salao-alert {
+    animation: none;
+    stroke-width: 3.5;
+  }
+  .salao-alert-long {
+    stroke-width: 5;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
