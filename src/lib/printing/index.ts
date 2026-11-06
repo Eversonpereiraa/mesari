@@ -23,13 +23,30 @@ export {
   CHAR_RULER,
   calibrationEscPos,
   calibrationHtml,
-  comandaDoc,
   htmlFontMm,
   renderEscPos,
   renderHtml,
-  sampleTicket,
   testPageDoc,
 } from "./documents";
+export {
+  DEFAULT_FOOTER,
+  SAMPLE_RESTAURANT,
+  comandaCozinha,
+  comandaDelivery,
+  contaMesa,
+  sampleDeliveryTicket,
+  sampleKitchenTicket,
+  sampleReceipt,
+} from "./comandas";
+export { renderText, type DocLine, type PrintDoc } from "./layout";
+export {
+  LOGO_DETAIL_WARNING,
+  loadPrintLogo,
+  processLogoFile,
+  type PrintLogo,
+  type ProcessedLogo,
+} from "./logo";
+export { getPrintRestaurant, setPrintRestaurant } from "./restaurant";
 export {
   abrirGaveta,
   createTransport,
@@ -38,13 +55,14 @@ export {
   getTransport,
   imprimirComanda,
   imprimirCalibracao,
-  imprimirComandaExemplo,
+  imprimirExemplo,
   imprimirNota,
   imprimirTeste,
   initializePrinter,
   subscribePrinterStatus,
   testarConexao,
   transportAvailability,
+  type ExampleKind,
   type PrinterStatus,
   type PrintResult,
 } from "./printer";

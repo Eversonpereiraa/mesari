@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
-import { loadConfig } from "@/lib/printing";
+import { loadConfig, setPrintRestaurant } from "@/lib/printing";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
 import { BillPrintStation } from "@/components/bill-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
@@ -114,10 +114,13 @@ export function useRequireAuth() {
   const user = useStore((s) => s.user);
   const loading = useStore((s) => s.loading);
   const configured = useStore((s) => s.configured);
+  const restaurant = useStore((s) => s.restaurant);
   const nav = useNavigate();
   useEffect(() => {
     if (configured && !loading && !user) nav({ to: "/" });
   }, [configured, loading, user, nav]);
+  // Comandas de delivery usam nome, telefone e logo do restaurante sem recebê-los de quem chama.
+  useEffect(() => setPrintRestaurant(restaurant), [restaurant]);
   return user;
 }
 

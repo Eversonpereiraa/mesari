@@ -77,6 +77,7 @@ export function preBillReceipt(
     })),
     subtotal: totals.subtotalCents / 100,
     serviceCharge: totals.serviceChargeCents / 100,
+    serviceChargePercent: restaurant.serviceChargePercent,
     total: totals.totalCents / 100,
     origin: "mesa",
     preBill: true,

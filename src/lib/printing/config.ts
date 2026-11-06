@@ -38,7 +38,7 @@ export const PRINT_PRESETS = [
       "80mm padrão (Elgin i9/i8, Epson TM-T20, Bematech MP-4200, Daruma, Tanca, Knup, genéricas)",
     paperWidth: 80,
     printableMm: 72,
-    columns: 48,
+    columns: 42,
   },
   { id: "80-larga", label: "80mm área larga", paperWidth: 80, printableMm: 76, columns: 48 },
   { id: "80-estreita", label: "80mm área estreita", paperWidth: 80, printableMm: 64, columns: 42 },
@@ -72,7 +72,7 @@ export function presetOf(config: Pick<PrinterConfig, "paperWidth" | "printableMm
 
 /** Área útil e colunas padrão de cada papel. */
 export function layoutDefaults(paperWidth: PaperWidth) {
-  return paperWidth === 58 ? { printableMm: 48, columns: 32 } : { printableMm: 72, columns: 48 };
+  return paperWidth === 58 ? { printableMm: 48, columns: 32 } : { printableMm: 72, columns: 42 };
 }
 
 /** Arredonda para a opção de colunas válida mais próxima, para baixo (mínimo 32). */
@@ -141,7 +141,7 @@ export function defaultConfig(): PrinterConfig {
     comBaudRate: 115200,
     paperWidth: 80,
     printableMm: 72,
-    columns: 48,
+    columns: 42,
     offsetMm: 0,
     fontSize: "medio",
     codepage: "CP850",

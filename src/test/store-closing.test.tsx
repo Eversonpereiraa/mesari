@@ -667,10 +667,10 @@ describe("integração do store com o schema existente", () => {
 
     expect(mocks.logo.uploadLogo).toHaveBeenCalledTimes(1);
     expect(restaurantUpdate()).toEqual({ logo_url: `${STORAGE}/logo-novo.webp` });
-    // Recarrega só o logo, sem refazer cardápio, mesas ou pedidos.
+    // Recarrega só o restaurante (logo e dados de impressão), sem refazer cardápio, mesas ou pedidos.
     expect(
       mocks.calls.filter((call) => call.method === "select").map((call) => call.args[0]),
-    ).toEqual(["logo_url"]);
+    ).toEqual(["*"]);
   });
 
   it("não converte o logo fora do caixa nem quando já é URL", async () => {

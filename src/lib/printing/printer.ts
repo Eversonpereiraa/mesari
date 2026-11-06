@@ -17,18 +17,26 @@ import {
   type PrinterConfig,
 } from "./config";
 import {
-  comandaDoc,
   drawerBytes,
-  receiptDoc,
   renderEscPos,
   renderHtml,
   calibrationEscPos,
   calibrationHtml,
-  sampleTicket,
   testPageDoc,
   type PrintDoc,
 } from "./documents";
-import { receiptHtml } from "./receipt-html";
+import {
+  SAMPLE_PRINTED_AT,
+  SAMPLE_RESTAURANT,
+  comandaCozinha,
+  comandaDelivery,
+  contaMesa,
+  sampleDeliveryTicket,
+  sampleKitchenTicket,
+  sampleReceipt,
+} from "./comandas";
+import { loadPrintLogo, type PrintLogo } from "./logo";
+import { getPrintRestaurant } from "./restaurant";
 import type { KitchenTicket, PrintReceipt, PrintRestaurant } from "./types";
 import {
   BaseTransport,
@@ -257,25 +265,28 @@ function concat(parts: Uint8Array[]) {
 type DeliverOptions = {
   copies?: number;
   openDrawer?: boolean;
-  /** HTML próprio para o navegador (nota com logo). */
+  /** HTML próprio para o navegador (página de calibração). */
   html?: () => Promise<string>;
   /** Bytes próprios para ESC/POS (página de calibração). */
   bytes?: () => Uint8Array;
   transport?: PrinterTransport;
 };
 
-async function deliver(doc: PrintDoc, options: DeliverOptions = {}): Promise<PrintResult> {
+async function deliver(
+  docs: PrintDoc | PrintDoc[],
+  options: DeliverOptions = {},
+): Promise<PrintResult> {
   const config = loadConfig();
   const transport = options.transport ?? getTransport();
   const copies = Math.max(1, options.copies ?? 1);
   try {
     if (!transport.acceptsBytes) {
-      const html = options.html ? await options.html() : renderHtml(doc, config);
+      const html = options.html ? await options.html() : renderHtml(docs, config);
       for (let copy = 0; copy < copies; copy += 1) {
         await transport.printHtml!(html, config.paperWidth);
       }
     } else {
-      const one = options.bytes ? options.bytes() : renderEscPos(doc, config);
+      const one = options.bytes ? options.bytes() : renderEscPos(docs, config);
       const parts = Array.from({ length: copies }, () => one);
       if (options.openDrawer) parts.push(drawerBytes(config));
       await sendBytes(transport, concat(parts));
@@ -286,22 +297,67 @@ async function deliver(doc: PrintDoc, options: DeliverOptions = {}): Promise<Pri
   }
 }
 
+/** Logo processada (cache do aparelho), só se o restaurante pediu logo nas comandas. */
+async function restaurantLogo(restaurant: PrintRestaurant): Promise<PrintLogo | null> {
+  if (!restaurant.printLogoEnabled || !restaurant.printLogo) return null;
+  try {
+    return await loadPrintLogo(restaurant.printLogo);
+  } catch (cause) {
+    // Sem logo a comanda sai do mesmo jeito, começando pelo nome.
+    console.warn("[impressão] logo indisponível; imprimindo sem logo", cause);
+    return null;
+  }
+}
+
+/** Comanda de cozinha e, no delivery/retirada, também a comanda que vai com o entregador. */
+async function comandaDocs(ticket: KitchenTicket, restaurant: PrintRestaurant, now?: number) {
+  const docs = [comandaCozinha(ticket, now === undefined ? {} : { now })];
+  if (ticket.external) {
+    docs.push(comandaDelivery(ticket, restaurant, { logo: await restaurantLogo(restaurant) }));
+  }
+  return docs;
+}
+
 // ---------------------------------------------------------------------------------------------
 // API pública
 
-/** Comanda do pedido inteiro. `force: "navegador"` imprime pela caixa de impressão do sistema. */
+/**
+ * Comanda do pedido inteiro (modelo "Comanda de cozinha"); pedidos de delivery/retirada saem
+ * também com a "Comanda de delivery". `force: "navegador"` imprime pela caixa do sistema.
+ */
 export function imprimirComanda(ticket: KitchenTicket, options: { force?: "navegador" } = {}) {
-  return enqueue(`comanda:${ticket.id}:${options.force ?? ""}`, () => {
+  return enqueue(`comanda:${ticket.id}:${options.force ?? ""}`, async () => {
     const config = loadConfig();
-    return deliver(comandaDoc(ticket, config), {
+    return deliver(await comandaDocs(ticket, getPrintRestaurant()), {
       copies: config.copies,
       ...(options.force ? { transport: new BrowserPrintTransport("comanda") } : {}),
     });
   });
 }
 
-export function imprimirComandaExemplo(kind: "entrega" | "mesa" = "entrega") {
-  return enqueue(`exemplo:${kind}`, () => deliver(comandaDoc(sampleTicket(kind), loadConfig())));
+export type ExampleKind = "cozinha" | "delivery" | "conta";
+
+/** Exemplos com os dados dos modelos; a logo é a do restaurante, se estiver ligada. */
+export function imprimirExemplo(kind: ExampleKind) {
+  return enqueue(`exemplo:${kind}`, async () => {
+    const own = getPrintRestaurant();
+    const restaurant: PrintRestaurant = {
+      ...SAMPLE_RESTAURANT,
+      ...(own.printLogo ? { printLogo: own.printLogo } : {}),
+      printLogoEnabled: Boolean(own.printLogoEnabled),
+    };
+    if (kind === "cozinha") {
+      return deliver(comandaCozinha(sampleKitchenTicket(), { now: SAMPLE_PRINTED_AT }));
+    }
+    const logo = await restaurantLogo(restaurant);
+    if (kind === "delivery")
+      return deliver(comandaDelivery(sampleDeliveryTicket(), restaurant, { logo }));
+    const config = loadConfig();
+    return deliver(contaMesa(sampleReceipt(), restaurant, { logo }), {
+      transport:
+        config.connection === "navegador" ? new BrowserPrintTransport("nota") : getTransport(),
+    });
+  });
 }
 
 export function imprimirTeste(restaurantName = "Mesari") {
@@ -328,21 +384,22 @@ export function imprimirCalibracao() {
   });
 }
 
-/** Nota de consumo. No navegador sai com o layout com logo; nas térmicas, em texto ESC/POS. */
+/** Conta da mesa / nota (modelo "Conta da mesa"), igual no navegador e na térmica. */
 export function imprimirNota(
   receipt: PrintReceipt,
   restaurant: PrintRestaurant,
   options: { openDrawer?: boolean } = {},
 ) {
-  return enqueue(`nota:${receipt.id}:${receipt.reprint ? "2" : "1"}`, () => {
+  return enqueue(`nota:${receipt.id}:${receipt.reprint ? "2" : "1"}`, async () => {
     const config = loadConfig();
     const transport =
       config.connection === "navegador" ? new BrowserPrintTransport("nota") : getTransport();
-    return deliver(receiptDoc(receipt, restaurant, config), {
+    const full = { ...getPrintRestaurant(), ...restaurant };
+    const doc = contaMesa(receipt, full, { logo: await restaurantLogo(full) });
+    return deliver(doc, {
       transport,
       copies: config.copies,
       openDrawer: Boolean(options.openDrawer),
-      html: () => receiptHtml(receipt, restaurant, config),
     });
   });
 }

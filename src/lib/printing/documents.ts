@@ -1,26 +1,20 @@
 /**
- * Conteúdo dos impressos (comanda, nota, página de teste) num formato neutro. O mesmo documento
- * vira bytes ESC/POS (renderEscPos) ou HTML de bobina (renderHtml), ambos no perfil de largura
- * do aparelho (papel, área útil, colunas e ajuste fino).
+ * Renderizadores dos impressos. O documento (lista de linhas com estilo, ver layout.ts) é
+ * montado uma vez em linhas de `colunas` caracteres e desenhado em ESC/POS (bytes) ou em HTML de
+ * bobina (navegador). Os dois usam as mesmas linhas, então saem iguais.
  */
-import { DOTS_PER_MM, EscPosBuilder, type Align } from "./escpos";
+import { DOTS_PER_MM, EscPosBuilder } from "./escpos";
 import type { PrinterConfig } from "./config";
-import type { KitchenTicket, PrintReceipt, PrintRestaurant } from "./types";
+import { money } from "./format";
+import { layoutDoc, type DocLine, type PhysicalLine, type PrintDoc } from "./layout";
+import { logoDot, type PrintLogo } from "./logo";
 
-export type DocLine =
-  | { kind: "text"; text: string; align?: Align; bold?: boolean; double?: boolean }
-  | { kind: "pair"; left: string; right: string; bold?: boolean; double?: boolean }
-  | { kind: "raw"; text: string }
-  | { kind: "rule" }
-  | { kind: "blank" };
+export type { DocLine, PrintDoc } from "./layout";
+export { money } from "./format";
 
-export type PrintDoc = { title: string; lines: DocLine[] };
-
-type FormatOptions = Pick<PrinterConfig, "paperWidth" | "codepage" | "showKitchenPrices">;
-
-export function money(value: number) {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" }).replace(/\s/g, " ");
-}
+const text = (value: string, style: { align?: "center"; bold?: boolean; size?: "big" } = {}) =>
+  ({ kind: "text", text: value, ...style }) as DocLine;
+const rule: DocLine = { kind: "rule", char: "-" };
 
 function dateTime(at: number) {
   return new Intl.DateTimeFormat("pt-BR", {
@@ -33,171 +27,6 @@ function dateTime(at: number) {
   }).format(new Date(at));
 }
 
-const text = (
-  value: string,
-  options: { align?: Align; bold?: boolean; double?: boolean } = {},
-): DocLine => ({ kind: "text", text: value, ...options });
-const pair = (left: string, right: string, bold = false): DocLine => ({
-  kind: "pair",
-  left,
-  right,
-  bold,
-});
-const rule: DocLine = { kind: "rule" };
-
-const CHANNEL_LABEL: Record<string, string> = {
-  whatsapp: "WhatsApp",
-  telefone: "Telefone",
-  papel: "Balcão",
-  balcao: "Balcão",
-};
-
-const PAYMENT_LABEL: Record<string, string> = {
-  dinheiro: "Dinheiro",
-  pix: "Pix",
-  credito: "Cartão de crédito",
-  debito: "Cartão de débito",
-  nao_informado: "Não informado",
-};
-
-export function ticketOrigin(ticket: KitchenTicket) {
-  if (ticket.external) return CHANNEL_LABEL[ticket.external.channel] ?? "Balcão";
-  return ticket.table === null ? "Balcão" : "Mesa";
-}
-
-/** Comanda única com o pedido inteiro (comida e bebida). */
-export function comandaDoc(ticket: KitchenTicket, options: FormatOptions): PrintDoc {
-  const external = ticket.external;
-  const lines: DocLine[] = [];
-  const number = external?.dayNumber ?? ticket.number;
-  lines.push(text(`PEDIDO #${number}`, { align: "center", bold: true, double: true }));
-  if (external) {
-    lines.push(
-      text(external.origin === "entrega" ? "ENTREGA" : "RETIRADA", {
-        align: "center",
-        bold: true,
-        double: true,
-      }),
-    );
-  } else if (ticket.table !== null) {
-    lines.push(
-      text(`MESA ${String(ticket.table).padStart(2, "0")}`, {
-        align: "center",
-        bold: true,
-        double: true,
-      }),
-    );
-  }
-  if (!external && ticket.sector === "bar")
-    lines.push(text("BAR", { align: "center", bold: true }));
-  if (ticket.additional) lines.push(text("** ADICIONAL **", { align: "center", bold: true }));
-  lines.push(rule);
-  lines.push(text(`Data/hora: ${dateTime(ticket.createdAt)}`));
-  lines.push(text(`Origem: ${ticketOrigin(ticket)}`));
-  if (ticket.waiter) lines.push(text(`Garçom: ${ticket.waiter}`));
-  lines.push(rule);
-
-  const pricesKnown = ticket.items.every(
-    (item) => typeof item.unitPrice === "number" && Number.isFinite(item.unitPrice),
-  );
-  const showPrices = (options.showKitchenPrices || Boolean(external)) && pricesKnown;
-  for (const item of ticket.items) {
-    const total = item.quantity * (item.unitPrice ?? 0);
-    lines.push(pair(`${item.quantity}x ${item.product}`, showPrices ? money(total) : "", true));
-    if (item.note.trim()) lines.push(text(`   obs: ${item.note.trim()}`));
-  }
-
-  if (showPrices) {
-    const itemsTotal = ticket.items.reduce(
-      (sum, item) => sum + item.quantity * (item.unitPrice ?? 0),
-      0,
-    );
-    const subtotal = external?.subtotal ?? itemsTotal;
-    const fee = external?.deliveryFee ?? 0;
-    const discount = external?.discount ?? 0;
-    const total = external?.total ?? subtotal + fee - discount;
-    lines.push(rule);
-    lines.push(pair("Subtotal", money(subtotal)));
-    if (external?.origin === "entrega" || fee > 0) lines.push(pair("Taxa de entrega", money(fee)));
-    if (discount > 0) lines.push(pair("Desconto", `-${money(discount)}`));
-    lines.push(pair("TOTAL", money(total), true));
-  }
-
-  if (external) {
-    lines.push(rule);
-    lines.push(text(`Cliente: ${external.customerName || "—"}`, { bold: true }));
-    if (external.phone) lines.push(text(`Telefone: ${external.phone}`));
-    if (external.origin === "entrega" && external.address) {
-      lines.push(text(`Endereço: ${external.address}`, { bold: true }));
-    }
-    const payment = external.payment;
-    const method = payment.forma
-      ? (PAYMENT_LABEL[payment.forma] ?? payment.forma)
-      : "Não informado";
-    lines.push(text(`Pagamento: ${payment.pago ? `${method} (JÁ PAGO)` : method}`, { bold: true }));
-    if (!payment.pago && payment.forma === "dinheiro" && payment.trocoPara !== null) {
-      lines.push(pair("Troco para", money(payment.trocoPara)));
-      const change = Math.round((payment.trocoPara - external.total) * 100) / 100;
-      if (change > 0) lines.push(pair("Levar de troco", money(change), true));
-    }
-    if (external.observation) {
-      lines.push(rule);
-      lines.push(text(`OBSERVAÇÃO: ${external.observation}`, { bold: true }));
-    }
-  }
-  lines.push(rule);
-  if (external) lines.push(text("Não é documento fiscal", { align: "center" }));
-  return { title: `Pedido #${number}`, lines };
-}
-
-/** Comanda fictícia para a tela "Impressão". */
-export function sampleTicket(kind: "entrega" | "mesa" = "entrega"): KitchenTicket {
-  const items = [
-    {
-      product: "X-Burguer da Casa com cheddar cremoso, bacon crocante e cebola caramelizada",
-      quantity: 2,
-      note: "sem cebola, ponto da carne bem passado e molho especial separado em pote pequeno",
-      unitPrice: 28.9,
-    },
-    {
-      product: "Batata frita com cheddar e bacon (porção grande)",
-      quantity: 1,
-      note: "",
-      unitPrice: 32,
-    },
-    { product: "Suco de laranja 500 ml", quantity: 2, note: "pouco gelo", unitPrice: 9.5 },
-  ];
-  const subtotal = items.reduce((sum, item) => sum + item.quantity * item.unitPrice, 0);
-  const base: KitchenTicket = {
-    id: `exemplo-${Date.now()}`,
-    number: 128,
-    table: kind === "mesa" ? 7 : null,
-    sector: "cozinha",
-    waiter: kind === "mesa" ? "Conceição" : "",
-    additional: false,
-    createdAt: Date.now(),
-    items,
-  };
-  if (kind === "mesa") return base;
-  return {
-    ...base,
-    external: {
-      origin: "entrega",
-      dayNumber: 128,
-      channel: "whatsapp",
-      customerName: "João da Silva",
-      phone: "(11) 98765-4321",
-      address: "Rua das Acácias, 123, apto 45 – Jardim São Paulo, ao lado da padaria",
-      observation: "Interfone com defeito, ligar ao chegar.",
-      subtotal,
-      deliveryFee: 7,
-      discount: 5,
-      total: subtotal + 7 - 5,
-      payment: { forma: "dinheiro", pago: false, trocoPara: 150 },
-    },
-  };
-}
-
 export function testPageDoc(
   options: Pick<PrinterConfig, "paperWidth" | "printableMm" | "columns" | "codepage">,
   restaurantName: string,
@@ -208,7 +37,7 @@ export function testPageDoc(
   return {
     title: "Página de teste",
     lines: [
-      text(restaurantName || "Mesari", { align: "center", bold: true, double: true }),
+      text(restaurantName || "Mesari", { align: "center", bold: true }),
       text("PÁGINA DE TESTE", { align: "center", bold: true }),
       rule,
       text(`Conexão: ${connectionLabel}`),
@@ -226,8 +55,9 @@ export function testPageDoc(
       { kind: "raw", text: ruler },
       rule,
       text("Texto em negrito", { bold: true }),
-      text("TAMANHO DUPLO", { double: true }),
-      pair("Item com preço à direita", money(1234.5)),
+      { kind: "text", text: "ALTURA DUPLA", bold: true, size: "tall" },
+      text("TAMANHO DUPLO", { bold: true, size: "big" }),
+      { kind: "entry", text: "Item com preço à direita", value: money(1234.5) },
       rule,
       text("Se esta página saiu inteira e com acentos, a impressora está pronta.", {
         align: "center",
@@ -236,73 +66,8 @@ export function testPageDoc(
   };
 }
 
-/** Nota de consumo em texto, para impressoras ESC/POS (o navegador usa o layout com logo). */
-export function receiptDoc(
-  receipt: PrintReceipt,
-  restaurant: PrintRestaurant,
-  options: FormatOptions,
-): PrintDoc {
-  const lines: DocLine[] = [];
-  const isDelivery = receipt.origin === "entrega" || receipt.origin === "retirada";
-  if (receipt.reprint)
-    lines.push(text(`2ª VIA · ORIGINAL ${dateTime(receipt.at)}`, { align: "center" }));
-  lines.push(text(restaurant.name || "Mesari", { align: "center", bold: true, double: true }));
-  if (restaurant.address) lines.push(text(restaurant.address, { align: "center" }));
-  if (restaurant.phone) lines.push(text(restaurant.phone, { align: "center" }));
-  if (restaurant.cnpj) lines.push(text(`CNPJ: ${restaurant.cnpj}`, { align: "center" }));
-  lines.push(rule);
-  lines.push(
-    text(receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO", { align: "center", bold: true }),
-  );
-  lines.push(text("Não é documento fiscal", { align: "center" }));
-  lines.push(rule);
-  const place = isDelivery
-    ? `${receipt.origin === "retirada" ? "RETIRADA" : "ENTREGA"}${receipt.customerName ? ` - ${receipt.customerName}` : ""}`
-    : `MESA ${String(receipt.table).padStart(2, "0")}`;
-  lines.push(text(place, { bold: true, double: !isDelivery }));
-  lines.push(text(`Data/hora: ${dateTime(receipt.at)}`));
-  if (isDelivery && receipt.customerPhone) lines.push(text(`Telefone: ${receipt.customerPhone}`));
-  if (isDelivery && receipt.customerAddress)
-    lines.push(text(`Endereço: ${receipt.customerAddress}`));
-  const waiters = [...new Set(receipt.lines.map((line) => line.waiter).filter(Boolean))].join(", ");
-  if (waiters) lines.push(text(`Atendido por: ${waiters}`));
-  if (!receipt.preBill && receipt.saleNumber) {
-    lines.push(text(`Nº da venda: ${String(receipt.saleNumber).padStart(4, "0")}`));
-  }
-  lines.push(rule);
-  for (const line of receipt.lines) {
-    lines.push(pair(`${line.qty}x ${line.name}`, money(line.qty * line.price)));
-    if (line.qty > 1) lines.push(text(`   ${money(line.price)} un.`));
-  }
-  lines.push(rule);
-  lines.push(pair("Subtotal", money(receipt.subtotal)));
-  if (receipt.serviceCharge > 0) lines.push(pair("Taxa de serviço", money(receipt.serviceCharge)));
-  if (receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0) {
-    lines.push(pair("Taxa de entrega", money(receipt.deliveryFee ?? 0)));
-  }
-  if ((receipt.discount ?? 0) > 0) lines.push(pair("Desconto", `-${money(receipt.discount ?? 0)}`));
-  lines.push({
-    kind: "pair",
-    left: "TOTAL",
-    right: money(receipt.total),
-    bold: true,
-    double: true,
-  });
-  if (!receipt.preBill) {
-    for (const payment of receipt.payments ?? []) {
-      lines.push(pair(PAYMENT_LABEL[payment.forma] ?? payment.forma, money(payment.valor)));
-      if (payment.forma === "dinheiro" && payment.recebido !== undefined) {
-        lines.push(pair("   Recebido", money(payment.recebido)));
-        if ((payment.troco ?? 0) > 0) lines.push(pair("   Troco", money(payment.troco ?? 0)));
-      }
-    }
-  }
-  lines.push(rule);
-  lines.push(text("Obrigado pela preferência!", { align: "center", bold: true }));
-  lines.push(text("Volte sempre", { align: "center" }));
-  if (restaurant.instagram) lines.push(text(restaurant.instagram, { align: "center" }));
-  return { title: "Nota", lines };
-}
+// ---------------------------------------------------------------------------------------------
+// ESC/POS
 
 export type RenderOptions = Pick<
   PrinterConfig,
@@ -329,22 +94,68 @@ function finish(out: EscPosBuilder, options: RenderOptions) {
   return out.build();
 }
 
-export function renderEscPos(doc: PrintDoc, options: RenderOptions) {
-  const out = builderFor(options);
-  for (const line of doc.lines) {
-    if (line.kind === "text") out.line(line.text, line);
-    else if (line.kind === "pair") out.pair(line.left, line.right, line);
-    else if (line.kind === "raw") out.align("left").raw(line.text).newline();
-    else if (line.kind === "rule") out.dashed();
-    else out.newline();
+/** Logo centralizada na área útil inteira (reduzida se for mais larga que a cabeça). */
+function printLogo(out: EscPosBuilder, logo: PrintLogo, options: RenderOptions) {
+  const printable = Math.round(options.printableMm * DOTS_PER_MM);
+  const offset = Math.round(options.offsetMm * DOTS_PER_MM);
+  const scale = Math.min(1, printable / logo.width);
+  const width = Math.max(1, Math.floor(logo.width * scale));
+  const height = Math.max(1, Math.floor(logo.height * scale));
+  out.leftMargin(Math.max(0, offset)).areaWidth(printable).align("center");
+  out.raster(width, height, (x, y) =>
+    logoDot(
+      logo,
+      Math.min(logo.width - 1, Math.floor(x / scale)),
+      Math.min(logo.height - 1, Math.floor(y / scale)),
+    ),
+  );
+  out.align("left").textArea(offset);
+}
+
+function escPosOne(doc: PrintDoc, options: RenderOptions) {
+  const out = new EscPosBuilder(options.codepage, {
+    columns: options.columns,
+    printableMm: options.printableMm,
+  }).init();
+  out.textArea(options.offsetMm * DOTS_PER_MM).align("left");
+  let bold = false;
+  let size: "normal" | "tall" | "big" = "normal";
+  for (const line of layoutDoc(doc, options.columns)) {
+    if (line.kind === "image") {
+      printLogo(out, line.logo, options);
+      continue;
+    }
+    if (line.bold !== bold) out.bold((bold = line.bold));
+    if (line.size !== size) out.size((size = line.size));
+    out.raw(line.text).newline();
   }
-  return finish(out, options);
+  if (bold) out.bold(false);
+  if (size !== "normal") out.size("normal");
+  return finish(out, { ...options, openDrawer: false });
+}
+
+/** Bytes ESC/POS de um ou mais documentos, cada um com seu avanço e corte. */
+export function renderEscPos(docs: PrintDoc | PrintDoc[], options: RenderOptions) {
+  const parts = (Array.isArray(docs) ? docs : [docs]).map((doc) => escPosOne(doc, options));
+  if (options.openDrawer) {
+    parts.push(new EscPosBuilder(options.codepage, options).init().openDrawer().build());
+  }
+  const out = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 /** Bytes que só abrem a gaveta. */
 export function drawerBytes(options: Pick<PrinterConfig, "codepage" | "columns" | "printableMm">) {
   return new EscPosBuilder(options.codepage, options).init().openDrawer().build();
 }
+
+// ---------------------------------------------------------------------------------------------
+// HTML
 
 function escapeHtml(value: string) {
   return value.replace(
@@ -368,18 +179,23 @@ const FONT_FACTOR: Record<HtmlLayout["fontSize"], number> = {
 const CHAR_RATIO = 0.6;
 const SIDE_PADDING_MM = 1;
 
-/** Tamanho da fonte (mm) para caber `columns` caracteres na área útil, com o ajuste do usuário. */
+/** Colunas do HTML: as do perfil, menos quando o usuário aumenta a fonte. */
+export function htmlColumns(layout: HtmlLayout) {
+  return Math.max(16, Math.floor(layout.columns / FONT_FACTOR[layout.fontSize]));
+}
+
+/** Tamanho da fonte (mm) para caber as colunas do HTML na área útil. */
 export function htmlFontMm(layout: HtmlLayout) {
   const text = layout.printableMm - SIDE_PADDING_MM * 2;
-  return (text / layout.columns / CHAR_RATIO) * FONT_FACTOR[layout.fontSize];
+  return text / htmlColumns(layout) / CHAR_RATIO;
 }
 
 const mm = (value: number) => `${Number(value.toFixed(3))}mm`;
 
 /**
- * CSS da bobina: @page do tamanho do papel, contêiner com a largura da área útil centralizado
- * e com o ajuste fino (translateX). Nada de nowrap nem overflow escondido no texto: o que não
- * cabe quebra de linha. Só o valor das linhas rótulo/valor não quebra.
+ * CSS da bobina: @page do tamanho do papel e contêiner com a largura da área útil. Cada linha
+ * já vem quebrada e alinhada (white-space:pre). Altura dupla = scaleY(2); tamanho duplo = fonte
+ * em dobro (largura e altura).
  */
 function sheetCss(layout: HtmlLayout) {
   const font = htmlFontMm(layout);
@@ -387,56 +203,40 @@ function sheetCss(layout: HtmlLayout) {
 *{box-sizing:border-box}
 html,body{margin:0;padding:0;background:#fff;color:#000}
 body{width:${layout.paperWidth}mm;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.ticket{width:${mm(layout.printableMm)};max-width:100%;margin:0 auto;padding:2mm ${SIDE_PADDING_MM}mm 6mm;transform:translateX(${mm(layout.offsetMm)});font-family:Consolas,"Courier New","Liberation Mono",monospace;font-size:${mm(font)};line-height:1.3;color:#000;overflow-wrap:anywhere}
-.t{padding-left:calc(var(--i,0) * 1ch + 2ch);text-indent:-2ch}
-.center,.right{padding-left:0;text-indent:0}
-.center{text-align:center}.right{text-align:right}
+.ticket{width:${mm(layout.printableMm)};max-width:100%;margin:0 auto;padding:2mm ${SIDE_PADDING_MM}mm 6mm;transform:translateX(${mm(layout.offsetMm)});font-family:Consolas,"Courier New","Liberation Mono",monospace;font-size:${mm(font)};line-height:1.25;color:#000}
+.ticket+.ticket{break-before:page}
+.l{white-space:pre;height:1.25em}
 .b{font-weight:700}
-.d{font-size:${mm(font * 2)};line-height:1.15}
+.tall{height:2.5em}
+.tall>span{display:inline-block;transform:scaleY(2);transform-origin:0 0}
+.big{font-size:2em}
+.logo{display:block;margin:0 auto 1mm;max-width:48mm;height:auto;filter:grayscale(1) contrast(3);image-rendering:pixelated}
+.t{padding-left:2ch;text-indent:-2ch;overflow-wrap:anywhere}
 .row{display:flex;align-items:flex-end;justify-content:space-between;gap:1ch}
-.row .lbl{flex:1 1 auto;min-width:0;padding-left:2ch;text-indent:-2ch}
-.row .val{flex:0 0 auto;white-space:nowrap}
-.row.stack{display:block}
-.row.stack .lbl,.row.stack .val{display:block}
-.row.stack .val{text-align:right}
-.rule{border-top:0.3mm dashed #000;margin:1.2mm 0}
-.raw{word-break:break-all}
-.blank{height:1em}`;
+.row .lbl{flex:1 1 auto;min-width:0}
+.row .val{flex:0 0 auto;white-space:nowrap}`;
 }
 
-/** Colunas que cabem por linha no HTML, já com o ajuste de tamanho da fonte. */
-function htmlColumns(layout: HtmlLayout, double?: boolean) {
-  const columns = Math.floor(layout.columns / FONT_FACTOR[layout.fontSize]);
-  return double ? Math.floor(columns / 2) : columns;
-}
-
-function htmlLine(line: DocLine, layout: HtmlLayout) {
+function htmlLine(line: PhysicalLine) {
+  if (line.kind === "image") {
+    return `<img class="logo" alt="" src="${escapeHtml(line.logo.src)}">`;
+  }
   const classes = [
-    ...("bold" in line && line.bold ? ["b"] : []),
-    ...("double" in line && line.double ? ["d"] : []),
+    "l",
+    ...(line.bold ? ["b"] : []),
+    ...(line.size !== "normal" ? [line.size] : []),
   ];
-  if (line.kind === "text") {
-    const indent = (line.text.match(/^ */)?.[0] ?? "").length;
-    const align = line.align && line.align !== "left" ? [line.align] : [];
-    const style = indent ? ` style="--i:${indent}"` : "";
-    return `<div class="${["t", ...align, ...classes].join(" ")}"${style}>${escapeHtml(line.text.trim()) || "&nbsp;"}</div>`;
-  }
-  if (line.kind === "pair") {
-    // Mesma regra do ESC/POS: se nem a maior palavra do rótulo cabe ao lado do valor, o valor
-    // desce para a linha de baixo, alinhado à direita.
-    const room = htmlColumns(layout, line.double) - line.right.length - 1;
-    const longest = Math.max(0, ...line.left.split(/\s+/).map((word) => word.length));
-    const stack = line.right && (room < 4 || longest + 2 > room) ? ["stack"] : [];
-    return `<div class="${["row", ...stack, ...classes].join(" ")}"><span class="lbl">${escapeHtml(line.left.trim())}</span><span class="val">${escapeHtml(line.right)}</span></div>`;
-  }
-  if (line.kind === "raw") return `<div class="raw">${escapeHtml(line.text)}</div>`;
-  if (line.kind === "rule") return `<div class="rule"></div>`;
-  return `<div class="blank"></div>`;
+  return `<div class="${classes.join(" ")}"><span>${escapeHtml(line.text.trimEnd())}</span></div>`;
 }
 
-/** HTML de bobina só com o impresso, para imprimir num iframe oculto. */
-export function renderHtml(doc: PrintDoc, layout: HtmlLayout) {
-  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(doc.title)}</title><style>${sheetCss(layout)}</style></head><body><main class="ticket">${doc.lines.map((line) => htmlLine(line, layout)).join("")}</main></body></html>`;
+/** HTML de bobina de um ou mais documentos (cada um em sua página), para um iframe oculto. */
+export function renderHtml(docs: PrintDoc | PrintDoc[], layout: HtmlLayout) {
+  const list = Array.isArray(docs) ? docs : [docs];
+  const columns = htmlColumns(layout);
+  const body = list
+    .map((doc) => `<main class="ticket">${layoutDoc(doc, columns).map(htmlLine).join("")}</main>`)
+    .join("");
+  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(list[0]?.title ?? "Impressão")}</title><style>${sheetCss(layout)}</style></head><body>${body}</body></html>`;
 }
 
 // ---------------------------------------------------------------------------------------------

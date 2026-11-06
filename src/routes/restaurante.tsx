@@ -5,6 +5,7 @@ import { actions, refreshData, useStore, type StaffMember } from "@/lib/store";
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { useConfirm } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
+import { DEFAULT_FOOTER, LOGO_DETAIL_WARNING, processLogoFile } from "@/lib/printing";
 
 export const Route = createFileRoute("/restaurante")({
   head: () => ({
@@ -27,6 +28,8 @@ function Restaurante() {
   const [deliveryFee, setDeliveryFee] = useState("0,00");
   const [ok, setOk] = useState(false);
   const [saveError, setSaveError] = useState("");
+  const [printLogoWarning, setPrintLogoWarning] = useState("");
+  const [printLogoBusy, setPrintLogoBusy] = useState(false);
   const [tab, setTab] = useState<"dados" | "equipe">("dados");
   const [staffDraft, setStaffDraft] = useState<Partial<StaffMember> | null>(null);
   const [staffError, setStaffError] = useState("");
@@ -59,6 +62,26 @@ function Restaurante() {
     const rd = new FileReader();
     rd.onload = () => setF((x) => ({ ...x, logo: String(rd.result) }));
     rd.readAsDataURL(file);
+  };
+
+  /** Processa uma vez (cinza, contraste, 384 x 200, 1 bit) e guarda o PNG ao salvar. */
+  const onPrintLogo = async (file?: File) => {
+    if (!file) return;
+    if (!["image/png", "image/jpeg"].includes(file.type)) {
+      setSaveError("Escolha uma imagem PNG ou JPG para a logo de impressão.");
+      return;
+    }
+    setSaveError("");
+    setPrintLogoBusy(true);
+    try {
+      const processed = await processLogoFile(file);
+      setF((x) => ({ ...x, printLogo: processed.dataUrl, printLogoEnabled: true }));
+      setPrintLogoWarning(processed.detailed ? LOGO_DETAIL_WARNING : "");
+    } catch (cause) {
+      setSaveError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setPrintLogoBusy(false);
+    }
   };
 
   const saveStaff = async (event: React.FormEvent) => {
@@ -181,9 +204,13 @@ function Restaurante() {
                 onChange={(e) => setF({ ...f, phone: e.target.value })}
               />
             </Field>
-            <Field label="Endereço">
-              <input
-                className="field"
+            <Field
+              label="Endereço"
+              hint="Sai na conta em até duas linhas: rua, número e bairro na primeira; cidade, UF e CEP na segunda."
+            >
+              <textarea
+                className="field min-h-[4.5rem]"
+                rows={2}
                 value={f.address}
                 onChange={(e) => setF({ ...f, address: e.target.value })}
               />
@@ -266,6 +293,85 @@ function Restaurante() {
                 />
               </div>
             </Field>
+            {r.printSettingsAvailable ? (
+              <div className="space-y-4 border-t pt-4">
+                <Field
+                  label="Logo para impressão"
+                  hint="PNG ou JPG. Vira preto e branco, até 48 mm de largura. Sai na conta e na comanda de delivery (não na comanda de cozinha)."
+                >
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="grid h-20 w-40 shrink-0 place-items-center overflow-hidden rounded-md border bg-white p-1 text-xs text-muted-foreground">
+                      {f.printLogo ? (
+                        <img
+                          src={f.printLogo}
+                          alt="Prévia da logo impressa"
+                          className="max-h-full max-w-full object-contain [image-rendering:pixelated]"
+                        />
+                      ) : (
+                        "Sem logo"
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg"
+                        aria-label="Logo para impressão"
+                        disabled={printLogoBusy}
+                        className="text-sm text-muted-foreground file:mr-3 file:rounded-md file:border file:border-input file:bg-card file:px-3 file:py-1.5 file:text-sm file:text-ink"
+                        onChange={(e) => void onPrintLogo(e.target.files?.[0])}
+                      />
+                      {f.printLogo && (
+                        <button
+                          type="button"
+                          className="block text-sm text-destructive hover:underline"
+                          onClick={() => {
+                            setF({ ...f, printLogo: "", printLogoEnabled: false });
+                            setPrintLogoWarning("");
+                          }}
+                        >
+                          Remover logo de impressão
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  {printLogoBusy && (
+                    <p className="mt-2 text-sm text-muted-foreground">Processando a logo…</p>
+                  )}
+                  {printLogoWarning && (
+                    <p role="status" className="mt-2 text-sm text-amber-700">
+                      {printLogoWarning}
+                    </p>
+                  )}
+                </Field>
+                <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-ink">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 accent-primary"
+                    disabled={!f.printLogo}
+                    checked={f.printLogoEnabled && Boolean(f.printLogo)}
+                    onChange={(e) => setF({ ...f, printLogoEnabled: e.target.checked })}
+                  />
+                  Imprimir logo nas comandas
+                </label>
+                <Field
+                  label="Mensagem de rodapé da conta"
+                  hint="Cada linha sai centralizada no fim da conta."
+                >
+                  <textarea
+                    className="field min-h-[4.5rem]"
+                    rows={2}
+                    placeholder={DEFAULT_FOOTER}
+                    value={f.receiptFooter || DEFAULT_FOOTER}
+                    onChange={(e) => setF({ ...f, receiptFooter: e.target.value })}
+                  />
+                </Field>
+              </div>
+            ) : (
+              <p className="border-t pt-4 text-sm text-muted-foreground">
+                Logo para impressão e rodapé da conta ficam disponíveis depois que o banco de dados
+                for atualizado (migration 202611060001_logo_impressao).
+              </p>
+            )}
             <div className="flex items-center justify-end gap-3 border-t pt-4">
               {saveError && (
                 <span role="alert" className="text-sm text-destructive">

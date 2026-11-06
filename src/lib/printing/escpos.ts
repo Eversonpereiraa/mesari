@@ -11,7 +11,7 @@ export const CODEPAGES: Codepage[] = ["CP850", "CP860", "CP437", "WPC1252"];
 
 /** Colunas padrão (fonte A, 12 pontos) em cada largura de papel. */
 export function columnsFor(width: PaperWidth) {
-  return width === 58 ? 32 : 48;
+  return width === 58 ? 32 : 42;
 }
 
 /** Número da tabela no comando ESC t n (padrão Epson, o mesmo da Elgin/Bematech i9). */
@@ -187,7 +187,7 @@ export class EscPosBuilder {
 
   constructor(
     readonly codepage: Codepage = "CP850",
-    layout: EscPosLayout = { columns: 48, printableMm: 72 },
+    layout: EscPosLayout = { columns: 42, printableMm: 72 },
   ) {
     this.columns = Math.max(16, Math.round(layout.columns));
     this.printableMm = layout.printableMm;
@@ -204,6 +204,38 @@ export class EscPosBuilder {
     this.bytes.push(GS, 0x57, dots & 0xff, (dots >> 8) & 0xff);
     const font = fontFor({ columns: this.columns, printableMm: this.printableMm });
     this.bytes.push(ESC, 0x4d, font === "A" ? 0 : 1);
+    return this;
+  }
+
+  /** Pontos ocupados por `columns` caracteres na fonte escolhida. */
+  textDots() {
+    const font = fontFor({ columns: this.columns, printableMm: this.printableMm });
+    return this.columns * (font === "A" ? FONT_A_DOTS : FONT_B_DOTS);
+  }
+
+  /**
+   * Área de impressão do tamanho exato das colunas, centralizada na área útil (mais o ajuste
+   * fino em pontos). Assim a última coluna é a borda direita do texto.
+   */
+  textArea(offsetDots = 0) {
+    const printable = Math.round(this.printableMm * DOTS_PER_MM);
+    const text = Math.min(printable, this.textDots());
+    const margin = Math.max(0, Math.floor((printable - text) / 2) + Math.round(offsetDots));
+    this.leftMargin(margin);
+    this.bytes.push(GS, 0x57, text & 0xff, (text >> 8) & 0xff);
+    return this;
+  }
+
+  /** GS W: largura da área de impressão em pontos. */
+  areaWidth(dots: number) {
+    const value = Math.max(1, Math.min(0xffff, Math.round(dots)));
+    this.bytes.push(GS, 0x57, value & 0xff, value >> 8);
+    return this;
+  }
+
+  /** GS ! n: normal, altura dupla (0x01) ou altura e largura duplas (0x11). */
+  size(value: "normal" | "tall" | "big") {
+    this.bytes.push(GS, 0x21, value === "big" ? 0x11 : value === "tall" ? 0x01 : 0x00);
     return this;
   }
 

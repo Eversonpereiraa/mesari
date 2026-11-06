@@ -41,7 +41,7 @@ export const Route = createFileRoute("/delivery")({
 });
 
 type Channel = "whatsapp" | "telefone" | "papel";
-type OrderStatus = "novo" | "em_preparo" | "pronto" | "saiu" | "entregue" | "cancelado";
+type OrderStatus = "novo" | "preparo" | "pronto" | "saiu" | "entregue" | "cancelado";
 type OrderType = "entrega" | "retirada";
 type ExtraItem = { id: string; name: string; price: number; quantity: number; note: string };
 type DeliveryOrder = {
@@ -69,13 +69,13 @@ const channelLabel: Record<Channel, string> = {
 };
 const statusLabel: Record<OrderStatus, string> = {
   novo: "Novo",
-  em_preparo: "Em preparo",
+  preparo: "Em preparo",
   pronto: "Pronto",
   saiu: "Saiu",
   entregue: "Entregue",
   cancelado: "Cancelado",
 };
-const stageOrder: OrderStatus[] = ["novo", "em_preparo", "pronto", "saiu"];
+const stageOrder: OrderStatus[] = ["novo", "preparo", "pronto", "saiu"];
 const paymentOptions: { value: Exclude<PaymentMethod, "nao_informado">; label: string }[] = [
   { value: "dinheiro", label: "Dinheiro" },
   { value: "pix", label: "Pix" },
@@ -113,7 +113,7 @@ function mapOrder(value: unknown): DeliveryOrder {
   }
   if (
     status !== "novo" &&
-    status !== "em_preparo" &&
+    status !== "preparo" &&
     status !== "pronto" &&
     status !== "saiu" &&
     status !== "entregue" &&
@@ -442,7 +442,7 @@ function Delivery() {
       if (error) throw error;
       if (status === "cancelado") toast.success(`Pedido #${order.number} cancelado.`);
       // O status já foi gravado; a impressão vem depois e nunca o desfaz.
-      if (status === "em_preparo") void printOnPreparing(order);
+      if (status === "preparo") void printOnPreparing(order);
       await loadOrders().catch((cause: unknown) => setListError(errorMessage(cause)));
     } catch (cause) {
       setListError(errorMessage(cause));

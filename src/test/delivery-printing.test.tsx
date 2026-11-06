@@ -142,7 +142,7 @@ describe("Delivery: impressão ao avançar para Em preparo", () => {
     render(<Delivery />);
     fireEvent.click(await screen.findByRole("button", { name: /Avançar: Em preparo/ }));
     await waitFor(() => expect(mocks.events).toContain("agente:/print"));
-    expect(mocks.events.indexOf("rpc:atualizar_status_pedido_externo:em_preparo")).toBeLessThan(
+    expect(mocks.events.indexOf("rpc:atualizar_status_pedido_externo:preparo")).toBeLessThan(
       mocks.events.indexOf("agente:/print"),
     );
     fireEvent.click(await screen.findByRole("button", { name: /Avançar: Pronto/ }));
@@ -175,7 +175,7 @@ describe("Delivery: impressão ao avançar para Em preparo", () => {
     // O status foi gravado e nada tentou desfazê-lo.
     expect(
       mocks.rpc.mock.calls.map(([, args]) => (args as Record<string, unknown>)["p_status"]),
-    ).toEqual(["em_preparo"]);
+    ).toEqual(["preparo"]);
     expect(await screen.findByRole("button", { name: /Avançar: Pronto/ })).toBeInTheDocument();
   });
 
@@ -190,7 +190,7 @@ describe("Delivery: impressão ao avançar para Em preparo", () => {
     render(<Delivery />);
     fireEvent.click(await screen.findByRole("button", { name: /Avançar: Em preparo/ }));
     await waitFor(() =>
-      expect(mocks.events).toContain("rpc:atualizar_status_pedido_externo:em_preparo"),
+      expect(mocks.events).toContain("rpc:atualizar_status_pedido_externo:preparo"),
     );
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(mocks.events).not.toContain("agente:/print");

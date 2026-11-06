@@ -3,7 +3,7 @@ import { defaultConfig, resetConfigCache, saveConfig } from "@/lib/printing/conf
 import { createTransport, imprimirComanda, resetPrinterForTests } from "@/lib/printing/printer";
 import { ElectronTransport } from "@/lib/printing/transports/electron";
 import { NetworkAgentTransport } from "@/lib/printing/transports/agent";
-import { sampleTicket } from "@/lib/printing/documents";
+import { sampleDeliveryTicket, sampleKitchenTicket } from "@/lib/printing/comandas";
 import { PrinterError } from "@/lib/printing/transports/base";
 
 function installDesktop(printer: Partial<MesariDesktopPrinterApi>) {
@@ -63,7 +63,7 @@ describe("ElectronTransport", () => {
   it("envia os bytes ESC/POS pela ponte nativa (teste de conexão + impressão)", async () => {
     const printer = installDesktop({});
     saveConfig({ ...defaultConfig(), connection: "serial", comPort: "COM5", comBaudRate: 9600 });
-    await imprimirComanda(sampleTicket("mesa"));
+    await imprimirComanda(sampleKitchenTicket());
     expect(printer.serial).toHaveBeenNthCalledWith(1, { com: "COM5", baud: 9600 }, null);
     const [target, data] = vi.mocked(printer.serial).mock.calls[1]!;
     expect(target).toEqual({ com: "COM5", baud: 9600 });
@@ -79,7 +79,7 @@ describe("ElectronTransport", () => {
       })),
     });
     saveConfig({ ...defaultConfig(), connection: "rede", ip: "10.0.0.9" });
-    const error = await imprimirComanda(sampleTicket()).catch((cause: unknown) => cause);
+    const error = await imprimirComanda(sampleDeliveryTicket()).catch((cause: unknown) => cause);
     expect(error).toBeInstanceOf(PrinterError);
     expect((error as Error).message).toBe(
       "Não foi possível conectar à impressora em 10.0.0.9:9100.",

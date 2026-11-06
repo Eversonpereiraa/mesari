@@ -21,7 +21,7 @@ import {
   getPrinterStatus,
   getTransport,
   imprimirComanda,
-  imprimirComandaExemplo,
+  imprimirExemplo,
   imprimirTeste,
   initializePrinter,
   isDesktopApp,
@@ -646,18 +646,27 @@ function Impressao() {
               >
                 Imprimir página de teste
               </Btn>
-              <Btn
-                variant="outline"
-                disabled={busy || selectedUnavailable}
-                onClick={() =>
-                  void run(async () => {
-                    await imprimirComandaExemplo("entrega");
-                    return "Comanda de exemplo enviada.";
-                  })
-                }
-              >
-                Imprimir comanda de exemplo
-              </Btn>
+              {(
+                [
+                  ["cozinha", "Imprimir comanda de cozinha de exemplo", "Comanda de cozinha"],
+                  ["delivery", "Imprimir delivery de exemplo", "Comanda de delivery"],
+                  ["conta", "Imprimir conta de exemplo", "Conta"],
+                ] as const
+              ).map(([kind, label, done]) => (
+                <Btn
+                  key={kind}
+                  variant="outline"
+                  disabled={busy || selectedUnavailable}
+                  onClick={() =>
+                    void run(async () => {
+                      await imprimirExemplo(kind);
+                      return `${done} de exemplo enviada.`;
+                    })
+                  }
+                >
+                  {label}
+                </Btn>
+              ))}
               {config.connection !== "navegador" && (
                 <Btn
                   variant="ghost"
@@ -744,12 +753,6 @@ function Impressao() {
                 onChange={(value) => update({ printKitchenEnabled: value })}
               >
                 Imprimir neste aparelho as comandas das mesas e do delivery
-              </Toggle>
-              <Toggle
-                checked={config.showKitchenPrices}
-                onChange={(value) => update({ showKitchenPrices: value })}
-              >
-                Mostrar preços nas comandas das mesas
               </Toggle>
             </div>
           </Section>

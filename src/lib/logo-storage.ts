@@ -65,6 +65,21 @@ export async function uploadLogo(source: Blob) {
   return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
 }
 
+/**
+ * Envia a logo de impressão (PNG preto e branco já processado) sem recomprimir: cada ponto
+ * importa para a impressora térmica. Devolve a URL pública.
+ */
+export async function uploadPrintLogo(png: Blob) {
+  const path = `logo-impressao-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`;
+  const { error } = await supabase.storage.from(BUCKET).upload(path, png, {
+    cacheControl: CACHE_SECONDS,
+    contentType: "image/png",
+    upsert: false,
+  });
+  if (error) throw error;
+  return supabase.storage.from(BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
 /** Apaga do bucket o arquivo de um logo antigo. URLs de fora do bucket (ou base64) são ignoradas. */
 export async function removeLogo(url: string) {
   const path = logoPath(url);

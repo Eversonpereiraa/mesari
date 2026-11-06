@@ -1,12 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EscPosBuilder, encodeText, pairLines, wrapText } from "@/lib/printing/escpos";
-import {
-  comandaDoc,
-  renderEscPos,
-  renderHtml,
-  sampleTicket,
-  testPageDoc,
-} from "@/lib/printing/documents";
+import { renderEscPos, renderHtml, testPageDoc } from "@/lib/printing/documents";
+import { comandaCozinha, comandaDelivery, sampleDeliveryTicket } from "@/lib/printing/comandas";
+import { renderText } from "@/lib/printing/layout";
 import { defaultConfig, loadConfig, resetConfigCache, saveConfig } from "@/lib/printing/config";
 import {
   AGENT_NOT_FOUND,
@@ -102,70 +98,44 @@ describe("escpos", () => {
 });
 
 describe("comanda", () => {
-  it("traz mesa em tamanho duplo, garçom, origem, observação e preços", () => {
-    const doc = comandaDoc(mesaTicket(), options);
-    expect(doc.lines[0]).toMatchObject({ text: "PEDIDO #42", double: true });
-    expect(doc.lines[1]).toMatchObject({ text: "MESA 05", double: true });
-    const texts = doc.lines.map((line) =>
-      "text" in line ? line.text : "left" in line ? `${line.left}|${line.right}` : "",
-    );
-    expect(texts).toContain("Origem: Mesa");
-    expect(texts).toContain("Garçom: Ana");
-    expect(texts).toContain("   obs: sem cebola");
-    expect(texts).toContain("2x X-Burguer|R$ 50,00");
-    expect(texts).toContain("TOTAL|R$ 56,00");
+  it("cozinha sem preços, com mesa, garçom e observação", () => {
+    const text = renderText(comandaCozinha(mesaTicket()), 42);
+    expect(text).toContain("MESA 05");
+    expect(text).toContain("Garçom: Ana");
+    expect(text).toContain("   obs: sem cebola");
+    expect(text).toContain("2x X-Burguer");
+    expect(text).not.toContain("R$");
+    expect(text).toContain("Itens: 3");
   });
 
-  it("traz cliente, endereço, pagamento, troco, taxa e desconto no delivery", () => {
-    const doc = comandaDoc(sampleTicket("entrega"), options);
-    const all = doc.lines
-      .map((line) =>
-        "text" in line ? line.text : "left" in line ? `${line.left}|${line.right}` : "",
-      )
-      .join("\n");
-    expect(all).toContain("ENTREGA");
-    expect(all).toContain("Origem: WhatsApp");
-    expect(all).toContain("Cliente: João da Silva");
-    expect(all).toContain("Telefone: (11) 98765-4321");
-    expect(all).toContain("Endereço: Rua das Acácias");
-    expect(all).toContain("Pagamento: Dinheiro");
-    expect(all).toContain("Troco para|R$ 150,00");
-    expect(all).toContain("Taxa de entrega|R$ 7,00");
-    expect(all).toContain("Desconto|-R$ 5,00");
-  });
-
-  it("gera ESC/POS com corte e linhas dentro da largura", () => {
-    const bytes = renderEscPos(comandaDoc(sampleTicket(), options), { ...options, autoCut: true });
-    const tail = Array.from(bytes.slice(-7));
-    // Avança "linhas antes do corte" (4) e corta.
-    expect(tail).toEqual([0x1b, 0x64, 4, 0x1d, 0x56, 66, 0]);
-    // ESC @, ESC t 2, GS L 0 0, GS W 576 (72 mm x 8), ESC M 0 (fonte A).
-    expect(Array.from(bytes.slice(0, 16))).toEqual([
-      0x1b, 0x40, 0x1b, 0x74, 2, 0x1d, 0x4c, 0, 0, 0x1d, 0x57, 0x40, 0x02, 0x1b, 0x4d, 0,
-    ]);
-    const noCut = renderEscPos(comandaDoc(sampleTicket(), options), { ...options, autoCut: false });
+  it("gera ESC/POS com corte e HTML de bobina", () => {
+    const bytes = renderEscPos(comandaCozinha(mesaTicket()), { ...options, autoCut: true });
+    expect(Array.from(bytes.slice(-7))).toEqual([0x1b, 0x64, 4, 0x1d, 0x56, 66, 0]);
+    const noCut = renderEscPos(comandaCozinha(mesaTicket()), { ...options, autoCut: false });
     expect(Array.from(noCut).join(",")).not.toContain("29,86,66");
-  });
-
-  it("gera HTML de bobina com @page e fonte monoespaçada", () => {
-    const html = renderHtml(comandaDoc(mesaTicket(), options), {
-      ...options,
-      paperWidth: 58,
-      printableMm: 48,
-      columns: 32,
-      offsetMm: -1.5,
-    });
+    const html = renderHtml(
+      comandaDelivery(sampleDeliveryTicket(), {
+        name: "Cantina",
+        address: "",
+        phone: "",
+        cnpj: "",
+        instagram: "",
+      }),
+      {
+        ...options,
+        paperWidth: 58,
+        printableMm: 48,
+        columns: 32,
+        offsetMm: -1.5,
+      },
+    );
     expect(html).toContain("@page{size:58mm auto;margin:0}");
     expect(html).toContain(".ticket{width:48mm;");
     expect(html).toContain("transform:translateX(-1.5mm)");
-    // Só o valor das linhas rótulo/valor não quebra; nada de overflow escondido nem cinza.
-    expect(html.match(/nowrap/g)).toHaveLength(1);
-    expect(html).toContain(".row .val{flex:0 0 auto;white-space:nowrap}");
-    expect(html).not.toContain("overflow:hidden");
-    const colors = html.match(/#[0-9a-f]{3,6}\b/gi) ?? [];
-    expect(colors.every((c) => /^#(000|fff)$/i.test(c))).toBe(true);
     expect(html).toContain("monospace");
-    expect(html).toContain("MESA 05");
+    const css = /<style>([\s\S]*)<\/style>/.exec(html)?.[1] ?? "";
+    const colors = css.match(/#[0-9a-f]{3,6}\b/gi) ?? [];
+    expect(colors.every((c) => /^#(000|fff)$/i.test(c))).toBe(true);
   });
 
   it("página de teste tem codepage, palavras acentuadas e régua", () => {

@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
-import { dataUrlToBlob, isDataUrl, removeLogo, uploadLogo } from "@/lib/logo-storage";
+import {
+  dataUrlToBlob,
+  isDataUrl,
+  removeLogo,
+  uploadLogo,
+  uploadPrintLogo,
+} from "@/lib/logo-storage";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
@@ -131,6 +137,14 @@ export type State = {
     cnpj: string;
     instagram: string;
     logo: string;
+    /** Logo preto e branco para impressão (PNG processado no upload). */
+    printLogo: string;
+    /** Imprimir a logo na conta e na comanda de delivery. */
+    printLogoEnabled: boolean;
+    /** Rodapé da conta (uma linha por quebra de linha). */
+    receiptFooter: string;
+    /** false enquanto a migration da logo de impressão não foi aplicada. */
+    printSettingsAvailable: boolean;
     serviceChargeEnabled: boolean;
     serviceChargePercent: number;
     deliveryFee: number;
@@ -164,6 +178,10 @@ const emptyState = (): State => ({
     cnpj: "",
     instagram: "",
     logo: "",
+    printLogo: "",
+    printLogoEnabled: false,
+    receiptFooter: "",
+    printSettingsAvailable: false,
     serviceChargeEnabled: false,
     serviceChargePercent: 0,
     deliveryFee: 0,
@@ -572,13 +590,17 @@ async function loadBase(userId: string) {
 
 /** O logo fica separado: só muda quando o caixa salva o restaurante (base64 antigo pode ser grande). */
 async function loadLogo() {
-  const { data, error } = await supabase
-    .from("restaurante")
-    .select("logo_url")
-    .eq("id", 1)
-    .maybeSingle();
+  // "*" mantém o app funcionando antes da migration da logo de impressão.
+  const { data, error } = await supabase.from("restaurante").select("*").eq("id", 1).maybeSingle();
   if (error) throw error;
-  return data ? stringValue(asRow(data).logo_url) : "";
+  const row = data ? asRow(data) : {};
+  return {
+    logo: stringValue(row["logo_url"]),
+    printLogo: stringValue(row["logo_impressao_url"]),
+    printLogoEnabled: row["imprimir_logo"] === true,
+    receiptFooter: stringValue(row["rodape_conta"]),
+    printSettingsAvailable: "logo_impressao_url" in row,
+  };
 }
 
 async function loadTables() {
@@ -665,7 +687,7 @@ async function loadRemoteData(parts: ReadonlySet<RefreshPart>) {
   const restaurant = {
     ...state.restaurant,
     ...(base?.restaurant ?? {}),
-    ...(logo === null ? {} : { logo }),
+    ...(logo === null ? {} : logo),
   };
   publish({
     ...(base
@@ -882,6 +904,30 @@ async function saveLogo(logo: string, fields: Record<string, unknown> = {}) {
     );
   }
   return url;
+}
+
+/** Logo de impressão, ligar/desligar e rodapé (só depois da migration). */
+async function savePrintSettings(restaurant: State["restaurant"]) {
+  const previous = state.restaurant.printLogo;
+  const next = restaurant.printLogo;
+  const url = isDataUrl(next) ? await uploadPrintLogo(await dataUrlToBlob(next)) : next;
+  const { error } = await supabase
+    .from("restaurante")
+    .update({
+      logo_impressao_url: url,
+      imprimir_logo: restaurant.printLogoEnabled && Boolean(url),
+      rodape_conta: restaurant.receiptFooter,
+    })
+    .eq("id", 1);
+  if (error) {
+    if (url !== next) await removeLogo(url).catch(() => undefined);
+    throw error;
+  }
+  if (previous && previous !== url) {
+    await removeLogo(previous).catch((cause: unknown) =>
+      console.warn("Logo de impressão antiga não foi apagada do Storage:", cause),
+    );
+  }
 }
 
 /** Grava e recarrega só as partes que a gravação pode ter mudado. */
@@ -1268,6 +1314,7 @@ export const actions = {
         taxa_servico_ativa: restaurant.serviceChargeEnabled,
         taxa_servico_percentual: restaurant.serviceChargePercent,
       });
+      if (state.restaurant.printSettingsAvailable) await savePrintSettings(restaurant);
     });
   },
   /** Logo antigo em base64 no banco: comprime, envia ao Storage e grava só a URL. */

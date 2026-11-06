@@ -3,16 +3,22 @@ import { defaultConfig, type PrinterConfig } from "@/lib/printing/config";
 import {
   calibrationEscPos,
   calibrationHtml,
-  comandaDoc,
-  receiptDoc,
   renderEscPos,
   renderHtml,
-  sampleTicket,
   testPageDoc,
   type PrintDoc,
 } from "@/lib/printing/documents";
 import { codepageCharacters, printableText, type Codepage } from "@/lib/printing/escpos";
 import type { PrintReceipt } from "@/lib/printing/types";
+import {
+  comandaCozinha,
+  comandaDelivery,
+  contaMesa,
+  sampleDeliveryTicket,
+  sampleKitchenTicket,
+} from "@/lib/printing/comandas";
+
+const RESTAURANT = { name: "Cantina", address: "Rua A", phone: "", cnpj: "", instagram: "" };
 
 const PROFILES = [
   { paperWidth: 58, printableMm: 48, columns: 32 },
@@ -76,13 +82,13 @@ function docWords(doc: PrintDoc, config: PrinterConfig) {
     words.push(
       ...printableText(value, config.codepage)
         .split(/\s+/)
-        .filter((word) => word && !/^-+$/.test(word)),
+        .filter((word) => word && !/^(-+|=+)$/.test(word)),
     );
   for (const line of doc.lines) {
     if (line.kind === "text" || line.kind === "raw") add(line.text);
-    else if (line.kind === "pair") {
-      add(line.left);
-      add(line.right);
+    else if (line.kind === "entry") {
+      add(`${line.prefix ?? ""}${line.text}`);
+      add(line.value ?? "");
     }
   }
   return words;
@@ -116,16 +122,9 @@ function receipt(): PrintReceipt {
 describe.each(PROFILES)("perfil $paperWidth mm / $printableMm mm / $columns colunas", (profile) => {
   const config = configFor(profile);
   const docs: [string, PrintDoc][] = [
-    ["comanda de delivery", comandaDoc(sampleTicket("entrega"), config)],
-    ["comanda de mesa", comandaDoc(sampleTicket("mesa"), config)],
-    [
-      "nota",
-      receiptDoc(
-        receipt(),
-        { name: "Cantina", address: "Rua A", phone: "", cnpj: "", instagram: "" },
-        config,
-      ),
-    ],
+    ["comanda de delivery", comandaDelivery(sampleDeliveryTicket(), RESTAURANT)],
+    ["comanda de cozinha", comandaCozinha(sampleKitchenTicket())],
+    ["nota", contaMesa(receipt(), RESTAURANT)],
   ];
 
   it.each(docs)("ESC/POS da %s: nada cortado, valores à direita, tracejado exato", (_, doc) => {
@@ -138,26 +137,27 @@ describe.each(PROFILES)("perfil $paperWidth mm / $printableMm mm / $columns colu
       const width = line.double ? Math.floor(profile.columns / 2) : profile.columns;
       expect(line.text.length, line.text).toBeLessThanOrEqual(width);
     }
-    const rules = lines.filter((line) => /^-+$/.test(line.text));
+    const rules = lines.filter((line) => /^(-+|=+)$/.test(line.text));
     expect(rules.length).toBeGreaterThan(0);
     expect(rules.every((line) => line.text.length === profile.columns)).toBe(true);
     // Nenhuma palavra some e a ordem é mantida.
     const printed = lines
       .flatMap((line) => line.text.split(/\s+/))
-      .filter((word) => word && !/^-+$/.test(word));
+      .filter((word) => word && !/^(-+|=+)$/.test(word));
     expect(printed).toEqual(docWords(doc, config));
     // Linhas rótulo/valor: o valor termina exatamente na última coluna.
     for (const docLine of doc.lines) {
-      if (docLine.kind !== "pair" || !docLine.right) continue;
-      const value = printableText(docLine.right, config.codepage);
-      const width = docLine.double ? Math.floor(profile.columns / 2) : profile.columns;
-      const hit = lines.find((line) => line.text.endsWith(value) && line.text.length === width);
-      expect(hit, `${docLine.left} | ${docLine.right}`).toBeTruthy();
+      if (docLine.kind !== "entry" || !docLine.value) continue;
+      const value = printableText(docLine.value, config.codepage);
+      const hit = lines.find(
+        (line) => line.text.endsWith(value) && line.text.length === profile.columns,
+      );
+      expect(hit, `${docLine.text} | ${docLine.value}`).toBeTruthy();
     }
   });
 
   it("HTML usa a área útil, o papel e a fonte que cabem nas colunas", () => {
-    const html = renderHtml(comandaDoc(sampleTicket("entrega"), config), config);
+    const html = renderHtml(comandaDelivery(sampleDeliveryTicket(), RESTAURANT), config);
     expect(html).toContain(`@page{size:${profile.paperWidth}mm auto;margin:0}`);
     expect(html).toContain(`.ticket{width:${profile.printableMm}mm;`);
     const font = Number(/\.ticket\{[^}]*font-size:([\d.]+)mm/.exec(html)?.[1]);

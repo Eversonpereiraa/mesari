@@ -21,6 +21,8 @@ export type PrintReceipt = {
     troco?: number;
   }[];
   partial?: boolean;
+  /** Percentual da taxa de serviço (para "Taxa de serviço (10%)"). */
+  serviceChargePercent?: number;
   /** Nota de consumo (pré-conta): sem número de venda nem pagamentos. */
   preBill?: boolean;
   reprint?: boolean;
@@ -39,6 +41,13 @@ export type PrintRestaurant = {
   cnpj: string;
   instagram: string;
   logo?: string;
+  /** PNG preto e branco já processado para a impressora (Storage). */
+  printLogo?: string;
+  /** Imprimir a logo na conta e na comanda de delivery. */
+  printLogoEnabled?: boolean;
+  /** Rodapé da conta; cada quebra de linha vira uma linha centralizada. */
+  receiptFooter?: string;
+  serviceChargePercent?: number;
 };
 
 /** Pedido a imprimir como comanda (mesa ou delivery). */
@@ -58,6 +67,9 @@ export type KitchenTicket = {
     customerName: string;
     phone: string;
     address: string;
+    /** Endereço já separado em linhas (senão é separado a partir de `address`). */
+    addressLines?: string[];
+    reference?: string;
     observation: string;
     subtotal: number;
     deliveryFee: number;
