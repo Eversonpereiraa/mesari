@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Mesari</string>
+    <string name="title_activity_main">Mesari</string>
+    <string name="package_name">app.mesari.pdv</string>
+    <string name="custom_url_scheme">app.mesari.pdv</string>
+</resources>

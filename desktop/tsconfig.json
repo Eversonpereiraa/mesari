@@ -4,7 +4,7 @@
     "module": "CommonJS",
     "moduleResolution": "Node",
     "rootDir": ".",
-    "outDir": "dist",
+    "outDir": "out",
     "strict": true,
     "noImplicitReturns": true,
     "noFallthroughCasesInSwitch": true,
@@ -14,6 +14,6 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["main.ts", "preload.ts"],
-  "exclude": ["dist", "node_modules", "release"]
+  "include": ["main.ts", "preload.ts", "printing.ts", "updater.ts"],
+  "exclude": ["out", "app", "node_modules", "release"]
 }

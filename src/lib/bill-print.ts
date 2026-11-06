@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from "react";
 import { actions, billTotals, type OrderLine, type State, type Table } from "@/lib/store";
-import { printReceipt, type PrintReceipt } from "@/lib/printing";
+import { imprimirNota, type PrintReceipt } from "@/lib/printing";
 
 /**
  * Nota de consumo (pré-conta). A impressão acontece no aparelho do caixa: a estação de
@@ -17,7 +17,9 @@ function readFailed(): ReadonlySet<string> {
   try {
     const raw = globalThis.localStorage?.getItem(FAILED_KEY);
     const ids: unknown = raw ? JSON.parse(raw) : [];
-    return new Set(Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
+    return new Set(
+      Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [],
+    );
   } catch {
     return new Set();
   }
@@ -88,7 +90,7 @@ export async function printPreBill(
   restaurant: State["restaurant"],
 ) {
   try {
-    const result = await printReceipt(preBillReceipt(table, lines, restaurant), restaurant);
+    const result = await imprimirNota(preBillReceipt(table, lines, restaurant), restaurant);
     clearBillFailed(table.id);
     return result;
   } catch (cause) {

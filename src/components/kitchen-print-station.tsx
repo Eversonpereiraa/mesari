@@ -3,10 +3,12 @@ import { Link } from "@tanstack/react-router";
 import { toast } from "sonner";
 import { supabase } from "@/lib/supabase";
 import {
+  avisarFalhaImpressao,
   getPrinterStatus,
-  getPrintSettings,
+  imprimirComanda,
   initializePrinter,
-  printKitchenTicket,
+  loadConfig,
+  subscribeConfig,
   subscribePrinterStatus,
   type KitchenTicket,
 } from "@/lib/printing";
@@ -139,7 +141,7 @@ async function playNotice() {
 
 export function KitchenPrintStation() {
   const user = useStore((state) => state.user);
-  const settings = getPrintSettings();
+  const settings = useSyncExternalStore(subscribeConfig, loadConfig, loadConfig);
   const printer = useSyncExternalStore(subscribePrinterStatus, getPrinterStatus, getPrinterStatus);
   const [failed, setFailed] = useState<TicketRow[]>([]);
   const [recent, setRecent] = useState<TicketRow[]>([]);
@@ -166,7 +168,7 @@ export function KitchenPrintStation() {
     if (busy.current.has(ticket.id)) return;
     busy.current.add(ticket.id);
     try {
-      await printKitchenTicket(ticket, getPrintSettings(), false);
+      await imprimirComanda(ticket);
       setFailed((current) => {
         const next = current.filter((item) => item.id !== ticket.id);
         writeFailed(next);
@@ -186,7 +188,10 @@ export function KitchenPrintStation() {
         return next;
       });
       setWarning(ticket);
-      toast.error(`Comanda #${ticket.number} não imprimiu: ${errorMessage(cause)}`);
+      avisarFalhaImpressao(cause, {
+        id: `comanda-${ticket.id}`,
+        title: `Comanda #${ticket.number} não imprimiu`,
+      });
     } finally {
       busy.current.delete(ticket.id);
     }
@@ -194,13 +199,16 @@ export function KitchenPrintStation() {
 
   const reserveAndPrint = useCallback(async (ticket: TicketRow) => {
     if (busy.current.has(ticket.id)) return;
+    // Delivery configurado para imprimir ao avançar para "Em preparo": a tela de Delivery imprime.
+    if (ticket.external && loadConfig().autoPrintOnPreparing) return;
     busy.current.add(ticket.id);
     try {
       const { data, error } = await supabase.rpc("marcar_impresso", { p_id: ticket.id });
       if (error) throw error;
       if (data !== true) return;
+      // Reservada no banco: daqui em diante, falha de impressão só vira aviso e pendência local.
       try {
-        await printKitchenTicket(ticket, getPrintSettings(), false);
+        await imprimirComanda(ticket);
         setRecent((current) =>
           [ticket, ...current.filter((item) => item.id !== ticket.id)].slice(0, 30),
         );
@@ -214,7 +222,10 @@ export function KitchenPrintStation() {
           return next;
         });
         setWarning(ticket);
-        toast.error(`Comanda #${ticket.number} não imprimiu: ${errorMessage(cause)}`);
+        avisarFalhaImpressao(cause, {
+          id: `comanda-${ticket.id}`,
+          title: `Comanda #${ticket.number} não imprimiu`,
+        });
       }
     } finally {
       busy.current.delete(ticket.id);
@@ -226,7 +237,7 @@ export function KitchenPrintStation() {
       recovering.current ||
       !active.current ||
       user?.role !== "caixa" ||
-      !getPrintSettings().printKitchenEnabled
+      !loadConfig().printKitchenEnabled
     ) {
       return;
     }
@@ -274,7 +285,7 @@ export function KitchenPrintStation() {
     active.current = true;
     reloadFailed();
     void initializePrinter().catch((cause: unknown) =>
-      toast.error(`Falha ao conectar a impressora: ${errorMessage(cause)}`),
+      console.error("[impressão] falha ao iniciar", cause),
     );
     return () => {
       active.current = false;
@@ -413,9 +424,9 @@ export function KitchenPrintStation() {
   }, [printer.connected, printReserved, recoverPending, reloadFailed]);
 
   if (user?.role !== "caixa") return null;
-  const retryInWindows = async (ticket: TicketRow) => {
+  const retryInBrowser = async (ticket: TicketRow) => {
     try {
-      await printKitchenTicket(ticket, { ...getPrintSettings(), printerMode: "browser" }, true);
+      await imprimirComanda(ticket, { force: "navegador" });
       setFailed((current) => {
         const next = current.filter((item) => item.id !== ticket.id);
         writeFailed(next);
@@ -423,7 +434,7 @@ export function KitchenPrintStation() {
       });
       setWarning(null);
     } catch (cause) {
-      toast.error(`Impressão pelo Windows também falhou: ${errorMessage(cause)}`);
+      avisarFalhaImpressao(cause, { title: "A impressão pelo navegador também falhou" });
     }
   };
 
@@ -438,11 +449,11 @@ export function KitchenPrintStation() {
           className="flex flex-wrap items-center justify-center gap-3 bg-amber-100 px-4 py-2 text-sm text-amber-950"
         >
           Comanda #{warning.number} · {ticketLocation(warning)} não imprimiu.
-          <Btn size="sm" onClick={() => void printReserved(warning)} disabled={!printer.connected}>
-            Tentar de novo
+          <Btn size="sm" onClick={() => void printReserved(warning)}>
+            Reimprimir
           </Btn>
-          <Btn size="sm" variant="outline" onClick={() => void retryInWindows(warning)}>
-            Imprimir pelo Windows
+          <Btn size="sm" variant="outline" onClick={() => void retryInBrowser(warning)}>
+            Imprimir pelo navegador
           </Btn>
         </div>
       )}
@@ -458,7 +469,7 @@ export function KitchenPrintStation() {
                   Comanda #{ticket.number} · {ticketLocation(ticket)}
                 </span>
                 <Btn size="sm" variant="outline" onClick={() => void printReserved(ticket)}>
-                  Tentar de novo
+                  Reimprimir
                 </Btn>
               </li>
             ))}
@@ -469,15 +480,17 @@ export function KitchenPrintStation() {
         {printer.connected ? "Impressora pronta" : "Impressora desconectada"}
       </div>
       <div
-        className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : settings.printerDeviceId || settings.connectionType ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
+        className={`sticky top-16 z-20 flex items-center justify-center gap-2 border-b px-4 py-2 text-sm ${printer.connected ? "bg-green-50 text-green-800" : printer.state === "conectando" ? "bg-amber-50 text-amber-900" : "bg-red-50 text-red-800"}`}
       >
         {printer.connected ? (
-          <span className="font-semibold">Impressora pronta · {printer.name}</span>
-        ) : settings.printerDeviceId || settings.connectionType ? (
-          <span className="font-semibold">Reconectando...</span>
+          <span className="font-semibold">
+            Impressora pronta · {printer.label} · {printer.name}
+          </span>
+        ) : printer.state === "conectando" ? (
+          <span className="font-semibold">Conectando à impressora...</span>
         ) : (
           <Link to="/impressao" className="font-semibold underline">
-            Impressora desconectada
+            Impressora desconectada{printer.error ? ` · ${printer.error}` : ""}
           </Link>
         )}
       </div>

@@ -16,6 +16,7 @@ import { initializeStore } from "@/lib/store";
 import { MESARI_BRAND } from "@/lib/branding";
 import { SystemDialogProvider } from "@/components/system-dialog-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { DesktopUpdateBanner } from "@/components/desktop-update-banner";
 
 function NotFoundComponent() {
   return (
@@ -134,6 +135,7 @@ function RootComponent() {
         {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />
         <Toaster position="top-right" />
+        <DesktopUpdateBanner />
       </SystemDialogProvider>
     </QueryClientProvider>
   );

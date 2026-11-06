@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { toast } from "sonner";
 import { actions, errorMessage, useStore } from "@/lib/store";
 import { printPreBill, reprintBill } from "@/lib/bill-print";
+import { avisarFalhaImpressao } from "@/lib/printing";
 
 const tableLabel = (n: number) => String(n).padStart(2, "0");
 
@@ -30,19 +31,24 @@ export function BillPrintStation() {
       busy.current.add(table.id);
       void (async () => {
         try {
-          if (!(await actions.reserveBillPrint(table.id))) return;
+          try {
+            if (!(await actions.reserveBillPrint(table.id))) return;
+          } catch (cause) {
+            toast.error(`Nota da mesa ${tableLabel(table.number)}: ${errorMessage(cause)}`, {
+              id: `nota-${table.id}`,
+            });
+            return;
+          }
+          // A nota já está reservada no banco; a falha de impressão não desfaz nada.
           await printPreBill(table, lines, restaurant);
         } catch (cause) {
-          toast.error(`Nota da mesa ${tableLabel(table.number)} não impressa: ${errorMessage(cause)}`, {
+          avisarFalhaImpressao(cause, {
             id: `nota-${table.id}`,
-            duration: 10000,
-            action: {
-              label: "Reimprimir nota",
-              onClick: () =>
-                void reprintBill(table, lines, restaurant, true).catch((error: unknown) =>
-                  toast.error(errorMessage(error)),
-                ),
-            },
+            title: `Nota da mesa ${tableLabel(table.number)} não impressa`,
+            onRetry: () =>
+              void reprintBill(table, lines, restaurant, true).catch((error: unknown) =>
+                avisarFalhaImpressao(error),
+              ),
           });
         } finally {
           busy.current.delete(table.id);

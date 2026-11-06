@@ -1,7 +1,7 @@
 import tseslint from "typescript-eslint";
 
 export default tseslint.config(
-  { ignores: ["dist/**", "node_modules/**", "release/**"] },
+  { ignores: ["out/**", "app/**", "node_modules/**", "release/**"] },
   ...tseslint.configs.recommended,
   {
     files: ["**/*.mjs"],

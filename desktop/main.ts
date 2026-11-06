@@ -1,20 +1,38 @@
+/**
+ * Mesari Desktop (Electron). Carrega o build do Vite empacotado (app://mesari/) ou, em
+ * desenvolvimento, o servidor do Vite (MESARI_DEV_URL). O renderer roda isolado
+ * (contextIsolation, sandbox, sem Node) e só fala com o sistema pelas funções do preload.
+ */
 import {
   app,
   BrowserWindow,
-  dialog,
   ipcMain,
   Menu,
   nativeImage,
+  net,
   powerSaveBlocker,
+  protocol,
   session,
   shell,
   Tray,
   type IpcMainInvokeEvent,
-  type WebContents,
 } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import {
+  listSerialPorts,
+  listWindowsPrinters,
+  networkTarget,
+  run,
+  sendNetwork,
+  sendSerial,
+  sendWindows,
+  serialTarget,
+  toBuffer,
+  windowsTarget,
+} from "./printing";
+import { installUpdateNow, startUpdater, updateReadyVersion } from "./updater";
 
 type AppSettings = {
   printerNota: string;
@@ -24,219 +42,76 @@ type AppSettings = {
   impedirSuspensao: boolean;
 };
 
-type PrintRequest = {
-  html: string;
-  printerName: string;
-  widthMm: number;
-  copies: number;
-};
+type PrintRequest = { html: string; printerName: string; widthMm: number; copies: number };
+type WindowState = { x?: number; y?: number; width?: number; height?: number; maximized?: boolean };
 
-type PrinterInfo = {
-  name: string;
-  displayName: string;
-  isDefault: boolean;
-};
-
-type SavedDevicePermissions = {
-  serial: { portIds: string[]; instanceIds: string[] };
-  usb: string[];
-};
-
-const DEFAULT_SETTINGS: AppSettings = {
-  printerNota: "",
-  printerComanda: "",
-  iniciarComWindows: true,
-  manterEmSegundoPlano: true,
-  impedirSuspensao: true,
-};
-const MAX_HTML_BYTES = 2 * 1024 * 1024;
-const PRINT_TIMEOUT_MS = 30_000;
+const APP_SCHEME = "app";
+const APP_BASE = `${APP_SCHEME}://mesari/`;
+const DEV_URL = process.env["MESARI_DEV_URL"]?.replace(/\/?$/, "/");
+const START_URL = !app.isPackaged && DEV_URL ? DEV_URL : APP_BASE;
+const LOGIN_ITEM_NAME = "Mesari";
 const LOG_MAX_BYTES = 1024 * 1024;
 const LOG_BACKUPS = 3;
-app.setName("Mesari");
-const singleInstance = app.requestSingleInstanceLock();
+const MAX_HTML_BYTES = 2 * 1024 * 1024;
 
+app.setName("Mesari");
+if (process.platform === "win32") app.setAppUserModelId("com.mesari.app");
+
+// Precisa ser registrado antes do "ready": app:// se comporta como https (origem própria,
+// localStorage, fetch e CORS).
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: APP_SCHEME,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      corsEnabled: true,
+      stream: true,
+    },
+  },
+]);
+
+const singleInstance = app.requestSingleInstanceLock();
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let quitRequested = false;
-let retryTimer: NodeJS.Timeout | null = null;
 let powerBlockerId: number | null = null;
-let showingOffline = false;
-let appUrl = "https://design-driven-orders.vercel.app/";
-let appOrigin = new URL(appUrl).origin;
-let printQueue: Promise<void> = Promise.resolve();
+let pendingBluetooth: ((deviceId: string) => void) | null = null;
+
+// ---------------------------------------------------------------------------------------------
+// Arquivos de dados e log (%APPDATA%\Mesari)
 
 function userDataPath(name: string) {
   return path.join(app.getPath("userData"), name);
 }
 
-function readDevicePermissions(): SavedDevicePermissions {
-  const value = readJson<Partial<SavedDevicePermissions>>(userDataPath("device-permissions.json"));
-  return {
-    serial: {
-      portIds: Array.isArray(value?.serial?.portIds)
-        ? value.serial.portIds.filter((id): id is string => typeof id === "string")
-        : [],
-      instanceIds: Array.isArray(value?.serial?.instanceIds)
-        ? value.serial.instanceIds.filter((id): id is string => typeof id === "string")
-        : [],
-    },
-    usb: Array.isArray(value?.usb)
-      ? value.usb.filter((id): id is string => typeof id === "string")
-      : [],
-  };
-}
-
-function saveDevicePermission(
-  type: "serial" | "usb",
-  device: Electron.SerialPort | Electron.USBDevice,
-) {
-  const permissions = readDevicePermissions();
-  if (type === "serial") {
-    const port = device as Electron.SerialPort;
-    permissions.serial = {
-      portIds: [port.portId],
-      instanceIds: port.deviceInstanceId ? [port.deviceInstanceId] : [],
-    };
-  } else {
-    const usb = device as Electron.USBDevice;
-    permissions.usb = [usb.deviceId];
-  }
-  writeJson(userDataPath("device-permissions.json"), permissions);
-}
-
-function forgetDevicePermissions(type: "serial" | "usb") {
-  const permissions = readDevicePermissions();
-  if (type === "serial") {
-    permissions.serial = { portIds: [], instanceIds: [] };
-  } else {
-    permissions.usb = [];
-  }
-  writeJson(userDataPath("device-permissions.json"), permissions);
-}
-
-function isTrustedOrigin(url: string) {
-  try {
-    return new URL(url).origin === appOrigin;
-  } catch {
-    return false;
-  }
-}
-
-async function chooseDevice(title: string, devices: Array<{ id: string; label: string }>) {
-  if (devices.length === 0) return undefined;
-  const labels = devices.map((device) => device.label || device.id);
-  const options: Electron.MessageBoxOptions = {
-    type: "question",
-    title,
-    message: "Selecione o dispositivo que deseja conectar.",
-    buttons: [...labels, "Cancelar"],
-    cancelId: labels.length,
-    defaultId: 0,
-    noLink: true,
-  };
-  const result = mainWindow
-    ? await dialog.showMessageBox(mainWindow, options)
-    : await dialog.showMessageBox(options);
-  return result.response < devices.length ? devices[result.response] : undefined;
-}
-
-function installDeviceHandlers() {
-  session.defaultSession.on("select-serial-port", (event, ports, sender, callback) => {
-    event.preventDefault();
-    if (sender !== mainWindow?.webContents || !isTrustedOrigin(sender.getURL())) {
-      callback("");
-      return;
-    }
-    void chooseDevice(
-      "Conectar impressora Bluetooth/COM",
-      ports.map((port) => ({
-        id: port.portId,
-        label: [port.displayName, port.portName].filter(Boolean).join(" · "),
-      })),
-    )
-      .then((selected) => {
-        if (!selected) {
-          callback("");
-          return;
-        }
-        const port = ports.find((item) => item.portId === selected.id);
-        if (!port) {
-          callback("");
-          return;
-        }
-        saveDevicePermission("serial", port);
-        callback(port.portId);
-      })
-      .catch((cause: unknown) => {
-        log("Falha ao selecionar a porta serial", cause);
-        callback("");
-      });
-  });
-  session.defaultSession.on("select-usb-device", (event, details, callback) => {
-    event.preventDefault();
-    if (
-      !details.frame ||
-      details.frame !== mainWindow?.webContents.mainFrame ||
-      !isTrustedOrigin(details.frame.url)
-    ) {
-      callback();
-      return;
-    }
-    void chooseDevice(
-      "Conectar impressora USB",
-      details.deviceList.map((device) => ({
-        id: device.deviceId,
-        label: [
-          device.productName,
-          device.manufacturerName,
-          `USB ${device.vendorId.toString(16)}:${device.productId.toString(16)}`,
-        ]
-          .filter(Boolean)
-          .join(" · "),
-      })),
-    )
-      .then((selected) => {
-        if (!selected) {
-          callback();
-          return;
-        }
-        const device = details.deviceList.find((item) => item.deviceId === selected.id);
-        if (!device) {
-          callback();
-          return;
-        }
-        saveDevicePermission("usb", device);
-        callback(device.deviceId);
-      })
-      .catch((cause: unknown) => {
-        log("Falha ao selecionar o dispositivo USB", cause);
-        callback();
-      });
-  });
-}
-
 function rotateLogsIfNeeded(filePath: string) {
   if (!fs.existsSync(filePath) || fs.statSync(filePath).size < LOG_MAX_BYTES) return;
   for (let index = LOG_BACKUPS - 1; index >= 1; index -= 1) {
-    const oldPath = `${filePath}.${index}`;
-    const nextPath = `${filePath}.${index + 1}`;
-    if (fs.existsSync(oldPath)) fs.renameSync(oldPath, nextPath);
+    if (fs.existsSync(`${filePath}.${index}`)) {
+      fs.renameSync(`${filePath}.${index}`, `${filePath}.${index + 1}`);
+    }
   }
   fs.renameSync(filePath, `${filePath}.1`);
 }
 
 function log(message: string, error?: unknown) {
   try {
-    const logDirectory = userDataPath("logs");
-    fs.mkdirSync(logDirectory, { recursive: true });
-    const filePath = path.join(logDirectory, "mesari.log");
+    fs.mkdirSync(userDataPath("logs"), { recursive: true });
+    const filePath = userDataPath(path.join("logs", "mesari.log"));
     rotateLogsIfNeeded(filePath);
     const detail =
-      error instanceof Error ? `${error.message}${error.stack ? `\n${error.stack}` : ""}` : error;
+      error instanceof Error
+        ? `${error.message}${error.stack ? `\n${error.stack}` : ""}`
+        : error === undefined
+          ? ""
+          : typeof error === "string"
+            ? error
+            : JSON.stringify(error);
     fs.appendFileSync(
       filePath,
-      `[${new Date().toISOString()}] ${message}${detail ? `: ${String(detail)}` : ""}\n`,
+      `[${new Date().toISOString()}] ${message}${detail ? `: ${detail}` : ""}\n`,
       "utf8",
     );
   } catch (cause) {
@@ -259,47 +134,39 @@ function writeJson(filePath: string, value: unknown) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
-function loadAppUrl() {
-  const userConfig = readJson<{ appUrl?: unknown }>(userDataPath("config.json"));
-  const bundledConfig = readJson<{ appUrl?: unknown }>(path.join(app.getAppPath(), "config.json"));
-  for (const configuredUrl of [userConfig?.appUrl, bundledConfig?.appUrl]) {
-    if (configuredUrl === undefined) continue;
-    try {
-      if (typeof configuredUrl !== "string") {
-        throw new Error("appUrl deve ser um endereço HTTPS válido.");
-      }
-      const parsed = new URL(configuredUrl);
-      if (parsed.protocol !== "https:" || parsed.username || parsed.password) {
-        throw new Error("appUrl deve ser um endereço HTTPS válido.");
-      }
-      appUrl = parsed.toString();
-      appOrigin = parsed.origin;
-      return;
-    } catch (cause) {
-      log("Configuração appUrl inválida; tentando a próxima configuração.", cause);
-    }
-  }
-  log("Configuração appUrl ausente; usando o endereço padrão.");
+// ---------------------------------------------------------------------------------------------
+// Configurações do aplicativo
+
+/** O instalador grava a mesma entrada "Mesari" em HKCU\...\Run quando a opção é marcada. */
+function startsWithWindows() {
+  const settings = app.getLoginItemSettings();
+  return (
+    settings.executableWillLaunchAtLogin ||
+    Boolean(settings.launchItems?.some((item) => item.name === LOGIN_ITEM_NAME && item.enabled))
+  );
 }
 
 function readSettings(): AppSettings {
   const stored = readJson<Partial<AppSettings>>(userDataPath("settings.json"));
   return {
-    ...DEFAULT_SETTINGS,
-    printerNota:
-      typeof stored?.printerNota === "string" ? stored.printerNota : DEFAULT_SETTINGS.printerNota,
-    printerComanda:
-      typeof stored?.printerComanda === "string"
-        ? stored.printerComanda
-        : DEFAULT_SETTINGS.printerComanda,
-    iniciarComWindows: stored?.iniciarComWindows !== false,
+    printerNota: typeof stored?.printerNota === "string" ? stored.printerNota : "",
+    printerComanda: typeof stored?.printerComanda === "string" ? stored.printerComanda : "",
+    // Desligado por padrão; na primeira vez vale o que foi escolhido no instalador.
+    iniciarComWindows:
+      typeof stored?.iniciarComWindows === "boolean"
+        ? stored.iniciarComWindows
+        : startsWithWindows(),
     manterEmSegundoPlano: stored?.manterEmSegundoPlano !== false,
     impedirSuspensao: stored?.impedirSuspensao !== false,
   };
 }
 
-function updateSystemSettings(settings: AppSettings) {
-  app.setLoginItemSettings({ openAtLogin: settings.iniciarComWindows });
+function applySystemSettings(settings: AppSettings) {
+  if (app.isPackaged) {
+    app.setLoginItemSettings({ openAtLogin: settings.iniciarComWindows, name: LOGIN_ITEM_NAME });
+    // Remove a entrada antiga (versão 1.0.x usava o nome padrão do Electron).
+    app.setLoginItemSettings({ openAtLogin: false });
+  }
   if (settings.impedirSuspensao && powerBlockerId === null) {
     powerBlockerId = powerSaveBlocker.start("prevent-app-suspension");
   } else if (!settings.impedirSuspensao && powerBlockerId !== null) {
@@ -308,304 +175,238 @@ function updateSystemSettings(settings: AppSettings) {
   }
 }
 
-function validateSender(event: IpcMainInvokeEvent) {
-  const url = event.senderFrame?.url;
-  if (!url) return false;
-  try {
-    return new URL(url).origin === appOrigin;
-  } catch {
-    return false;
-  }
-}
-
-function registerHandler(
-  channel: string,
-  handler: (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown,
-) {
-  ipcMain.handle(channel, (event, ...args) => {
-    if (!validateSender(event))
-      throw new Error("Origem não autorizada para comunicação com o app.");
-    return handler(event, ...args);
-  });
-}
-
-function enqueuePrint(job: () => Promise<{ ok: boolean; error?: string }>) {
-  const result = printQueue.then(job, job);
-  printQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
-
-function timeout<T>(promise: Promise<T>, milliseconds: number, label: string) {
-  let timer: NodeJS.Timeout;
-  const timed = new Promise<T>((resolve, reject) => {
-    timer = setTimeout(() => reject(new Error(label)), milliseconds);
-    promise.then(resolve, reject);
-  });
-  return timed.finally(() => clearTimeout(timer));
-}
-
-function waitForLoad(contents: WebContents) {
-  return new Promise<void>((resolve, reject) => {
-    const onLoad = () => {
-      contents.removeListener("did-fail-load", onFail);
-      resolve();
-    };
-    const onFail = (
-      _event: Electron.Event,
-      code: number,
-      description: string,
-      _url: string,
-      isMainFrame: boolean,
-    ) => {
-      if (!isMainFrame) return;
-      contents.removeListener("did-finish-load", onLoad);
-      reject(new Error(`Falha ao carregar o documento de impressão (${code}): ${description}`));
-    };
-    contents.once("did-finish-load", onLoad);
-    contents.on("did-fail-load", onFail);
-  });
-}
-
-function validatePrintRequest(value: unknown): { request?: PrintRequest; error?: string } {
+function validateSettingsUpdate(value: unknown, current: AppSettings) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return { error: "Solicitação de impressão inválida." };
+    throw new Error("Configurações inválidas.");
   }
-  const request = value as Partial<PrintRequest>;
-  if (
-    typeof request.html !== "string" ||
-    Buffer.byteLength(request.html, "utf8") > MAX_HTML_BYTES
-  ) {
-    return { error: "O HTML deve ter no máximo 2 MB." };
+  const update = value as Partial<AppSettings>;
+  const next = { ...current };
+  for (const key of ["printerNota", "printerComanda"] as const) {
+    const entry = update[key];
+    if (entry === undefined) continue;
+    if (typeof entry !== "string" || entry.length > 512) throw new Error("Valor inválido.");
+    next[key] = entry;
   }
-  if (
-    !Number.isFinite(request.widthMm) ||
-    Number(request.widthMm) < 40 ||
-    Number(request.widthMm) > 120
-  ) {
-    return { error: "A largura do papel deve estar entre 40 e 120 mm." };
+  for (const key of ["iniciarComWindows", "manterEmSegundoPlano", "impedirSuspensao"] as const) {
+    const entry = update[key];
+    if (entry === undefined) continue;
+    if (typeof entry !== "boolean") throw new Error("Valor inválido.");
+    next[key] = entry;
   }
-  if (
-    !Number.isInteger(request.copies) ||
-    Number(request.copies) < 1 ||
-    Number(request.copies) > 5
-  ) {
-    return { error: "O número de vias deve estar entre 1 e 5." };
+  return next;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Origem confiável e protocolo app://
+
+function isAppUrl(url: string) {
+  return url.startsWith(START_URL) || url === START_URL.replace(/\/$/, "");
+}
+
+function isTrustedSender(event: IpcMainInvokeEvent) {
+  const url = event.senderFrame?.url ?? "";
+  return event.sender === mainWindow?.webContents && isAppUrl(url);
+}
+
+function registerAppProtocol() {
+  const root = path.join(app.getAppPath(), "app");
+  protocol.handle(APP_SCHEME, async (request) => {
+    const url = new URL(request.url);
+    if (url.host !== "mesari") return new Response("Não encontrado", { status: 404 });
+    const relative = decodeURIComponent(url.pathname);
+    let file = path.normalize(path.join(root, relative));
+    if (!file.startsWith(root)) return new Response("Não encontrado", { status: 404 });
+    // Rotas do app (/caixa, /impressao...) não são arquivos: devolve o index.html (SPA).
+    if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) {
+      file = path.join(root, "index.html");
+    }
+    return net.fetch(pathToFileURL(file).toString());
+  });
+}
+
+// ---------------------------------------------------------------------------------------------
+// Impressão por HTML (modo "Navegador" no desktop: driver do Windows, sem caixa de diálogo)
+
+function validatePrintRequest(value: unknown): PrintRequest {
+  const request = (value ?? {}) as Partial<PrintRequest>;
+  if (typeof request.html !== "string" || Buffer.byteLength(request.html) > MAX_HTML_BYTES) {
+    throw new Error("Solicitação de impressão inválida.");
   }
-  if (typeof request.printerName !== "string") {
-    return { error: "Nome de impressora inválido." };
+  const widthMm = Number(request.widthMm);
+  const copies = Number(request.copies);
+  if (!Number.isFinite(widthMm) || widthMm < 40 || widthMm > 120) {
+    throw new Error("Largura de papel inválida.");
   }
-  return {
-    request: {
-      html: request.html,
-      printerName: request.printerName,
-      widthMm: Number(request.widthMm),
-      copies: Number(request.copies),
-    },
-  };
+  if (!Number.isInteger(copies) || copies < 1 || copies > 5) throw new Error("Vias inválidas.");
+  if (typeof request.printerName !== "string") throw new Error("Impressora inválida.");
+  return { html: request.html, printerName: request.printerName, widthMm, copies };
 }
 
 async function printHtml(request: PrintRequest) {
-  let printWindow: BrowserWindow | null = null;
-  const startedAt = Date.now();
-  const remainingTimeout = () => Math.max(1, PRINT_TIMEOUT_MS - (Date.now() - startedAt));
+  const printWindow = new BrowserWindow({
+    show: false,
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+  });
   try {
-    const printers =
-      (await timeout(
-        mainWindow?.webContents.getPrintersAsync() ?? Promise.resolve([]),
-        remainingTimeout(),
-        "Tempo esgotado ao consultar as impressoras.",
-      )) ?? [];
-    if (request.printerName && !printers.some((printer) => printer.name === request.printerName)) {
-      throw new Error("A impressora selecionada não está disponível.");
-    }
-    printWindow = new BrowserWindow({
-      show: false,
-      webPreferences: {
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        webSecurity: true,
-      },
-    });
     printWindow.webContents.on("will-navigate", (event) => event.preventDefault());
     printWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    const loaded = waitForLoad(printWindow.webContents);
-    const dataUrl = `data:text/html;charset=utf-8;base64,${Buffer.from(request.html, "utf8").toString("base64")}`;
-    await timeout(
-      printWindow.loadURL(dataUrl).then(() => loaded),
-      remainingTimeout(),
-      "Tempo esgotado ao carregar o cupom.",
+    await printWindow.loadURL(
+      `data:text/html;charset=utf-8;base64,${Buffer.from(request.html, "utf8").toString("base64")}`,
     );
-    const contentHeight = (await printWindow.webContents.executeJavaScript(
-      "Promise.all([document.fonts?.ready ?? Promise.resolve(), ...Array.from(document.images, image => image.decode().catch(() => undefined))]).then(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))",
+    const height = (await printWindow.webContents.executeJavaScript(
+      "document.fonts.ready.then(() => Math.max(document.documentElement.scrollHeight, document.body.scrollHeight))",
     )) as number;
-    const heightMicrons = Math.max(1000, Math.ceil(contentHeight * (25_400 / 96)));
-    const printed = await timeout(
-      new Promise<boolean>((resolve) => {
-        printWindow?.webContents.print(
-          {
-            silent: true,
-            deviceName: request.printerName,
-            printBackground: true,
-            margins: { marginType: "none" },
-            pageSize: { width: Math.round(request.widthMm * 1000), height: heightMicrons },
-            scaleFactor: 100,
-            copies: request.copies,
+    const printed = await new Promise<boolean>((resolve) => {
+      printWindow.webContents.print(
+        {
+          silent: true,
+          deviceName: request.printerName,
+          printBackground: true,
+          margins: { marginType: "none" },
+          pageSize: {
+            width: Math.round(request.widthMm * 1000),
+            height: Math.max(1000, Math.ceil(height * (25_400 / 96))),
           },
-          (success, failureReason) => {
-            if (!success) {
-              log("Erro de impressão", failureReason);
-              resolve(false);
-              return;
-            }
-            resolve(true);
-          },
-        );
-      }),
-      remainingTimeout(),
-      "Tempo esgotado aguardando o driver da impressora.",
-    );
-    if (!printed) return { ok: false, error: "O driver do Windows não concluiu a impressão." };
-    log(
-      `Impressão concluída (${request.printerName || "padrão"}, ${request.widthMm} mm, ${request.copies} via(s)) em ${Date.now() - startedAt} ms`,
-    );
-    return { ok: true };
+          copies: request.copies,
+        },
+        (success, reason) => {
+          if (!success) log("Erro de impressão (driver)", reason);
+          resolve(success);
+        },
+      );
+    });
+    return printed ? { ok: true } : { ok: false, error: "O Windows não concluiu a impressão." };
   } catch (cause) {
-    const error = cause instanceof Error ? cause.message : String(cause);
-    log("Erro de impressão", cause);
-    return { ok: false, error };
+    log("Erro de impressão (driver)", cause);
+    return { ok: false, error: "O Windows não concluiu a impressão." };
   } finally {
-    if (printWindow && !printWindow.isDestroyed()) printWindow.destroy();
+    if (!printWindow.isDestroyed()) printWindow.destroy();
   }
 }
 
-function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (character) => {
-    const entities: Record<string, string> = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[character] ?? character;
+// ---------------------------------------------------------------------------------------------
+// IPC
+
+function handle(channel: string, handler: (...args: unknown[]) => unknown) {
+  ipcMain.handle(channel, (event, ...args) => {
+    if (!isTrustedSender(event)) throw new Error("Origem não autorizada.");
+    return handler(...args);
   });
 }
 
-function printerTestHtml(restaurantName: string, widthMm: number) {
-  const time = new Date().toLocaleString("pt-BR");
-  return `<!doctype html><html><head><meta charset="utf-8"><style>@page{margin:0}*{box-sizing:border-box}html,body{margin:0;padding:0;width:100%}body{font:14px Arial,sans-serif;color:#000;text-align:center;padding:3mm}h1{font-size:20px;margin:0 0 6mm}p{margin:3mm 0}.ruler{height:12mm;background:repeating-linear-gradient(90deg,#000 0 1px,transparent 1px 5%);border-top:1px solid #000}.ruler-label{font-size:10px}</style></head><body><h1>${escapeHtml(restaurantName)}</h1><div class="ruler"></div><p class="ruler-label">Régua de largura: 0 a ${widthMm} mm</p><p>Teste de impressão · ã, õ, ç, é, í, ó, ú</p><p>${time}</p></body></html>`;
-}
+function registerIpc() {
+  handle("mesari:app-info", () => ({ versao: app.getVersion(), empacotado: app.isPackaged }));
+  handle("mesari:get-settings", () => readSettings());
+  handle("mesari:set-settings", (value) => {
+    const settings = validateSettingsUpdate(value, readSettings());
+    writeJson(userDataPath("settings.json"), settings);
+    applySystemSettings(settings);
+    return settings;
+  });
+  handle("mesari:list-printers", async () => {
+    if (!mainWindow) return [];
+    const printers = await listWindowsPrinters(mainWindow.webContents);
+    return printers.map((printer) => ({
+      name: printer.nome,
+      displayName: printer.nome,
+      isDefault: printer.padrao,
+    }));
+  });
+  handle("mesari:print", (value) => printHtml(validatePrintRequest(value)));
 
-function applyZoomShortcuts(window: BrowserWindow) {
-  window.webContents.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown") return;
-    if (input.key === "F11") {
-      event.preventDefault();
-      window.setFullScreen(!window.isFullScreen());
-      return;
+  handle("mesari:printer-network", (target, data) =>
+    run(async () => {
+      const { ip, porta } = networkTarget(target);
+      await sendNetwork(ip, porta, toBuffer(data));
+    }, log),
+  );
+  handle("mesari:printer-windows", (target, data) =>
+    run(async () => sendWindows(windowsTarget(target), toBuffer(data)), log),
+  );
+  handle("mesari:printer-serial", (target, data) =>
+    run(async () => {
+      const { com, baud } = serialTarget(target);
+      await sendSerial(com, baud, toBuffer(data));
+    }, log),
+  );
+  handle("mesari:printer-list-windows", async () =>
+    mainWindow ? listWindowsPrinters(mainWindow.webContents) : [],
+  );
+  handle("mesari:printer-list-serial", async () => {
+    try {
+      return await listSerialPorts();
+    } catch (cause) {
+      log("Falha ao listar portas COM", cause);
+      return [];
     }
-    if (!input.control) return;
-    const current = window.webContents.getZoomLevel();
-    if (input.key === "+" || input.key === "=") {
-      event.preventDefault();
-      window.webContents.setZoomLevel(Math.min(5, current + 0.5));
-    } else if (input.key === "-") {
-      event.preventDefault();
-      window.webContents.setZoomLevel(Math.max(-5, current - 0.5));
-    } else if (input.key === "0") {
-      event.preventDefault();
-      window.webContents.setZoomLevel(0);
-    } else {
-      return;
-    }
-    writeJson(userDataPath("zoom.json"), { level: window.webContents.getZoomLevel() });
+  });
+
+  handle("mesari:ble-select", (deviceId) => {
+    const callback = pendingBluetooth;
+    pendingBluetooth = null;
+    callback?.(typeof deviceId === "string" ? deviceId : "");
+    return true;
+  });
+
+  handle("mesari:update-status", () => ({ versao: updateReadyVersion() }));
+  handle("mesari:update-install", () => {
+    quitRequested = true;
+    return installUpdateNow();
   });
 }
+
+// ---------------------------------------------------------------------------------------------
+// Janela
 
 function persistWindowState(window: BrowserWindow) {
-  const filePath = userDataPath("window-state.json");
-  const current = readJson<{ x?: number; y?: number; width?: number; height?: number }>(filePath);
-  const state = window.isMaximized()
-    ? (current ?? { width: 1200, height: 800 })
-    : { ...window.getBounds() };
   try {
-    writeJson(filePath, { ...state, maximized: window.isMaximized() });
+    const current = readJson<WindowState>(userDataPath("window-state.json")) ?? {};
+    const bounds = window.isMaximized() || window.isFullScreen() ? current : window.getBounds();
+    writeJson(userDataPath("window-state.json"), {
+      ...bounds,
+      maximized: window.isMaximized(),
+    });
   } catch (cause) {
     log("Falha ao salvar o estado da janela", cause);
   }
 }
 
-function offlinePageUrl() {
-  return `${pathToFileURL(path.join(app.getAppPath(), "offline.html")).toString()}?appUrl=${encodeURIComponent(appUrl)}`;
-}
-
-function scheduleRetry() {
-  if (retryTimer) clearTimeout(retryTimer);
-  retryTimer = setTimeout(() => {
-    if (mainWindow && !mainWindow.isDestroyed()) void loadApp();
-  }, 10_000);
-}
-
-async function showOffline(cause?: unknown) {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  if (showingOffline) return;
-  showingOffline = true;
-  if (cause) log("Falha ao carregar o sistema", cause);
+function openExternal(url: string) {
   try {
-    await mainWindow.loadURL(offlinePageUrl());
-  } catch (loadError) {
-    log("Falha ao abrir a tela offline", loadError);
-  }
-  scheduleRetry();
-}
-
-async function loadApp() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
-  showingOffline = false;
-  if (retryTimer) {
-    clearTimeout(retryTimer);
-    retryTimer = null;
-  }
-  try {
-    await mainWindow.loadURL(appUrl);
+    const target = new URL(url);
+    if (["https:", "http:", "mailto:", "tel:"].includes(target.protocol)) {
+      void shell.openExternal(target.toString()).catch((cause: unknown) => log("Link externo", cause));
+    }
   } catch (cause) {
-    await showOffline(cause);
+    log("Link externo inválido", cause);
   }
 }
 
 function bringToFront() {
-  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow();
+    return;
+  }
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
   mainWindow.focus();
 }
 
 function createMainWindow() {
-  const state = readJson<{
-    x?: number;
-    y?: number;
-    width?: number;
-    height?: number;
-    maximized?: boolean;
-  }>(userDataPath("window-state.json"));
-  const defaults = { width: 1200, height: 800 };
-  const bounds =
-    state?.width && state.height
-      ? { x: state.x, y: state.y, width: state.width, height: state.height }
-      : defaults;
-  const iconPath = path.join(app.getAppPath(), "build", "icon.ico");
-  mainWindow = new BrowserWindow({
-    ...bounds,
+  const state = readJson<WindowState>(userDataPath("window-state.json"));
+  const window = new BrowserWindow({
+    width: state?.width ?? 1366,
+    height: state?.height ?? 768,
+    ...(state?.x !== undefined && state.y !== undefined ? { x: state.x, y: state.y } : {}),
+    minWidth: 1024,
+    minHeight: 640,
     title: "Mesari",
-    icon: iconPath,
+    icon: path.join(app.getAppPath(), "build", "icon.ico"),
+    backgroundColor: "#ffffff",
     autoHideMenuBar: true,
     show: false,
     webPreferences: {
-      preload: path.join(app.getAppPath(), "dist", "preload.js"),
+      preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
@@ -614,105 +415,97 @@ function createMainWindow() {
       autoplayPolicy: "no-user-gesture-required",
     },
   });
-  mainWindow.setMenuBarVisibility(false);
-  mainWindow.on("page-title-updated", (event) => {
+  mainWindow = window;
+  window.setMenuBarVisibility(false);
+  window.on("page-title-updated", (event) => {
     event.preventDefault();
-    mainWindow?.setTitle("Mesari");
+    window.setTitle("Mesari");
   });
-  applyZoomShortcuts(mainWindow);
-  mainWindow.webContents.on("will-navigate", (event, url) => {
-    try {
-      const target = new URL(url);
-      if (target.origin !== appOrigin) {
-        event.preventDefault();
-        if (target.protocol === "https:") {
-          void shell
-            .openExternal(target.toString())
-            .catch((cause: unknown) => log("Falha ao abrir link externo", cause));
-        }
-      }
-    } catch {
+
+  window.webContents.on("before-input-event", (event, input) => {
+    if (input.type !== "keyDown") return;
+    if (input.key === "F5") {
       event.preventDefault();
+      window.webContents.reload();
+    } else if (input.key === "F11") {
+      event.preventDefault();
+      window.setFullScreen(!window.isFullScreen());
+    } else if (input.control && input.shift && input.key.toLowerCase() === "i") {
+      event.preventDefault();
+      if (!app.isPackaged) window.webContents.toggleDevTools();
+    } else if (input.control && (input.key === "+" || input.key === "=")) {
+      event.preventDefault();
+      window.webContents.setZoomLevel(Math.min(5, window.webContents.getZoomLevel() + 0.5));
+    } else if (input.control && input.key === "-") {
+      event.preventDefault();
+      window.webContents.setZoomLevel(Math.max(-5, window.webContents.getZoomLevel() - 0.5));
+    } else if (input.control && input.key === "0") {
+      event.preventDefault();
+      window.webContents.setZoomLevel(0);
     }
   });
-  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    try {
-      if (new URL(url).protocol === "https:" && new URL(url).origin !== appOrigin) {
-        void shell
-          .openExternal(url)
-          .catch((cause: unknown) => log("Falha ao abrir link externo", cause));
-      }
-    } catch (cause) {
-      log("URL externa inválida", cause);
-    }
+
+  // Links externos abrem no navegador padrão, nunca numa janela do app.
+  window.webContents.on("will-navigate", (event, url) => {
+    if (isAppUrl(url)) return;
+    event.preventDefault();
+    openExternal(url);
+  });
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (!isAppUrl(url)) openExternal(url);
     return { action: "deny" };
   });
-  mainWindow.webContents.on("did-fail-load", (_event, code, description, _url, isMainFrame) => {
-    if (isMainFrame && code !== -3) void showOffline(new Error(`${code}: ${description}`));
+
+  // Web Bluetooth (BLE): o Electron não tem seletor próprio; a lista vai para o app escolher.
+  window.webContents.on("select-bluetooth-device", (event, devices, callback) => {
+    event.preventDefault();
+    pendingBluetooth = callback;
+    window.webContents.send(
+      "mesari:ble-devices",
+      devices.map((device) => ({ id: device.deviceId, nome: device.deviceName || "" })),
+    );
   });
-  mainWindow.webContents.on("render-process-gone", (_event, details) => {
+
+  window.webContents.on("render-process-gone", (_event, details) => {
     log("Processo de renderização encerrado", details);
-    void showOffline(new Error(details.reason));
+    if (!window.isDestroyed()) void window.loadURL(START_URL);
   });
-  mainWindow.on("close", (event) => {
+  window.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
+    if (isMainFrame && code !== -3) log(`Falha ao carregar ${url}`, `${code} ${description}`);
+  });
+
+  window.on("close", (event) => {
+    persistWindowState(window);
     if (!quitRequested && readSettings().manterEmSegundoPlano) {
       event.preventDefault();
-      mainWindow?.hide();
-      return;
-    }
-    persistWindowState(mainWindow!);
-  });
-  mainWindow.on("resize", () => {
-    if (mainWindow) persistWindowState(mainWindow);
-  });
-  mainWindow.on("move", () => {
-    if (mainWindow) persistWindowState(mainWindow);
-  });
-  mainWindow.on("closed", () => {
-    mainWindow = null;
-  });
-  mainWindow.once("ready-to-show", () => {
-    if (state?.maximized !== false) mainWindow?.maximize();
-    mainWindow?.show();
-  });
-  mainWindow.webContents.once("did-finish-load", () => {
-    const savedZoom = readJson<{ level?: number }>(userDataPath("zoom.json"));
-    if (typeof savedZoom?.level === "number" && Number.isFinite(savedZoom.level)) {
-      mainWindow?.webContents.setZoomLevel(Math.max(-5, Math.min(5, savedZoom.level)));
+      window.hide();
     }
   });
-  void loadApp();
-}
-
-function openLogFolder() {
-  fs.mkdirSync(userDataPath("logs"), { recursive: true });
-  void shell.openPath(userDataPath("logs")).then((result) => {
-    if (result) log("Falha ao abrir a pasta de logs", result);
+  window.on("resized", () => persistWindowState(window));
+  window.on("moved", () => persistWindowState(window));
+  window.on("closed", () => {
+    if (mainWindow === window) mainWindow = null;
   });
+  window.once("ready-to-show", () => {
+    if (state?.maximized !== false) window.maximize();
+    window.show();
+  });
+  void window.loadURL(START_URL);
 }
 
 function createTray() {
-  const icon = nativeImage.createFromPath(path.join(app.getAppPath(), "build", "icon.ico"));
-  tray = new Tray(icon);
+  tray = new Tray(nativeImage.createFromPath(path.join(app.getAppPath(), "build", "icon.ico")));
   tray.setToolTip("Mesari");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Abrir Mesari", click: bringToFront },
       {
-        label: "Imprimir página de teste",
+        label: "Abrir pasta de logs",
         click: () => {
-          const settings = readSettings();
-          void enqueuePrint(() =>
-            printHtml({
-              html: printerTestHtml("Mesari", 80),
-              printerName: settings.printerNota,
-              widthMm: 80,
-              copies: 1,
-            }),
-          );
+          fs.mkdirSync(userDataPath("logs"), { recursive: true });
+          void shell.openPath(userDataPath("logs"));
         },
       },
-      { label: "Abrir pasta de logs", click: openLogFolder },
       { type: "separator" },
       {
         label: "Sair",
@@ -726,171 +519,41 @@ function createTray() {
   tray.on("click", bringToFront);
 }
 
-function validateSettingsUpdate(value: unknown, current: AppSettings) {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    throw new Error("Configurações inválidas.");
-  }
-  const update = value as Partial<AppSettings>;
-  const next = { ...current };
-  for (const key of ["printerNota", "printerComanda"] as const) {
-    if (update[key] !== undefined) {
-      if (typeof update[key] !== "string" || update[key].length > 512) {
-        throw new Error(`Valor inválido para ${key}.`);
-      }
-      next[key] = update[key];
-    }
-  }
-  for (const key of ["iniciarComWindows", "manterEmSegundoPlano", "impedirSuspensao"] as const) {
-    if (update[key] !== undefined) {
-      if (typeof update[key] !== "boolean") throw new Error(`Valor inválido para ${key}.`);
-      next[key] = update[key];
-    }
-  }
-  return next;
-}
-
-function registerIpcHandlers() {
-  installDeviceHandlers();
-  session.defaultSession.setPermissionRequestHandler(
-    (_webContents, permission, callback, details) => {
-      let allowedOrigin = false;
-      try {
-        allowedOrigin = new URL(details.requestingUrl).origin === appOrigin;
-      } catch {
-        allowedOrigin = false;
-      }
-      callback(
-        allowedOrigin &&
-          (permission === "notifications" ||
-            permission === "clipboard-sanitized-write" ||
-            permission === "serial" ||
-            permission === "usb"),
-      );
-    },
+function configureSession() {
+  const allowed = new Set(["notifications", "clipboard-sanitized-write", "bluetooth"]);
+  session.defaultSession.setPermissionRequestHandler((_contents, permission, callback, details) =>
+    callback(isAppUrl(details.requestingUrl) && allowed.has(permission)),
   );
-  session.defaultSession.setPermissionCheckHandler((_webContents, permission, origin) => {
-    try {
-      return (
-        new URL(origin).origin === appOrigin &&
-        (permission === "notifications" ||
-          permission === "clipboard-sanitized-write" ||
-          permission === "serial" ||
-          permission === "usb")
-      );
-    } catch {
-      return false;
-    }
-  });
-  session.defaultSession.setDevicePermissionHandler(({ origin, deviceType, device }) => {
-    if (!isTrustedOrigin(origin)) return false;
-    const permissions = readDevicePermissions();
-    if (deviceType === "serial") {
-      const port = device as Electron.SerialPort;
-      return (
-        permissions.serial.portIds.includes(port.portId) ||
-        Boolean(
-          port.deviceInstanceId && permissions.serial.instanceIds.includes(port.deviceInstanceId),
-        )
-      );
-    }
-    if (deviceType === "usb") {
-      return permissions.usb.includes((device as Electron.USBDevice).deviceId);
-    }
-    return false;
-  });
-
-  registerHandler("mesari:list-printers", async () => {
-    if (!mainWindow) return [] as PrinterInfo[];
-    const printers = await mainWindow.webContents.getPrintersAsync();
-    const defaultPrinter = printers.find((printer) => {
-      const isDefault = Reflect.get(printer, "isDefault");
-      const optionIsDefault = Reflect.get(printer.options, "isDefault");
-      return isDefault === true || optionIsDefault === true || optionIsDefault === "true";
-    });
-    return printers.map((printer) => ({
-      name: printer.name,
-      displayName: printer.displayName,
-      isDefault: printer.name === defaultPrinter?.name,
-    }));
-  });
-  registerHandler("mesari:get-settings", () => readSettings());
-  registerHandler("mesari:set-settings", (_event, value) => {
-    const settings = validateSettingsUpdate(value, readSettings());
-    writeJson(userDataPath("settings.json"), settings);
-    updateSystemSettings(settings);
-    log("Configurações do aplicativo atualizadas.");
-    return settings;
-  });
-  registerHandler("mesari:forget-direct-device", (_event, value) => {
-    if (value !== "serial" && value !== "usb") {
-      throw new Error("Tipo de conexão direta inválido.");
-    }
-    forgetDevicePermissions(value);
-    return { ok: true };
-  });
-  registerHandler("mesari:print", async (_event, value) => {
-    const validation = validatePrintRequest(value);
-    if (!validation.request) {
-      log("Solicitação de impressão inválida", validation.error);
-      return { ok: false, error: validation.error };
-    }
-    const request = validation.request;
-    return enqueuePrint(() => printHtml(request));
-  });
-  registerHandler("mesari:test-print", async (_event, value) => {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return { ok: false, error: "Solicitação de teste inválida." };
-    }
-    const request = value as {
-      printerName?: unknown;
-      widthMm?: unknown;
-      restaurantName?: unknown;
-    };
-    if (
-      typeof request.restaurantName !== "string" ||
-      request.restaurantName.trim().length === 0 ||
-      request.restaurantName.length > 200
-    ) {
-      return { ok: false, error: "Informe o nome do restaurante para o teste." };
-    }
-    const validation = validatePrintRequest({
-      html: printerTestHtml(request.restaurantName, Number(request.widthMm)),
-      printerName: request.printerName,
-      widthMm: request.widthMm,
-      copies: 1,
-    });
-    if (!validation.request) {
-      log("Solicitação de teste inválida", validation.error);
-      return { ok: false, error: validation.error };
-    }
-    const validRequest = validation.request;
-    return enqueuePrint(() => printHtml(validRequest));
+  session.defaultSession.setPermissionCheckHandler((_contents, permission, origin) =>
+    Boolean(origin && isAppUrl(origin.endsWith("/") ? origin : `${origin}/`) && allowed.has(permission)),
+  );
+  // Pareamento BLE que pede só confirmação: aceita (o usuário já escolheu o aparelho).
+  session.defaultSession.setBluetoothPairingHandler((details, callback) => {
+    callback({ confirmed: details.pairingKind === "confirm" });
   });
 }
 
 if (!singleInstance) {
   app.quit();
 } else {
-  app.on("second-instance", () => bringToFront());
-  app.whenReady().then(() => {
-    loadAppUrl();
+  app.on("second-instance", bringToFront);
+  void app.whenReady().then(() => {
+    Menu.setApplicationMenu(null);
+    registerAppProtocol();
+    configureSession();
+    registerIpc();
     const settings = readSettings();
-    updateSystemSettings(settings);
-    registerIpcHandlers();
+    applySystemSettings(settings);
     createMainWindow();
     createTray();
-    log(`Mesari iniciado (${appUrl}).`);
-    app.on("activate", () => {
-      if (BrowserWindow.getAllWindows().length === 0) createMainWindow();
-      else bringToFront();
-    });
-    app.on("window-all-closed", () => {
-      if (process.platform !== "darwin" && !readSettings().manterEmSegundoPlano) app.quit();
-    });
+    startUpdater(() => mainWindow, log);
+    log(`Mesari ${app.getVersion()} iniciado (${START_URL}).`);
+  });
+  app.on("window-all-closed", () => {
+    if (!readSettings().manterEmSegundoPlano) app.quit();
   });
   app.on("before-quit", () => {
     quitRequested = true;
-    if (retryTimer) clearTimeout(retryTimer);
     if (powerBlockerId !== null) powerSaveBlocker.stop(powerBlockerId);
   });
   process.on("uncaughtException", (cause) => log("Exceção não tratada", cause));

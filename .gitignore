@@ -32,3 +32,8 @@ desktop/release/
 *.njsproj
 *.sln
 *.sw?
+
+# Mesari Desktop (gerados pelo build)
+desktop/app/
+desktop/out/
+desktop/release/

@@ -17,7 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
-import { getPrintSettings } from "@/lib/printing";
+import { loadConfig } from "@/lib/printing";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
 import { BillPrintStation } from "@/components/bill-print-station";
 import { useConfirm } from "@/components/system-dialog-provider";
@@ -271,7 +271,7 @@ export function AppShell({
             onClick={async () => {
               if (
                 user?.role === "caixa" &&
-                getPrintSettings().printKitchenEnabled &&
+                loadConfig().printKitchenEnabled &&
                 !(await confirmar({
                   title: "Sair do sistema?",
                   description: "As comandas deixarão de imprimir. Deseja sair do sistema?",

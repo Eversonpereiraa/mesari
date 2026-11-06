@@ -4,7 +4,7 @@ import { Check, Printer, RefreshCw, Wifi, WifiOff } from "lucide-react";
 import { Btn } from "@/components/ui-kit";
 import { supabase } from "@/lib/supabase";
 import { actions, errorMessage, useStore } from "@/lib/store";
-import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import { imprimirComanda, printErrorMessage, type KitchenTicket } from "@/lib/printing";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/cozinha")({
@@ -155,7 +155,13 @@ function KitchenStation() {
         });
         if (reserveError) throw reserveError;
         if (data === true) {
-          await printKitchenTicket(ticket, getPrintSettings());
+          // Reservada no banco: falha de impressão vira aviso, sem desfazer a reserva.
+          try {
+            await imprimirComanda(ticket);
+          } catch (cause) {
+            setError(`Comanda #${ticket.number} não imprimiu. ${printErrorMessage(cause)}`);
+            return;
+          }
           if (automatic) {
             try {
               await playNotice();
@@ -315,10 +321,10 @@ function KitchenStation() {
     setError("");
     setMessage("");
     try {
-      await printKitchenTicket(makeTestTicket(selectedSectors[0] ?? "cozinha"), getPrintSettings());
+      await imprimirComanda(makeTestTicket(selectedSectors[0] ?? "cozinha"));
       setMessage("Comanda de teste enviada para impressão.");
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(printErrorMessage(cause));
     } finally {
       setBusy(false);
     }
@@ -331,11 +337,11 @@ function KitchenStation() {
       if (!ticket.printedAt) {
         await reserveAndPrint(ticket, false);
       } else {
-        await printKitchenTicket(ticket, getPrintSettings());
+        await imprimirComanda(ticket);
         setMessage(`Comanda #${ticket.number} reimpressa.`);
       }
     } catch (cause) {
-      setError(errorMessage(cause));
+      setError(printErrorMessage(cause));
     } finally {
       setBusy(false);
     }

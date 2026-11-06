@@ -4,9 +4,10 @@ import { Plug, Printer, X } from "lucide-react";
 import type { Closing, State } from "@/lib/store";
 import {
   getPrinterStatus,
-  getPrintSettings,
+  imprimirNota,
   initializePrinter,
-  printReceipt,
+  loadConfig,
+  printErrorMessage,
   subscribePrinterStatus,
 } from "@/lib/printing";
 import { ReceiptContent } from "@/components/receipt-content";
@@ -63,21 +64,10 @@ export function BillViewer({
   const doPrint = async () => {
     setPrintError(null);
     try {
-      const result = await printReceipt(
-        { ...receipt, reprint: isReprint || printCount > 0 },
-        restaurant,
-        getPrintSettings(),
-      );
-      if (result.method === "browser") {
-        setPrintError(
-          result.fallbackReason
-            ? `Impressora direta indisponível; usando a impressão do Windows. ${result.fallbackReason}`
-            : "Imprimindo pelo Windows (impressora padrão).",
-        );
-      }
+      await imprimirNota({ ...receipt, reprint: isReprint || printCount > 0 }, restaurant);
       setPrintCount((count) => count + 1);
     } catch (error) {
-      setPrintError(error instanceof Error ? error.message : String(error));
+      setPrintError(printErrorMessage(error));
     }
   };
 
@@ -126,25 +116,12 @@ export function BillViewer({
               <Plug className="h-3.5 w-3.5" />
             </Link>
             <span className="ml-1 truncate text-[11px] text-muted-foreground">
-              {printerStatus.connected ? printerStatus.name : "Impressão pelo navegador"}
+              {printerStatus.label} · {printerStatus.name}
             </span>
           </div>
-          {!printerStatus.connected && (
-            <p role="status" className="pointer-events-none px-3 py-2 text-xs text-amber-800">
-              Impressora desconectada. Você pode imprimir pelo navegador ou fechar esta nota.
-            </p>
-          )}
-          {printerStatus.error && (
-            <p
-              role="status"
-              className="pointer-events-none px-3 py-1 text-xs text-muted-foreground"
-            >
-              Impressão direta indisponível: {printerStatus.error}
-            </p>
-          )}
           {printError && (
             <p role="alert" className="pointer-events-none px-3 py-2 text-xs text-destructive">
-              Não foi possível imprimir: {printError}
+              {printError} Use o botão de impressora para reimprimir.
             </p>
           )}
         </div>
@@ -153,7 +130,7 @@ export function BillViewer({
             receipt={receipt}
             restaurant={restaurant}
             via2={isReprint || printCount > 0}
-            width={getPrintSettings().paperWidth}
+            width={loadConfig().paperWidth}
           />
         </div>
         <footer className="sticky bottom-0 z-30 flex shrink-0 justify-end border-t bg-white p-2 print:hidden">

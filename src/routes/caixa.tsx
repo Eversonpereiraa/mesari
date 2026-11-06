@@ -29,6 +29,7 @@ import { AppShell, Btn } from "@/components/ui-kit";
 import { MenuPicker } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
 import { printPreBill, reprintBill, useBillPrintFailures } from "@/lib/bill-print";
+import { abrirGaveta, avisarFalhaImpressao, loadConfig } from "@/lib/printing";
 import { useConfirm } from "@/components/system-dialog-provider";
 import {
   AreaFilter,
@@ -151,7 +152,11 @@ function Caixa() {
     try {
       await printPreBill(table, tableLines, restaurant);
     } catch (cause) {
-      toast.error(`Nota não impressa: ${errorMessage(cause)}`);
+      avisarFalhaImpressao(cause, {
+        title: "Nota não impressa",
+        onRetry: () =>
+          void reprintBill(table, tableLines, restaurant, false).catch(avisarFalhaImpressao),
+      });
     }
   };
   const reprint = async () => {
@@ -161,7 +166,7 @@ function Caixa() {
       await reprintBill(sel, lines, restaurant, billPrintAvailable);
       toast.success(`Reimprimindo a nota da mesa ${tableNumber(sel.number)}`);
     } catch (cause) {
-      toast.error(`Nota não impressa: ${errorMessage(cause)}`);
+      avisarFalhaImpressao(cause, { title: "Nota não impressa", onRetry: () => void reprint() });
     } finally {
       setReprinting(false);
     }
@@ -215,6 +220,8 @@ function Caixa() {
     try {
       const closedSale = await actions.closeBill(sel.id, payments);
       setPaymentOpen(false);
+      // Pagamento já gravado: a gaveta é extra e nunca desfaz o fechamento.
+      if (loadConfig().openDrawerOnPayment) void abrirGaveta().catch(avisarFalhaImpressao);
       setSalesVersion((version) => version + 1);
       toast.success(
         `Pagamento recebido. Mesa ${tableNumber(closedSale.table)} liberada e venda salva.`,

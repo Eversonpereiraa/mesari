@@ -20,7 +20,14 @@ import { PaymentDialog } from "@/components/payment-dialog";
 import { usePrompt } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
-import { getPrintSettings, printKitchenTicket, type KitchenTicket } from "@/lib/printing";
+import {
+  abrirGaveta,
+  avisarFalhaImpressao,
+  imprimirComanda,
+  loadConfig,
+  printErrorMessage,
+  type KitchenTicket,
+} from "@/lib/printing";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/delivery")({
@@ -154,6 +161,58 @@ function paymentData(order: DeliveryOrder) {
     trocoPara: troco === null || troco === undefined ? null : numeric(troco),
   };
 }
+
+/** Monta a comanda do pedido de delivery com os dados salvos no banco. */
+function orderTicket(order: DeliveryOrder): KitchenTicket {
+  const rawItems = order.raw["itens"];
+  if (!Array.isArray(rawItems) || rawItems.length === 0) {
+    throw new Error("Este pedido não contém itens salvos para impressão.");
+  }
+  const externalData = {
+    ...asRecord(order.raw["dados"]),
+    ...order.raw,
+  };
+  const payment = paymentData(order);
+  return {
+    id: order.id,
+    number: order.number,
+    table: null,
+    sector: "cozinha",
+    waiter: "",
+    additional: false,
+    createdAt: order.createdAt,
+    items: rawItems.map((itemValue) => {
+      const item = asRecord(itemValue);
+      return {
+        product: String(item["produto"] ?? item["nome"] ?? item["produto_nome"] ?? ""),
+        quantity: numeric(item["quantidade"], 1),
+        note: String(item["observacao"] ?? ""),
+        unitPrice: numeric(item["valor_unitario"]),
+      };
+    }),
+    external: {
+      origin: order.type,
+      dayNumber: order.number,
+      channel: order.channel,
+      customerName: order.customerName,
+      phone: order.phone,
+      address: order.address,
+      observation: order.observation,
+      subtotal: numeric(externalData["subtotal"], order.subtotal),
+      deliveryFee: numeric(externalData["taxa_entrega"], order.deliveryFee),
+      discount: numeric(externalData["desconto"], 0),
+      total: numeric(externalData["total"], order.total),
+      payment: {
+        forma: payment.forma,
+        pago: payment.pago,
+        trocoPara: payment.trocoPara,
+      },
+    },
+  };
+}
+
+/** Pedidos já impressos ao entrar em "Em preparo" nesta sessão (evita imprimir duas vezes). */
+const printedOnPreparing = new Set<string>();
 
 function Delivery() {
   const pedirTexto = usePrompt();
@@ -382,6 +441,8 @@ function Delivery() {
       });
       if (error) throw error;
       if (status === "cancelado") toast.success(`Pedido #${order.number} cancelado.`);
+      // O status já foi gravado; a impressão vem depois e nunca o desfaz.
+      if (status === "em_preparo") void printOnPreparing(order);
       await loadOrders().catch((cause: unknown) => setListError(errorMessage(cause)));
     } catch (cause) {
       setListError(errorMessage(cause));
@@ -455,6 +516,8 @@ function Delivery() {
     });
     if (error) throw error;
     setPaymentOrder(null);
+    // Pagamento já gravado: a gaveta é extra e nunca desfaz a conclusão.
+    if (loadConfig().openDrawerOnPayment) void abrirGaveta().catch(avisarFalhaImpressao);
     await loadOrders();
     setNotice(`Pedido #${paymentOrder.number} concluído e recebido.`);
   };
@@ -481,56 +544,27 @@ function Delivery() {
     setBusy(true);
     setListError("");
     try {
-      const rawItems = order.raw["itens"];
-      if (!Array.isArray(rawItems) || rawItems.length === 0) {
-        throw new Error("Este pedido não contém itens salvos para reimpressão.");
-      }
-      const externalData = {
-        ...asRecord(order.raw["dados"]),
-        ...order.raw,
-      };
-      const payment = paymentData(order);
-      const ticket: KitchenTicket = {
-        id: order.id,
-        number: order.number,
-        table: null,
-        sector: "cozinha",
-        waiter: "",
-        additional: false,
-        createdAt: order.createdAt,
-        items: rawItems.map((itemValue) => {
-          const item = asRecord(itemValue);
-          return {
-            product: String(item["produto"] ?? item["nome"] ?? item["produto_nome"] ?? ""),
-            quantity: numeric(item["quantidade"], 1),
-            note: String(item["observacao"] ?? ""),
-            unitPrice: numeric(item["valor_unitario"]),
-          };
-        }),
-        external: {
-          origin: order.type,
-          dayNumber: order.number,
-          channel: order.channel,
-          customerName: order.customerName,
-          phone: order.phone,
-          address: order.address,
-          observation: order.observation,
-          subtotal: numeric(externalData["subtotal"], order.subtotal),
-          deliveryFee: numeric(externalData["taxa_entrega"], order.deliveryFee),
-          total: numeric(externalData["total"], order.total),
-          payment: {
-            forma: payment.forma,
-            pago: payment.pago,
-            trocoPara: payment.trocoPara,
-          },
-        },
-      };
-      await printKitchenTicket(ticket, getPrintSettings(), false);
-      setNotice(`Pedido #${order.number} enviado para reimpressão.`);
+      await imprimirComanda(orderTicket(order));
+      setNotice(`Pedido #${order.number} enviado para impressão.`);
     } catch (cause) {
-      setListError(`Não foi possível reimprimir o pedido #${order.number}: ${errorMessage(cause)}`);
+      setListError(`Pedido #${order.number} não imprimiu. ${printErrorMessage(cause)}`);
     } finally {
       setBusy(false);
+    }
+  };
+
+  const printOnPreparing = async (order: DeliveryOrder) => {
+    if (!loadConfig().autoPrintOnPreparing || printedOnPreparing.has(order.id)) return;
+    printedOnPreparing.add(order.id);
+    try {
+      await imprimirComanda(orderTicket(order));
+      setNotice(`Pedido #${order.number} em preparo e impresso.`);
+    } catch (cause) {
+      avisarFalhaImpressao(cause, {
+        id: `delivery-${order.id}`,
+        title: `Pedido #${order.number} está em preparo, mas não imprimiu`,
+        onRetry: () => void reprintOrder(order),
+      });
     }
   };
 

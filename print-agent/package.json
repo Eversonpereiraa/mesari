@@ -1,0 +1,16 @@
+{
+  "name": "mesari-print-agent",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agente local de impressão do Mesari (rede, impressora do Windows e porta COM).",
+  "main": "agent.js",
+  "bin": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "build:exe": "npx --yes @yao-pkg/pkg@6.23.0 agent.js --targets node22-win-x64 --output dist/mesari-print-agent.exe"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED"
+}

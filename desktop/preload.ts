@@ -1,37 +1,60 @@
-import { contextBridge, ipcRenderer } from "electron";
+/**
+ * Ponte entre o Mesari (renderer isolado) e o sistema. Só funções específicas: nada de expor o
+ * ipcRenderer inteiro.
+ */
+import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
 
-export type MesariDesktopSettings = {
-  printerNota: string;
-  printerComanda: string;
-  iniciarComWindows: boolean;
-  manterEmSegundoPlano: boolean;
-  impedirSuspensao: boolean;
-};
+type Outcome = { ok: true } | { ok: false; mensagem: string; detalhe?: string };
 
-export type MesariPrinter = {
-  name: string;
-  displayName: string;
-  isDefault: boolean;
-};
+function subscribe<T>(channel: string, listener: (payload: T) => void) {
+  const wrapped = (_event: IpcRendererEvent, payload: T) => listener(payload);
+  ipcRenderer.on(channel, wrapped);
+  return () => {
+    ipcRenderer.removeListener(channel, wrapped);
+  };
+}
+
+const bytes = (data?: Uint8Array | null) => (data ? new Uint8Array(data) : null);
 
 contextBridge.exposeInMainWorld("mesariDesktop", {
   isDesktop: true,
-  listPrinters: (): Promise<MesariPrinter[]> => ipcRenderer.invoke("mesari:list-printers"),
-  print: (request: {
-    html: string;
-    printerName: string;
-    widthMm: number;
-    copies: number;
-  }): Promise<{ ok: boolean; error?: string }> => ipcRenderer.invoke("mesari:print", request),
-  getSettings: (): Promise<MesariDesktopSettings> => ipcRenderer.invoke("mesari:get-settings"),
-  setSettings: (settings: Partial<MesariDesktopSettings>): Promise<MesariDesktopSettings> =>
+  getAppInfo: (): Promise<{ versao: string; empacotado: boolean }> =>
+    ipcRenderer.invoke("mesari:app-info"),
+
+  // Configurações do aplicativo e impressão pelo driver (modo "Navegador").
+  getSettings: () => ipcRenderer.invoke("mesari:get-settings"),
+  setSettings: (settings: Record<string, unknown>) =>
     ipcRenderer.invoke("mesari:set-settings", settings),
-  forgetDirectDevice: (type: "serial" | "usb"): Promise<{ ok: true }> =>
-    ipcRenderer.invoke("mesari:forget-direct-device", type),
-  testPrint: (
-    printerName: string,
-    widthMm: number,
-    restaurantName?: string,
-  ): Promise<{ ok: boolean; error?: string }> =>
-    ipcRenderer.invoke("mesari:test-print", { printerName, widthMm, restaurantName }),
+  listPrinters: () => ipcRenderer.invoke("mesari:list-printers"),
+  print: (request: { html: string; printerName: string; widthMm: number; copies: number }) =>
+    ipcRenderer.invoke("mesari:print", request),
+
+  // Impressão nativa ESC/POS. Sem `data`, só testa a conexão.
+  printer: {
+    network: (target: { ip: string; porta: number }, data?: Uint8Array | null): Promise<Outcome> =>
+      ipcRenderer.invoke("mesari:printer-network", target, bytes(data)),
+    windows: (target: { impressora: string }, data?: Uint8Array | null): Promise<Outcome> =>
+      ipcRenderer.invoke("mesari:printer-windows", target, bytes(data)),
+    serial: (target: { com: string; baud: number }, data?: Uint8Array | null): Promise<Outcome> =>
+      ipcRenderer.invoke("mesari:printer-serial", target, bytes(data)),
+    listWindows: (): Promise<{ nome: string; padrao: boolean }[]> =>
+      ipcRenderer.invoke("mesari:printer-list-windows"),
+    listSerial: (): Promise<{ path: string; nome: string; fabricante: string; bluetooth: boolean }[]> =>
+      ipcRenderer.invoke("mesari:printer-list-serial"),
+  },
+
+  // Seletor de dispositivo BLE (Web Bluetooth).
+  ble: {
+    onDevices: (listener: (devices: { id: string; nome: string }[]) => void) =>
+      subscribe("mesari:ble-devices", listener),
+    select: (deviceId: string | null) => ipcRenderer.invoke("mesari:ble-select", deviceId),
+  },
+
+  // Atualização automática: o app só avisa; quem reinicia é o usuário.
+  updates: {
+    onReady: (listener: (info: { versao: string }) => void) =>
+      subscribe("mesari:update-ready", listener),
+    status: (): Promise<{ versao: string | null }> => ipcRenderer.invoke("mesari:update-status"),
+    install: (): Promise<boolean> => ipcRenderer.invoke("mesari:update-install"),
+  },
 });

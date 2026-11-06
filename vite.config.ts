@@ -6,10 +6,16 @@
 // You can pass additional config via defineConfig({ vite: { ... }, etc... }) if needed.
 import { defineConfig } from "@lovable.dev/vite-tanstack-config";
 
+// Build do app desktop (Electron): SPA estático em dist/client, sem servidor (nitro).
+// O build web (Lovable/Vercel) continua igual quando MESARI_DESKTOP não está definido.
+const desktop = process.env["MESARI_DESKTOP"] === "1";
+
 export default defineConfig({
   tanstackStart: {
     // Redirect TanStack Start's bundled server entry to src/server.ts (our SSR error wrapper).
     // nitro/vite builds from this
     server: { entry: "server" },
+    ...(desktop ? { spa: { enabled: true, prerender: { outputPath: "/index.html" } } } : {}),
   },
+  ...(desktop ? { nitro: false as const } : {}),
 });
