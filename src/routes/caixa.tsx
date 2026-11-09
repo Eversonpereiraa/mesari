@@ -30,6 +30,7 @@ import { MenuPicker } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
 import { printPreBill, reprintBill, useBillPrintFailures } from "@/lib/bill-print";
 import { abrirGaveta, avisarFalhaImpressao, loadConfig } from "@/lib/printing";
+import { requestBillPrint, usePrintQueue } from "@/lib/print-queue";
 import { useConfirm } from "@/components/system-dialog-provider";
 import {
   AreaFilter,
@@ -73,6 +74,8 @@ function Caixa() {
   const orders = useStore((x) => x.orders);
   const restaurant = useStore((x) => x.restaurant);
   const billPrintAvailable = useStore((x) => x.billPrintAvailable);
+  // Fila de impressão no banco: a conta sai sozinha na estação quando a mesa vai para "conta".
+  const queueAvailable = usePrintQueue().available === true;
   const navigate = useNavigate();
   const confirmar = useConfirm();
   const salao = useSalaoData();
@@ -147,8 +150,8 @@ function Caixa() {
       return;
     }
     toast.success(`Conta solicitada na mesa ${tableNumber(table.number)}. Imprimindo a nota...`);
-    // Com a migration da nota, a estação de impressão do caixa imprime; antes dela, imprime aqui.
-    if (billPrintAvailable) return;
+    // Com a fila (ou a migration da nota), a estação de impressão imprime; antes dela, imprime aqui.
+    if (queueAvailable || billPrintAvailable) return;
     try {
       await printPreBill(table, tableLines, restaurant);
     } catch (cause) {
@@ -163,7 +166,8 @@ function Caixa() {
     if (!sel) return;
     setReprinting(true);
     try {
-      await reprintBill(sel, lines, restaurant, billPrintAvailable);
+      if (queueAvailable) await requestBillPrint(sel.id);
+      else await reprintBill(sel, lines, restaurant, billPrintAvailable);
       toast.success(`Reimprimindo a nota da mesa ${tableNumber(sel.number)}`);
     } catch (cause) {
       avisarFalhaImpressao(cause, { title: "Nota não impressa", onRetry: () => void reprint() });

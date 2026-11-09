@@ -33,8 +33,15 @@ module.exports = {
     oneClick: false,
     perMachine: false,
     allowToChangeInstallationDirectory: true,
-    createDesktopShortcut: true,
+    // O atalho da Área de Trabalho é um checkbox na página "Opções" (build/installer.nsh).
+    createDesktopShortcut: false,
     createStartMenuShortcut: true,
+    // Visual do assistente: imagem lateral (164x314) nas telas de boas-vindas/conclusão,
+    // faixa no topo (150x57) nas outras e tela de termos de uso.
+    license: "build/license_pt_BR.txt",
+    installerSidebar: "build/installerSidebar.bmp",
+    uninstallerSidebar: "build/installerSidebar.bmp",
+    installerHeader: "build/installerHeader.bmp",
     shortcutName: "Mesari",
     runAfterFinish: true,
     installerIcon: "build/icon.ico",

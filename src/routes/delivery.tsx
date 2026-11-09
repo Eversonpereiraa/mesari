@@ -29,6 +29,7 @@ import {
   type KitchenTicket,
 } from "@/lib/printing";
 import { toast } from "sonner";
+import { getQueueState, reprintExternalOrder } from "@/lib/print-queue";
 
 export const Route = createFileRoute("/delivery")({
   head: () => ({
@@ -544,7 +545,9 @@ function Delivery() {
     setBusy(true);
     setListError("");
     try {
-      await imprimirComanda(orderTicket(order));
+      // Com a fila, a estação de impressão reimprime; pedido antigo (sem fila) imprime aqui.
+      const queued = getQueueState().available === true && (await reprintExternalOrder(order.id));
+      if (!queued) await imprimirComanda(orderTicket(order));
       setNotice(`Pedido #${order.number} enviado para impressão.`);
     } catch (cause) {
       setListError(`Pedido #${order.number} não imprimiu. ${printErrorMessage(cause)}`);
@@ -554,6 +557,8 @@ function Delivery() {
   };
 
   const printOnPreparing = async (order: DeliveryOrder) => {
+    // Com a fila, o banco gera a comanda ao avançar para "Em preparo" (se não saiu ao criar).
+    if (getQueueState().available !== false) return;
     if (!loadConfig().autoPrintOnPreparing || printedOnPreparing.has(order.id)) return;
     printedOnPreparing.add(order.id);
     try {

@@ -92,7 +92,9 @@ export function comandaCozinha(ticket: KitchenTicket, options: ComandaOptions = 
   const number = external?.dayNumber ?? ticket.number;
   const lines: DocLine[] = [];
   const title = ticket.sector === "bar" && !external ? "COMANDA DE BAR" : "COMANDA DE COZINHA";
-  lines.push(center(ticket.additional ? `${title} - ADICIONAL` : title, { bold: true }));
+  // Adicional: destaque no topo; a comanda traz só os itens novos daquele envio.
+  if (ticket.additional) lines.push(center("*** ADICIONAL ***", { bold: true, size: "tall" }));
+  lines.push(center(title, { bold: true }));
   lines.push(EQ);
   const place = external
     ? `${external.origin === "entrega" ? "ENTREGA" : "RETIRADA"} #${number}`

@@ -1,0 +1,29 @@
+﻿TERMOS DE USO DO MESARI
+
+Leia com atenção antes de instalar.
+
+1. O QUE É
+O Mesari é um sistema de comandas, caixa e delivery para restaurantes. Este instalador coloca no seu computador o aplicativo do Mesari para Windows.
+
+2. CONTA E PLANO
+Para usar o Mesari é preciso entrar com uma conta ativa. Os recursos e limites disponíveis (como quantidade de mesas, garçons e impressoras) dependem do plano contratado. Ao fim do período pago, se a assinatura não for renovada, o acesso aos recursos do plano é suspenso.
+
+3. INTERNET
+Os dados do restaurante ficam guardados na nuvem. O aplicativo precisa de internet para sincronizar pedidos, mesas e vendas.
+
+4. ATUALIZAÇÕES
+O Mesari verifica automaticamente se há versões novas e avisa você. A atualização só é instalada quando você escolher, ou quando o aplicativo for fechado.
+
+5. SEUS DADOS
+Os dados cadastrados (cardápio, pedidos, vendas e clientes de delivery) pertencem ao restaurante. Eles são usados apenas para o funcionamento do sistema e não são vendidos a terceiros. O tratamento segue a Lei Geral de Proteção de Dados (Lei nº 13.709/2018).
+
+6. USO PERMITIDO
+É proibido copiar, modificar, revender ou tentar burlar as limitações do plano do aplicativo.
+
+7. GARANTIA E RESPONSABILIDADE
+O Mesari é fornecido como está. Fazemos o possível para mantê-lo funcionando sem falhas, mas não nos responsabilizamos por prejuízos causados por falta de internet, falhas de impressora ou de equipamentos de terceiros.
+
+8. SUPORTE
+O atendimento é feito pelos canais informados no site, conforme o plano contratado.
+
+Ao clicar em "Aceito", você concorda com estes termos.

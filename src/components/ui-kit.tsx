@@ -6,7 +6,9 @@ import {
   Bike,
   ChevronLeft,
   ChevronRight,
+  CreditCard,
   LayoutGrid,
+  Lock,
   LogOut,
   Map,
   Printer,
@@ -18,8 +20,7 @@ import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
 import { MesariLogo } from "@/components/mesari-logo";
 import { loadConfig, setPrintRestaurant } from "@/lib/printing";
-import { KitchenPrintStation } from "@/components/kitchen-print-station";
-import { BillPrintStation } from "@/components/bill-print-station";
+import { PrintQueueBars } from "@/components/print-queue-station";
 import { useConfirm } from "@/components/system-dialog-provider";
 
 export const btn = cva(
@@ -110,7 +111,6 @@ export function Check({
 }
 
 export function useRequireAuth() {
-  const confirmar = useConfirm();
   const user = useStore((s) => s.user);
   const loading = useStore((s) => s.loading);
   const configured = useStore((s) => s.configured);
@@ -178,7 +178,40 @@ const nav = [
   { to: "/layout", label: "Layout do salão", Icon: Map },
   { to: "/impressao", label: "Impressão", Icon: Printer },
   { to: "/restaurante", label: "Restaurante", Icon: Settings2 },
+  { to: "/plano", label: "Meu plano", Icon: CreditCard },
 ] as const;
+
+/** Aviso de teste grátis acabando ou assinatura vencida (só para o caixa). */
+export function PlanBanner() {
+  const plan = useStore((s) => s.plan);
+  const role = useStore((s) => s.user?.role);
+  if (!plan || role !== "caixa") return null;
+  const days =
+    plan.periodEnd === null ? null : Math.ceil((plan.periodEnd - Date.now()) / 86_400_000);
+  let text: string | null = null;
+  let tone = "bg-bill-bg text-ink border-bill/30";
+  if (!plan.active) {
+    text = "A assinatura do Mesari venceu. Os pedidos novos estão bloqueados até a renovação.";
+    tone = "bg-destructive/10 text-destructive border-destructive/20";
+  } else if (plan.status === "teste" && days !== null) {
+    text =
+      days <= 1
+        ? "O teste grátis termina hoje. Assine para não parar o salão."
+        : `Teste grátis: faltam ${days} dias.`;
+  } else if (plan.status === "atrasada") {
+    text = "O pagamento da assinatura está atrasado. Regularize para não bloquear os pedidos.";
+    tone = "bg-destructive/10 text-destructive border-destructive/20";
+  }
+  if (!text) return null;
+  return (
+    <div className={cn("flex items-center justify-between gap-3 border-b px-4 py-2 text-sm", tone)}>
+      <span>{text}</span>
+      <Link to="/plano" className="shrink-0 font-semibold underline">
+        {plan.active ? "Ver planos" : "Renovar"}
+      </Link>
+    </div>
+  );
+}
 
 export function AppShell({
   children,
@@ -190,7 +223,9 @@ export function AppShell({
   right?: ReactNode;
 }) {
   const user = useRequireAuth();
+  const confirmar = useConfirm();
   const name = useStore((s) => s.restaurant.name);
+  const deliveryAllowed = useStore((s) => s.plan?.plan.delivery ?? true);
   const path = useRouterState({ select: (s) => s.location.pathname });
   const [collapsed, setCollapsed] = useState(false);
   return (
@@ -229,26 +264,39 @@ export function AppShell({
           {nav
             .filter(
               (item) =>
-                (item.to !== "/vendas" && item.to !== "/impressao" && item.to !== "/delivery") ||
+                (item.to !== "/vendas" &&
+                  item.to !== "/impressao" &&
+                  item.to !== "/delivery" &&
+                  item.to !== "/plano") ||
                 user?.role === "caixa",
             )
-            .map(({ Icon, ...item }) => (
-              <Link
-                key={item.to}
-                title={collapsed ? item.label : undefined}
-                to={item.to}
-                className={cn(
-                  "flex min-h-11 items-center rounded-xl text-sm font-medium",
-                  collapsed ? "justify-center px-2" : "gap-3 px-3",
-                  path.startsWith(item.to)
-                    ? "bg-primary text-white shadow-sm"
-                    : "text-sidebar-foreground/75 hover:bg-white/10 hover:text-sidebar-foreground",
-                )}
-              >
-                <Icon className="h-[18px] w-[18px] shrink-0" />
-                {!collapsed && item.label}
-              </Link>
-            ))}
+            .map(({ Icon, ...item }) => {
+              const locked = item.to === "/delivery" && !deliveryAllowed;
+              return (
+                <Link
+                  key={item.to}
+                  title={
+                    locked
+                      ? "Delivery: disponível a partir do plano Profissional"
+                      : collapsed
+                        ? item.label
+                        : undefined
+                  }
+                  to={locked ? "/plano" : item.to}
+                  className={cn(
+                    "flex min-h-11 items-center rounded-xl text-sm font-medium",
+                    collapsed ? "justify-center px-2" : "gap-3 px-3",
+                    path.startsWith(item.to)
+                      ? "bg-primary text-white shadow-sm"
+                      : "text-sidebar-foreground/75 hover:bg-white/10 hover:text-sidebar-foreground",
+                  )}
+                >
+                  <Icon className="h-[18px] w-[18px] shrink-0" />
+                  {!collapsed && item.label}
+                  {!collapsed && locked && <Lock className="ml-auto h-3.5 w-3.5 opacity-70" />}
+                </Link>
+              );
+            })}
         </nav>
         <div
           className={cn(
@@ -307,8 +355,8 @@ export function AppShell({
         </header>
         <main className="flex-1">
           <StoreErrorBanner />
-          {user?.role === "caixa" && <KitchenPrintStation />}
-          {user?.role === "caixa" && <BillPrintStation />}
+          <PlanBanner />
+          {user?.role === "caixa" && <PrintQueueBars />}
           {children}
         </main>
       </div>

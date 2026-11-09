@@ -18,6 +18,7 @@ import { Route as GarcomRouteImport } from './routes/garcom'
 import { Route as ImpressaoRouteImport } from './routes/impressao'
 import { Route as LayoutRouteImport } from './routes/layout'
 import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]webmanifest'
+import { Route as PlanoRouteImport } from './routes/plano'
 import { Route as RestauranteRouteImport } from './routes/restaurante'
 import { Route as VendasRouteImport } from './routes/vendas'
 import { Route as MesaIdRouteImport } from './routes/mesa.$id'
@@ -68,6 +69,11 @@ const ManifestDotwebmanifestRoute = ManifestDotwebmanifestRouteImport.update({
   path: '/manifest.webmanifest',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PlanoRoute = PlanoRouteImport.update({
+  id: '/plano',
+  path: '/plano',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const RestauranteRoute = RestauranteRouteImport.update({
   id: '/restaurante',
   path: '/restaurante',
@@ -99,6 +105,7 @@ export interface FileRoutesByFullPath {
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
@@ -114,6 +121,7 @@ export interface FileRoutesByTo {
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
@@ -130,6 +138,7 @@ export interface FileRoutesById {
   '/impressao': typeof ImpressaoRoute
   '/layout': typeof LayoutRoute
   '/manifest.webmanifest': typeof ManifestDotwebmanifestRoute
+  '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
   '/mesa/$id': typeof MesaIdRoute
@@ -147,6 +156,7 @@ export interface FileRouteTypes {
     | '/impressao'
     | '/layout'
     | '/manifest.webmanifest'
+    | '/plano'
     | '/restaurante'
     | '/vendas'
     | '/mesa/$id'
@@ -162,6 +172,7 @@ export interface FileRouteTypes {
     | '/impressao'
     | '/layout'
     | '/manifest.webmanifest'
+    | '/plano'
     | '/restaurante'
     | '/vendas'
     | '/mesa/$id'
@@ -177,6 +188,7 @@ export interface FileRouteTypes {
     | '/impressao'
     | '/layout'
     | '/manifest.webmanifest'
+    | '/plano'
     | '/restaurante'
     | '/vendas'
     | '/mesa/$id'
@@ -193,6 +205,7 @@ export interface RootRouteChildren {
   ImpressaoRoute: typeof ImpressaoRoute
   LayoutRoute: typeof LayoutRoute
   ManifestDotwebmanifestRoute: typeof ManifestDotwebmanifestRoute
+  PlanoRoute: typeof PlanoRoute
   RestauranteRoute: typeof RestauranteRoute
   VendasRoute: typeof VendasRoute
   MesaIdRoute: typeof MesaIdRoute
@@ -264,6 +277,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ManifestDotwebmanifestRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/plano': {
+      id: '/plano'
+      path: '/plano'
+      fullPath: '/plano'
+      preLoaderRoute: typeof PlanoRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/restaurante': {
       id: '/restaurante'
       path: '/restaurante'
@@ -305,6 +325,7 @@ const rootRouteChildren: RootRouteChildren = {
   ImpressaoRoute: ImpressaoRoute,
   LayoutRoute: LayoutRoute,
   ManifestDotwebmanifestRoute: ManifestDotwebmanifestRoute,
+  PlanoRoute: PlanoRoute,
   RestauranteRoute: RestauranteRoute,
   VendasRoute: VendasRoute,
   MesaIdRoute: MesaIdRoute,

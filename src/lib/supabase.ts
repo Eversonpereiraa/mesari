@@ -11,6 +11,12 @@ const SUPABASE_ANON_KEY =
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 export const supabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
 
-export function usernameEmail(username: string) {
-  return `${username.trim().toLowerCase()}@mesari.local`;
+/**
+ * E-mail usado no login. Dono entra com o e-mail de verdade; funcionário entra com o usuário,
+ * que vira "usuario@r<código do restaurante>.mesari.local" (cada restaurante tem o seu "joao").
+ */
+export function usernameEmail(username: string, restaurantCode = "") {
+  const value = username.trim().toLowerCase();
+  if (value.includes("@")) return value;
+  return `${value}@r${restaurantCode.trim()}.mesari.local`;
 }

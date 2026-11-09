@@ -17,6 +17,7 @@ import { MESARI_BRAND } from "@/lib/branding";
 import { SystemDialogProvider } from "@/components/system-dialog-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { DesktopUpdateBanner } from "@/components/desktop-update-banner";
+import { PrintQueueBootstrap } from "@/components/print-queue-station";
 
 function NotFoundComponent() {
   return (
@@ -113,7 +114,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="pt-BR">
       <head>
         <HeadContent />
       </head>
@@ -131,6 +132,7 @@ function RootComponent() {
   return (
     <QueryClientProvider client={queryClient}>
       <StoreBootstrap />
+      <PrintQueueBootstrap />
       <SystemDialogProvider>
         {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
         <Outlet />

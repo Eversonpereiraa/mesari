@@ -6,6 +6,7 @@
 import {
   app,
   BrowserWindow,
+  dialog,
   ipcMain,
   Menu,
   nativeImage,
@@ -32,7 +33,13 @@ import {
   toBuffer,
   windowsTarget,
 } from "./printing";
-import { installUpdateNow, startUpdater, updateReadyVersion } from "./updater";
+import {
+  downloadUpdate,
+  installUpdateNow,
+  startUpdater,
+  updateReadyVersion,
+  updateState,
+} from "./updater";
 
 type AppSettings = {
   printerNota: string;
@@ -40,6 +47,8 @@ type AppSettings = {
   iniciarComWindows: boolean;
   manterEmSegundoPlano: boolean;
   impedirSuspensao: boolean;
+  /** Ao fechar a janela, perguntar "Minimizar para a bandeja" ou "Sair". */
+  perguntarAoFechar: boolean;
 };
 
 type PrintRequest = { html: string; printerName: string; widthMm: number; copies: number };
@@ -49,6 +58,8 @@ const APP_SCHEME = "app";
 const APP_BASE = `${APP_SCHEME}://mesari/`;
 const DEV_URL = process.env["MESARI_DEV_URL"]?.replace(/\/?$/, "/");
 const START_URL = !app.isPackaged && DEV_URL ? DEV_URL : APP_BASE;
+/** Abre direto na tela Mesas (sem sessão, o app manda para o login). */
+const HOME_URL = `${START_URL}caixa`;
 const LOGIN_ITEM_NAME = "Mesari";
 const LOG_MAX_BYTES = 1024 * 1024;
 const LOG_BACKUPS = 3;
@@ -137,27 +148,17 @@ function writeJson(filePath: string, value: unknown) {
 // ---------------------------------------------------------------------------------------------
 // Configurações do aplicativo
 
-/** O instalador grava a mesma entrada "Mesari" em HKCU\...\Run quando a opção é marcada. */
-function startsWithWindows() {
-  const settings = app.getLoginItemSettings();
-  return (
-    settings.executableWillLaunchAtLogin ||
-    Boolean(settings.launchItems?.some((item) => item.name === LOGIN_ITEM_NAME && item.enabled))
-  );
-}
-
 function readSettings(): AppSettings {
   const stored = readJson<Partial<AppSettings>>(userDataPath("settings.json"));
   return {
     printerNota: typeof stored?.printerNota === "string" ? stored.printerNota : "",
     printerComanda: typeof stored?.printerComanda === "string" ? stored.printerComanda : "",
-    // Desligado por padrão; na primeira vez vale o que foi escolhido no instalador.
+    // Ligado por padrão: a estação de impressão precisa estar aberta para imprimir sozinha.
     iniciarComWindows:
-      typeof stored?.iniciarComWindows === "boolean"
-        ? stored.iniciarComWindows
-        : startsWithWindows(),
+      typeof stored?.iniciarComWindows === "boolean" ? stored.iniciarComWindows : true,
     manterEmSegundoPlano: stored?.manterEmSegundoPlano !== false,
     impedirSuspensao: stored?.impedirSuspensao !== false,
+    perguntarAoFechar: stored?.perguntarAoFechar !== false,
   };
 }
 
@@ -187,7 +188,12 @@ function validateSettingsUpdate(value: unknown, current: AppSettings) {
     if (typeof entry !== "string" || entry.length > 512) throw new Error("Valor inválido.");
     next[key] = entry;
   }
-  for (const key of ["iniciarComWindows", "manterEmSegundoPlano", "impedirSuspensao"] as const) {
+  for (const key of [
+    "iniciarComWindows",
+    "manterEmSegundoPlano",
+    "impedirSuspensao",
+    "perguntarAoFechar",
+  ] as const) {
     const entry = update[key];
     if (entry === undefined) continue;
     if (typeof entry !== "boolean") throw new Error("Valor inválido.");
@@ -349,9 +355,12 @@ function registerIpc() {
   });
 
   handle("mesari:update-status", () => ({ versao: updateReadyVersion() }));
+  handle("mesari:update-state", () => updateState());
+  handle("mesari:update-download", () => downloadUpdate());
   handle("mesari:update-install", () => {
-    quitRequested = true;
-    return installUpdateNow();
+    const ok = installUpdateNow();
+    if (ok) quitRequested = true;
+    return ok;
   });
 }
 
@@ -468,7 +477,7 @@ function createMainWindow() {
 
   window.webContents.on("render-process-gone", (_event, details) => {
     log("Processo de renderização encerrado", details);
-    if (!window.isDestroyed()) void window.loadURL(START_URL);
+    if (!window.isDestroyed()) void window.loadURL(HOME_URL);
   });
   window.webContents.on("did-fail-load", (_event, code, description, url, isMainFrame) => {
     if (isMainFrame && code !== -3) log(`Falha ao carregar ${url}`, `${code} ${description}`);
@@ -476,9 +485,16 @@ function createMainWindow() {
 
   window.on("close", (event) => {
     persistWindowState(window);
-    if (!quitRequested && readSettings().manterEmSegundoPlano) {
+    if (quitRequested) return;
+    const settings = readSettings();
+    if (settings.perguntarAoFechar) {
       event.preventDefault();
-      window.hide();
+      void askOnClose(window);
+      return;
+    }
+    if (settings.manterEmSegundoPlano) {
+      event.preventDefault();
+      hideToTray(window);
     }
   });
   window.on("resized", () => persistWindowState(window));
@@ -490,12 +506,63 @@ function createMainWindow() {
     if (state?.maximized !== false) window.maximize();
     window.show();
   });
-  void window.loadURL(START_URL);
+  void window.loadURL(HOME_URL);
+}
+
+let trayHintShown = false;
+
+/** Esconde a janela; a estação de impressão continua rodando (backgroundThrottling desligado). */
+function hideToTray(window: BrowserWindow) {
+  window.hide();
+  if (!trayHintShown && tray && process.platform === "win32") {
+    trayHintShown = true;
+    tray.displayBalloon({
+      iconType: "info",
+      title: "Mesari continua imprimindo",
+      content: "O Mesari está na bandeja e segue imprimindo as comandas. Clique no ícone para abrir.",
+    });
+  }
+}
+
+let closePromptOpen = false;
+
+async function askOnClose(window: BrowserWindow) {
+  if (closePromptOpen) return;
+  closePromptOpen = true;
+  try {
+    const { response, checkboxChecked } = await dialog.showMessageBox(window, {
+      type: "question",
+      title: "Fechar o Mesari",
+      message: "O que você quer fazer?",
+      detail: "Na bandeja, o Mesari continua imprimindo as comandas e as contas.",
+      buttons: ["Minimizar para a bandeja (continua imprimindo)", "Sair"],
+      defaultId: 0,
+      cancelId: 0,
+      noLink: true,
+      checkboxLabel: "Lembrar a escolha e não perguntar de novo",
+    });
+    const quit = response === 1;
+    if (checkboxChecked) {
+      const settings = { ...readSettings(), perguntarAoFechar: false, manterEmSegundoPlano: !quit };
+      writeJson(userDataPath("settings.json"), settings);
+    }
+    if (quit) {
+      quitRequested = true;
+      app.quit();
+    } else if (!window.isDestroyed()) {
+      hideToTray(window);
+    }
+  } catch (cause) {
+    log("Falha ao perguntar ao fechar", cause);
+    if (!window.isDestroyed()) hideToTray(window);
+  } finally {
+    closePromptOpen = false;
+  }
 }
 
 function createTray() {
   tray = new Tray(nativeImage.createFromPath(path.join(app.getAppPath(), "build", "icon.ico")));
-  tray.setToolTip("Mesari");
+  tray.setToolTip("Mesari · estação de impressão");
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Abrir Mesari", click: bringToFront },

@@ -26,7 +26,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/supabase", () => ({
   supabase: mocks,
   supabaseConfigured: true,
-  usernameEmail: (username: string) => `${username.trim().toLowerCase()}@mesari.local`,
+  usernameEmail: (username: string, code = "") => {
+    const value = username.trim().toLowerCase();
+    return value.includes("@") ? value : `${value}@r${code}.mesari.local`;
+  },
 }));
 
 // Compressão usa canvas (indisponível no jsdom): o envio ao Storage é simulado.
@@ -266,23 +269,54 @@ describe("integração do store com o schema existente", () => {
     expect(mocks.calls.some((call) => call.table === "configuracoes_restaurante")).toBe(false);
   });
 
-  it("autentica usando usuario@mesari.local e escolhe papel do profile", async () => {
+  it("funcionário entra com usuário + código do restaurante e escolhe papel do profile", async () => {
     mocks.rows.profiles = [
-      { id: "profile-1", usuario: "caixa", nome: "Caixa", papel: "caixa", ativo: true },
+      {
+        id: "profile-1",
+        usuario: "caixa",
+        nome: "Caixa",
+        papel: "caixa",
+        ativo: true,
+        restaurante_id: 1,
+      },
     ];
     mocks.rows.restaurante = [{ id: 1, nome: "Mesari" }];
 
-    await expect(actions.login("Caixa", "senha")).resolves.toBe("caixa");
+    await expect(actions.login("Caixa", "senha", "100100")).resolves.toBe("caixa");
 
     expect(mocks.auth.signInWithPassword).toHaveBeenCalledWith({
-      email: "caixa@mesari.local",
+      email: "caixa@r100100.mesari.local",
       password: "senha",
     });
     expect(mocks.calls).toContainEqual({
       table: "profiles",
       method: "select",
-      args: ["id,usuario,nome,papel,ativo", ["id", "profile-1"]],
+      args: ["id,usuario,nome,papel,ativo,restaurante_id", ["id", "profile-1"]],
     });
+  });
+
+  it("dono entra com o e-mail; sem e-mail e sem código o login é recusado", async () => {
+    mocks.rows.profiles = [
+      {
+        id: "profile-1",
+        usuario: "dono",
+        nome: "Dono",
+        papel: "caixa",
+        ativo: true,
+        restaurante_id: 1,
+      },
+    ];
+    mocks.rows.restaurante = [{ id: 1, nome: "Mesari" }];
+
+    await expect(actions.login("Dono@Exemplo.com", "senha", "")).resolves.toBe("caixa");
+    expect(mocks.auth.signInWithPassword).toHaveBeenCalledWith({
+      email: "dono@exemplo.com",
+      password: "senha",
+    });
+
+    mocks.auth.signInWithPassword.mockClear();
+    await expect(actions.login("joao", "senha", "")).resolves.toBe(false);
+    expect(mocks.auth.signInWithPassword).not.toHaveBeenCalled();
   });
 
   it("cadastra garçons pelo RPC sem alterar a sessão do caixa", async () => {

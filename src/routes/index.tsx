@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState, type FormEvent } from "react";
 import { actions, useStore } from "@/lib/store";
+import { savedRestaurantCode } from "@/lib/tenant";
 import { Btn, Field } from "@/components/ui-kit";
 import { MesariLogo } from "@/components/mesari-logo";
 
@@ -22,11 +23,14 @@ function Login() {
   const nav = useNavigate();
   const [u, setU] = useState("");
   const [c, setC] = useState("");
+  const [code, setCode] = useState(() => savedRestaurantCode());
   const [err, setErr] = useState("");
+  const isEmail = u.includes("@");
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
-    const role = await actions.login(u, c);
+    setErr("");
+    const role = await actions.login(u, c, code);
     if (!role) {
       setErr("Não foi possível autenticar o usuário.");
       return;
@@ -49,20 +53,32 @@ function Login() {
           <div className="text-xs text-muted-foreground">Sistema de comandas</div>
         </div>
         <div className="space-y-4">
-          <Field label="Nome de usuário">
+          <Field label="Usuário ou e-mail">
             <input
               className="field"
               autoFocus
               autoComplete="username"
+              autoCapitalize="none"
               value={u}
               onChange={(e) => setU(e.target.value)}
             />
           </Field>
+          {!isEmail && (
+            <Field label="Código do restaurante">
+              <input
+                className="field num tracking-widest"
+                inputMode="numeric"
+                maxLength={6}
+                placeholder="6 números"
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+            </Field>
+          )}
           <Field label="Senha">
             <input
               className="field num tracking-widest"
               type="password"
-              inputMode="numeric"
               autoComplete="current-password"
               value={c}
               onChange={(e) => setC(e.target.value)}
@@ -76,6 +92,10 @@ function Login() {
           <Btn type="submit" size="lg" className="w-full">
             Entrar
           </Btn>
+          <p className="text-center text-xs text-muted-foreground">
+            Dono: entre com o e-mail da compra. Funcionário: use seu usuário e o código do
+            restaurante (o dono vê em "Meu plano").
+          </p>
         </div>
       </form>
     </div>

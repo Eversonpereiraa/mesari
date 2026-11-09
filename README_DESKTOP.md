@@ -60,7 +60,9 @@ O script:
 
 O instalador:
 
-- é em português, com assistente: escolher a pasta e criar atalhos na área de trabalho e no Menu Iniciar;
+- é em português, com assistente: **Boas-vindas → Termos de uso → Para quem instalar → Pasta → Opções → Instalando → Tudo pronto!**;
+- tem a imagem lateral e a faixa do topo com a marca (`build/installerSidebar.bmp` e `build/installerHeader.bmp`) e os termos em `build/license_pt_BR.txt`;
+- na página **Opções**, tem o checkbox "Criar atalho na Área de Trabalho" (marcado). A escolha fica em `HKCU\Software\Mesari` e as atualizações respeitam;
 - na última tela, tem "Abrir o Mesari ao terminar" (marcado) e "Iniciar o Mesari com o Windows" (desmarcado). Essa opção também fica em **Impressão > App desktop** dentro do Mesari;
 - instala por usuário (sem pedir administrador) em `%LOCALAPPDATA%\Programs\Mesari`;
 - aparece em **Aplicativos instalados** como "Mesari", com ícone e editora "Mesari". A desinstalação mantém os dados do usuário (`%APPDATA%\Mesari`).
@@ -83,7 +85,12 @@ O instalador:
      npm run desktop:publish
      ```
 
-3. Nos computadores com o Mesari Desktop: ao abrir (e a cada 4 horas), o app verifica em segundo plano e baixa a versão nova. Quando termina, aparece **"Nova versão disponível. Reiniciar agora?"**. O app **nunca reinicia sozinho**. Se o usuário escolher "Depois", a versão nova é instalada quando o Mesari for fechado pelo menu da bandeja (**Sair**).
+3. Escreva as novidades na descrição do Release no GitHub (uma por linha, com "-"). Elas aparecem no botão **"Ver o que mudou"** do aviso.
+4. Nos computadores com o Mesari Desktop: ao abrir (15 s depois) e a cada 4 horas, o app verifica em segundo plano. Achou versão nova:
+   - aparece o cartão **"Nova atualização disponível"** (versão, tamanho e novidades);
+   - **Atualizar agora** → tela com o progresso animado (porcentagem, MB baixados e velocidade) → "Atualização concluída!" → "Reiniciando o Mesari…" → o app fecha, instala em silêncio e abre de novo na versão nova;
+   - **Depois** → baixa em segundo plano; quando termina, um cartão discreto oferece **Reiniciar agora** ou **Ao fechar o app**.
+   O app **nunca reinicia sem o clique do usuário**. Se ninguém reiniciar, a versão nova entra quando o Mesari for fechado pelo menu da bandeja (**Sair**).
 
 ### Repositório das versões
 

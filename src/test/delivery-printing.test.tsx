@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   events: [] as string[],
   rpc: vi.fn(),
   toastError: vi.fn(),
+  queueAvailable: false as boolean | null,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -24,6 +25,11 @@ vi.mock("@/components/ui-kit", () => ({
       {children}
     </label>
   ),
+}));
+// Sem a fila de impressão no banco (migration não aplicada), a tela de Delivery imprime sozinha.
+vi.mock("@/lib/print-queue", () => ({
+  getQueueState: () => ({ available: mocks.queueAvailable }),
+  reprintExternalOrder: vi.fn(async () => false),
 }));
 vi.mock("@/components/menu-picker", () => ({ MenuPicker: () => null }));
 vi.mock("@/components/payment-dialog", () => ({ PaymentDialog: () => null }));
@@ -115,6 +121,7 @@ beforeEach(() => {
   resetPrinterForTests();
   mocks.rows = [deliveryRow()];
   mocks.events = [];
+  mocks.queueAvailable = false;
   mocks.toastError.mockReset();
   mocks.rpc.mockReset().mockImplementation(async (name: string, args: Record<string, unknown>) => {
     mocks.events.push(`rpc:${name}:${String(args["p_status"])}`);
@@ -130,7 +137,27 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("Delivery: impressão ao avançar para Em preparo", () => {
+describe("Delivery com a fila de impressão", () => {
+  it("não imprime direto pela tela: a comanda vai para a fila no banco", async () => {
+    mocks.queueAvailable = true;
+    saveConfig({
+      ...defaultConfig(),
+      connection: "rede",
+      ip: "10.0.0.9",
+      autoPrintOnPreparing: true,
+    });
+    agent(true);
+    render(<Delivery />);
+    fireEvent.click(await screen.findByRole("button", { name: /Avançar: Em preparo/ }));
+    await waitFor(() =>
+      expect(mocks.events).toContain("rpc:atualizar_status_pedido_externo:preparo"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mocks.events).not.toContain("agente:/print");
+  });
+});
+
+describe("Delivery sem a fila: impressão ao avançar para Em preparo", () => {
   it("grava o status primeiro e imprime uma única vez", async () => {
     saveConfig({
       ...defaultConfig(),

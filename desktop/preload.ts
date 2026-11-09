@@ -50,11 +50,15 @@ contextBridge.exposeInMainWorld("mesariDesktop", {
     select: (deviceId: string | null) => ipcRenderer.invoke("mesari:ble-select", deviceId),
   },
 
-  // Atualização automática: o app só avisa; quem reinicia é o usuário.
+  // Atualização automática: o app só avisa; quem baixa e reinicia é o usuário.
   updates: {
     onReady: (listener: (info: { versao: string }) => void) =>
       subscribe("mesari:update-ready", listener),
     status: (): Promise<{ versao: string | null }> => ipcRenderer.invoke("mesari:update-status"),
     install: (): Promise<boolean> => ipcRenderer.invoke("mesari:update-install"),
+    // App 1.2+: estado completo (disponível → baixando → pronta) e download sob demanda.
+    onState: (listener: (state: unknown) => void) => subscribe("mesari:update-state", listener),
+    state: (): Promise<unknown> => ipcRenderer.invoke("mesari:update-state"),
+    download: (): Promise<boolean> => ipcRenderer.invoke("mesari:update-download"),
   },
 });

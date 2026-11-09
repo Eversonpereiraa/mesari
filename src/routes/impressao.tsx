@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState, useSyncExternalStore, type ReactNode 
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
 import { Switch } from "@/components/ui/switch";
+import { usePrintQueue } from "@/lib/print-queue";
 import { PrintLayoutSettings } from "@/components/print-layout-settings";
 import { DesktopPrinterConnection } from "@/components/desktop-printer-connection";
 import {
@@ -123,7 +124,84 @@ function Toggle({
   );
 }
 
+type SharedConfig = { delivery_imprimir_ao_criar: boolean; conta_automatica: boolean };
+
+/** Opções da fila de impressão que valem para todas as estações (tabela config_impressao). */
+function SharedAutomation() {
+  const [shared, setShared] = useState<SharedConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void supabase
+      .from("config_impressao")
+      .select("delivery_imprimir_ao_criar,conta_automatica")
+      .eq("id", 1)
+      .maybeSingle()
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) setProblem(errorMessage(error));
+        else
+          setShared(
+            (data as SharedConfig | null) ?? {
+              delivery_imprimir_ao_criar: true,
+              conta_automatica: true,
+            },
+          );
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const save = async (patch: Partial<SharedConfig>) => {
+    if (!shared) return;
+    const next = { ...shared, ...patch };
+    setSaving(true);
+    setProblem(null);
+    setShared(next);
+    const { error } = await supabase
+      .from("config_impressao")
+      .update({ ...patch, atualizado_em: new Date().toISOString() })
+      .eq("id", 1);
+    if (error) {
+      setShared(shared);
+      setProblem(errorMessage(error));
+    }
+    setSaving(false);
+  };
+
+  if (!shared) {
+    return problem ? <p className="text-xs text-destructive">{problem}</p> : null;
+  }
+  return (
+    <>
+      <Toggle
+        checked={shared.delivery_imprimir_ao_criar}
+        onChange={(value) => void save({ delivery_imprimir_ao_criar: value })}
+      >
+        Ao criar pedido de delivery: imprimir e mover para Em preparo automaticamente
+      </Toggle>
+      <p className="ml-12 text-xs text-muted-foreground">
+        {shared.delivery_imprimir_ao_criar
+          ? "A comanda (e a do entregador, na entrega) sai ao salvar o pedido."
+          : 'O pedido fica em "Novo" e a comanda sai ao avançar para "Em preparo".'}
+      </p>
+      <Toggle
+        checked={shared.conta_automatica}
+        onChange={(value) => void save({ conta_automatica: value })}
+      >
+        Imprimir a conta da mesa automaticamente quando pedirem a conta
+      </Toggle>
+      {saving && <p className="ml-12 text-xs text-muted-foreground">Salvando...</p>}
+      {problem && <p className="ml-12 text-xs text-destructive">{problem}</p>}
+    </>
+  );
+}
+
 function Impressao() {
+  const queueAvailable = usePrintQueue().available;
   const role = useStore((snapshot) => snapshot.user?.role);
   const restaurantName = useStore((snapshot) => snapshot.restaurant.name);
   const navigate = useNavigate();
@@ -737,20 +815,27 @@ function Impressao() {
               >
                 Abrir gaveta ao concluir pagamento
               </Toggle>
-              <Toggle
-                checked={config.autoPrintOnPreparing}
-                onChange={(value) => update({ autoPrintOnPreparing: value })}
-              >
-                Imprimir delivery automaticamente ao avançar para "Em preparo"
-              </Toggle>
-              <p className="ml-12 text-xs text-muted-foreground">
-                {config.autoPrintOnPreparing
-                  ? 'Pedidos de delivery imprimem ao avançar para "Em preparo" (e não ao serem criados).'
-                  : "Pedidos de delivery imprimem quando são criados."}
-              </p>
+              {queueAvailable === false && (
+                <>
+                  <Toggle
+                    checked={config.autoPrintOnPreparing}
+                    onChange={(value) => update({ autoPrintOnPreparing: value })}
+                  >
+                    Imprimir delivery automaticamente ao avançar para "Em preparo"
+                  </Toggle>
+                  <p className="ml-12 text-xs text-muted-foreground">
+                    {config.autoPrintOnPreparing
+                      ? 'Pedidos de delivery imprimem ao avançar para "Em preparo" (e não ao serem criados).'
+                      : "Pedidos de delivery imprimem quando são criados."}
+                  </p>
+                </>
+              )}
+              {queueAvailable === true && <SharedAutomation />}
               <Toggle
                 checked={config.printKitchenEnabled}
-                onChange={(value) => update({ printKitchenEnabled: value })}
+                onChange={(value) =>
+                  update({ printKitchenEnabled: value, printKitchenChosen: true })
+                }
               >
                 Imprimir neste aparelho as comandas das mesas e do delivery
               </Toggle>
@@ -792,14 +877,18 @@ function Impressao() {
               <div className="mt-2">
                 {(
                   [
-                    ["iniciarComWindows", "Iniciar com o Windows"],
-                    ["manterEmSegundoPlano", "Manter em segundo plano ao fechar a janela"],
+                    ["iniciarComWindows", "Iniciar com o Windows (abre direto na tela Mesas)"],
+                    ["perguntarAoFechar", "Perguntar ao fechar a janela (bandeja ou sair)"],
+                    [
+                      "manterEmSegundoPlano",
+                      "Ao fechar sem perguntar: minimizar para a bandeja (continua imprimindo)",
+                    ],
                     ["impedirSuspensao", "Impedir suspensão do aplicativo"],
                   ] as const
                 ).map(([key, label]) => (
                   <Toggle
                     key={key}
-                    checked={desktopSettings[key]}
+                    checked={desktopSettings[key] ?? true}
                     onChange={(value) => void updateDesktop({ [key]: value })}
                   >
                     {label}

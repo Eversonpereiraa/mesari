@@ -1,6 +1,12 @@
 import { useSyncExternalStore } from "react";
 import { supabase, supabaseConfigured, usernameEmail } from "@/lib/supabase";
 import {
+  requireRestaurantId,
+  saveRestaurantCode,
+  savedRestaurantCode,
+  setRestaurantId,
+} from "@/lib/tenant";
+import {
   dataUrlToBlob,
   isDataUrl,
   removeLogo,
@@ -122,6 +128,76 @@ export type Closing = {
   discount?: number;
 };
 
+/** Plano e assinatura do restaurante (função minha_assinatura no banco). */
+export type PlanLimits = {
+  id: "essencial" | "profissional" | "completo";
+  name: string;
+  monthlyPrice: number;
+  yearlyPrice: number;
+  maxTables: number | null;
+  maxWaiters: number | null;
+  maxCashiers: number | null;
+  maxPrinters: number | null;
+  maxAreas: number | null;
+  delivery: boolean;
+  printLogo: boolean;
+  historyDays: number | null;
+  export: boolean;
+  support: string;
+};
+export type SubscriptionStatus = "teste" | "ativa" | "atrasada" | "cancelada" | "expirada";
+export type PlanInfo = {
+  plan: PlanLimits;
+  status: SubscriptionStatus;
+  cycle: "mensal" | "anual" | null;
+  periodEnd: number | null;
+  autoRenew: boolean;
+  active: boolean;
+  restaurantCode: string;
+  usage: { tables: number; waiters: number; cashiers: number; areas: number };
+};
+
+export function mapPlan(value: unknown): PlanLimits {
+  const row = (value ?? {}) as Record<string, unknown>;
+  const num = (v: unknown) => (v === null || v === undefined ? null : Number(v));
+  return {
+    id: (row["id"] as PlanLimits["id"]) ?? "essencial",
+    name: String(row["nome"] ?? ""),
+    monthlyPrice: Number(row["preco_mensal"] ?? 0),
+    yearlyPrice: Number(row["preco_anual"] ?? 0),
+    maxTables: num(row["max_mesas"]),
+    maxWaiters: num(row["max_garcons"]),
+    maxCashiers: num(row["max_caixas"]),
+    maxPrinters: num(row["max_impressoras"]),
+    maxAreas: num(row["max_areas"]),
+    delivery: row["delivery"] === true,
+    printLogo: row["logo_comanda"] === true,
+    historyDays: num(row["historico_dias"]),
+    export: row["exportar"] === true,
+    support: String(row["suporte"] ?? ""),
+  };
+}
+
+function mapPlanInfo(value: unknown): PlanInfo {
+  const row = (value ?? {}) as Record<string, unknown>;
+  const usage = (row["uso"] ?? {}) as Record<string, unknown>;
+  return {
+    plan: mapPlan(row["plano"]),
+    status: (row["status"] as SubscriptionStatus) ?? "expirada",
+    cycle: (row["ciclo"] as PlanInfo["cycle"]) ?? null,
+    periodEnd: row["periodo_fim"] ? Date.parse(String(row["periodo_fim"])) : null,
+    autoRenew: row["renovacao_automatica"] === true,
+    active: row["ativa"] === true,
+    restaurantCode: String(row["codigo"] ?? ""),
+    usage: {
+      tables: Number(usage["mesas"] ?? 0),
+      waiters: Number(usage["garcons"] ?? 0),
+      cashiers: Number(usage["caixas"] ?? 0),
+      areas: Number(usage["areas"] ?? 0),
+    },
+  };
+}
+
 export type State = {
   user: {
     id: string;
@@ -130,6 +206,8 @@ export type State = {
     role: "caixa" | "garcom" | "cozinha";
   } | null;
   staff: StaffMember[];
+  /** Plano e assinatura (null antes do login). */
+  plan: PlanInfo | null;
   restaurant: {
     name: string;
     phone: string;
@@ -171,6 +249,7 @@ export type State = {
 const emptyState = (): State => ({
   user: null,
   staff: [],
+  plan: null,
   restaurant: {
     name: "",
     phone: "",
@@ -489,28 +568,35 @@ function reuseOrders(previous: State["orders"], next: State["orders"]): State["o
 
 /** Perfil, equipe, cardápio e dados do restaurante (sem o logo). */
 async function loadBase(userId: string) {
-  const [profileRes, staffRes, categoriesRes, productsRes, restaurantRes] = await Promise.all([
-    supabase.from("profiles").select("id,usuario,nome,papel,ativo").eq("id", userId).maybeSingle(),
-    supabase
-      .from("profiles")
-      .select("id,usuario,nome,papel,ativo")
-      .eq("papel", "garcom")
-      .eq("ativo", true)
-      .order("nome"),
-    supabase.from("categorias").select("id,nome,ordem,setor").order("ordem"),
-    supabase
-      .from("produtos")
-      .select("id,categoria_id,nome,descricao,preco,ativo,ordem")
-      .eq("ativo", true)
-      .order("ordem"),
-    supabase
-      .from("restaurante")
-      .select(
-        "id,nome,endereco,telefone,cnpj,instagram,taxa_servico_ativa,taxa_servico_percentual,taxa_entrega",
-      )
-      .eq("id", 1)
-      .maybeSingle(),
-  ]);
+  const [profileRes, staffRes, categoriesRes, productsRes, restaurantRes, planRes] =
+    await Promise.all([
+      supabase
+        .from("profiles")
+        .select("id,usuario,nome,papel,ativo,restaurante_id")
+        .eq("id", userId)
+        .maybeSingle(),
+      supabase
+        .from("profiles")
+        .select("id,usuario,nome,papel,ativo")
+        .eq("papel", "garcom")
+        .eq("ativo", true)
+        .order("nome"),
+      supabase.from("categorias").select("id,nome,ordem,setor").order("ordem"),
+      supabase
+        .from("produtos")
+        .select("id,categoria_id,nome,descricao,preco,ativo,ordem")
+        .eq("ativo", true)
+        .order("ordem"),
+      supabase
+        .from("restaurante")
+        .select(
+          "id,nome,endereco,telefone,cnpj,instagram,taxa_servico_ativa,taxa_servico_percentual,taxa_entrega",
+        )
+        // A RLS só devolve o restaurante do usuário logado.
+        .limit(1)
+        .maybeSingle(),
+      supabase.rpc("minha_assinatura"),
+    ]);
 
   const failed = [profileRes, staffRes, categoriesRes, productsRes, restaurantRes].find(
     (result) => result.error,
@@ -524,9 +610,11 @@ async function loadBase(userId: string) {
   if (profile.papel !== "caixa" && profile.papel !== "garcom" && profile.papel !== "cozinha") {
     throw new Error(`Papel inválido no perfil autenticado: ${String(profile.papel)}.`);
   }
-  if (!restaurantRes.data)
-    throw new Error("Não foi encontrado o registro id=1 em public.restaurante.");
+  if (!restaurantRes.data) throw new Error("O restaurante deste usuário não foi encontrado.");
   const restaurant = asRow(restaurantRes.data);
+  setRestaurantId(Number(profile["restaurante_id"] ?? restaurant["id"]));
+  const plan = planRes.error ? null : mapPlanInfo(planRes.data);
+  if (plan?.restaurantCode) saveRestaurantCode(plan.restaurantCode);
 
   const user: NonNullable<State["user"]> = {
     id: userId,
@@ -536,6 +624,7 @@ async function loadBase(userId: string) {
   };
   return {
     user: state.user && sameShallow(state.user, user) ? state.user : user,
+    plan,
     staff: reuseList(
       state.staff,
       (staffRes.data ?? []).map((value: unknown): StaffMember => {
@@ -591,7 +680,7 @@ async function loadBase(userId: string) {
 /** O logo fica separado: só muda quando o caixa salva o restaurante (base64 antigo pode ser grande). */
 async function loadLogo() {
   // "*" mantém o app funcionando antes da migration da logo de impressão.
-  const { data, error } = await supabase.from("restaurante").select("*").eq("id", 1).maybeSingle();
+  const { data, error } = await supabase.from("restaurante").select("*").limit(1).maybeSingle();
   if (error) throw error;
   const row = data ? asRow(data) : {};
   return {
@@ -691,7 +780,13 @@ async function loadRemoteData(parts: ReadonlySet<RefreshPart>) {
   };
   publish({
     ...(base
-      ? { user: base.user, staff: base.staff, categories: base.categories, items: base.items }
+      ? {
+          user: base.user,
+          plan: base.plan,
+          staff: base.staff,
+          categories: base.categories,
+          items: base.items,
+        }
       : {}),
     ...(tables ?? {}),
     ...(orders ?? {}),
@@ -892,7 +987,7 @@ async function saveLogo(logo: string, fields: Record<string, unknown> = {}) {
   const { error } = await supabase
     .from("restaurante")
     .update({ ...fields, logo_url: url })
-    .eq("id", 1);
+    .eq("id", requireRestaurantId());
   if (error) {
     if (uploaded) await removeLogo(uploaded).catch(() => undefined);
     throw error;
@@ -918,7 +1013,7 @@ async function savePrintSettings(restaurant: State["restaurant"]) {
       imprimir_logo: restaurant.printLogoEnabled && Boolean(url),
       rodape_conta: restaurant.receiptFooter,
     })
-    .eq("id", 1);
+    .eq("id", requireRestaurantId());
   if (error) {
     if (url !== next) await removeLogo(url).catch(() => undefined);
     throw error;
@@ -944,10 +1039,19 @@ async function writeRemote<T>(parts: readonly RefreshPart[], work: () => Promise
 }
 
 export const actions = {
-  async login(username: string, password: string): Promise<"caixa" | "garcom" | "cozinha" | false> {
+  async login(
+    username: string,
+    password: string,
+    restaurantCode = savedRestaurantCode(),
+  ): Promise<"caixa" | "garcom" | "cozinha" | false> {
     try {
+      const isEmail = username.includes("@");
+      const code = restaurantCode.trim();
+      if (!isEmail && !/^\d{6}$/.test(code)) {
+        throw new Error("Informe o código do restaurante (6 números).");
+      }
       const { error } = await supabase.auth.signInWithPassword({
-        email: usernameEmail(username),
+        email: usernameEmail(username, code),
         password,
       });
       if (error) throw error;
@@ -962,6 +1066,7 @@ export const actions = {
     }
   },
   async logout() {
+    setRestaurantId(null);
     const { error } = await supabase.auth.signOut();
     if (error) setStoreError(error);
   },
@@ -1293,6 +1398,12 @@ export const actions = {
       const { error } = await supabase.from("profiles").update({ ativo: false }).eq("id", id);
       if (error) throw error;
     });
+  },
+  /** Recarrega plano e uso (tela "Meu plano"). */
+  async refreshPlan() {
+    const { data, error } = await supabase.rpc("minha_assinatura");
+    if (error) throw error;
+    publish({ plan: mapPlanInfo(data) });
   },
   markOrderSent(tableId: string) {
     publish({ orderSentMesaId: tableId });

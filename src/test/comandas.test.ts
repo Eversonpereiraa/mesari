@@ -519,3 +519,20 @@ describe("logo", () => {
     expect(bits[4]).toBe(0x00);
   });
 });
+
+describe("comanda adicional", () => {
+  it("destaca *** ADICIONAL *** no topo, com mesa e garçom, só com os itens do envio", () => {
+    const ticket: KitchenTicket = {
+      ...sampleKitchenTicket(),
+      additional: true,
+      items: [{ product: "Batata frita", quantity: 1, note: "" }],
+    };
+    const text = renderText(comandaCozinha(ticket, { now: SAMPLE_PRINTED_AT }), 32);
+    const lines = text.split("\n").filter((line) => line.trim());
+    expect(lines[0]!.trim()).toBe("*** ADICIONAL ***");
+    expect(text).toMatch(/MESA \d{2}/);
+    expect(text).toContain(`Garçom: ${ticket.waiter}`);
+    expect(text).toContain("1x Batata frita");
+    expect(text).toContain("Itens: 1");
+  });
+});

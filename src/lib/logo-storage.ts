@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { requireRestaurantId } from "@/lib/tenant";
 
 const BUCKET = "marca";
 const MAX_SIDE = 400;
@@ -55,7 +56,7 @@ export function logoPath(url: string) {
 export async function uploadLogo(source: Blob) {
   const blob = await compressLogo(source);
   const extension = blob.type === "image/webp" ? "webp" : "png";
-  const path = `logo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
+  const path = `${requireRestaurantId()}/logo-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.${extension}`;
   const { error } = await supabase.storage.from(BUCKET).upload(path, blob, {
     cacheControl: CACHE_SECONDS,
     contentType: blob.type,
@@ -70,7 +71,7 @@ export async function uploadLogo(source: Blob) {
  * importa para a impressora térmica. Devolve a URL pública.
  */
 export async function uploadPrintLogo(png: Blob) {
-  const path = `logo-impressao-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`;
+  const path = `${requireRestaurantId()}/logo-impressao-${Date.now()}-${crypto.randomUUID().slice(0, 8)}.png`;
   const { error } = await supabase.storage.from(BUCKET).upload(path, png, {
     cacheControl: CACHE_SECONDS,
     contentType: "image/png",

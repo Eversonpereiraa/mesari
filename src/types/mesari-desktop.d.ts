@@ -10,7 +10,24 @@ type MesariDesktopSettings = {
   iniciarComWindows: boolean;
   manterEmSegundoPlano: boolean;
   impedirSuspensao: boolean;
+  /** App 1.2+: perguntar "Minimizar para a bandeja" ou "Sair" ao fechar a janela. */
+  perguntarAoFechar?: boolean;
 };
+
+type MesariUpdateState =
+  | { fase: "nenhuma" }
+  | { fase: "disponivel"; versao: string; notas: string; tamanho: number }
+  | {
+      fase: "baixando";
+      versao: string;
+      notas: string;
+      pct: number;
+      baixado: number;
+      total: number;
+      velocidade: number;
+    }
+  | { fase: "pronta"; versao: string; notas: string }
+  | { fase: "erro"; versao: string | null; mensagem: string };
 
 type MesariDesktopOutcome = { ok: true } | { ok: false; mensagem: string; detalhe?: string };
 
@@ -58,6 +75,10 @@ interface Window {
       onReady(listener: (info: { versao: string }) => void): () => void;
       status(): Promise<{ versao: string | null }>;
       install(): Promise<boolean>;
+      /** App 1.2+. Ausentes nas versões anteriores. */
+      onState?(listener: (state: MesariUpdateState) => void): () => void;
+      state?(): Promise<MesariUpdateState>;
+      download?(): Promise<boolean>;
     };
   };
 }

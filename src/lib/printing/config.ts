@@ -123,11 +123,20 @@ export type PrinterConfig = {
   autoPrintOnPreparing: boolean;
   /** Este aparelho imprime as comandas que chegam das mesas e do delivery. */
   printKitchenEnabled: boolean;
+  /**
+   * O caixa já escolheu (ligou/desligou) "imprimir comandas neste aparelho". Até lá, o app
+   * desktop imprime por padrão; o navegador, não.
+   */
+  printKitchenChosen?: boolean;
   showKitchenPrices: boolean;
 };
 
 const STORAGE_KEY = "mesari-impressora";
 const LEGACY_KEY = "mesari-print-settings";
+
+function isDesktopRenderer() {
+  return typeof window !== "undefined" && Boolean(window.mesariDesktop);
+}
 
 export function defaultConfig(): PrinterConfig {
   return {
@@ -150,7 +159,8 @@ export function defaultConfig(): PrinterConfig {
     copies: 1,
     openDrawerOnPayment: false,
     autoPrintOnPreparing: false,
-    printKitchenEnabled: false,
+    // App desktop: a estação de impressão fica ligada por padrão.
+    printKitchenEnabled: isDesktopRenderer(),
     showKitchenPrices: true,
   };
 }
@@ -217,9 +227,13 @@ export function normalizeConfig(value: unknown): PrinterConfig {
     copies: copies === 2 || copies === 3 ? copies : 1,
     openDrawerOnPayment: raw["openDrawerOnPayment"] === true,
     autoPrintOnPreparing: raw["autoPrintOnPreparing"] === true,
-    printKitchenEnabled: raw["printKitchenEnabled"] === true,
+    printKitchenEnabled:
+      raw["printKitchenChosen"] === true
+        ? raw["printKitchenEnabled"] === true
+        : raw["printKitchenEnabled"] === true || isDesktopRenderer(),
     showKitchenPrices: raw["showKitchenPrices"] !== false,
   };
+  if (raw["printKitchenChosen"] === true) config.printKitchenChosen = true;
   const optional = {
     serialPortId: optionalText(raw["serialPortId"]),
     usbDeviceId: optionalText(raw["usbDeviceId"]),
