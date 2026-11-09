@@ -1,17 +1,19 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
-import { Check, Copy, Crown, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { CalendarClock, Check, Copy, Crown, Loader2, X } from "lucide-react";
+import { toast } from "sonner";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { actions, mapPlan, useStore, type PlanInfo, type PlanLimits } from "@/lib/store";
-import { AppShell, Btn, btn } from "@/components/ui-kit";
+import { AppShell, Btn } from "@/components/ui-kit";
 import { supabase } from "@/lib/supabase";
 import { cn } from "@/lib/utils";
-
-/**
- * Página de pagamento (checkout) na landing page. Defina VITE_MESARI_CHECKOUT_URL
- * (ex.: https://mesari.com.br/assinar). O app abre: <url>?plano=<id>&ciclo=<mensal|anual>&restaurante=<código>
- */
-const CHECKOUT_URL: string =
-  import.meta.env["VITE_MESARI_CHECKOUT_URL"] || "https://mesari-site.vercel.app/";
 
 export const Route = createFileRoute("/plano")({
   head: () => ({
@@ -39,13 +41,38 @@ const date = (ms: number | null) =>
     ? "—"
     : new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 
-function checkoutLink(plan: PlanLimits["id"], cycle: "mensal" | "anual", code: string) {
-  if (!CHECKOUT_URL) return "";
-  const url = new URL(CHECKOUT_URL);
-  url.searchParams.set("plano", plan);
-  url.searchParams.set("ciclo", cycle);
-  if (code) url.searchParams.set("restaurante", code);
-  return url.toString();
+type Ciclo = "mensal" | "anual";
+type Previa = {
+  acao: "checkout" | "upgrade" | "agendar" | "manter";
+  url?: string;
+  resumo?: string;
+  valor?: number;
+};
+type Resultado = {
+  acao: "pagar" | "liberado" | "agendado" | "mantido";
+  url?: string;
+  valor?: number;
+};
+type Falha = { erro: string; excedentes?: string[] };
+
+/** Chama a Edge Function "trocar-plano" e devolve o corpo mesmo quando ela responde com erro. */
+async function trocarPlano<T>(body: {
+  plano: string;
+  ciclo: Ciclo;
+  confirmar: boolean;
+}): Promise<T | Falha> {
+  const { data, error } = await supabase.functions.invoke("trocar-plano", { body });
+  if (!error) return data as T;
+  const context = (error as { context?: Response }).context;
+  const parsed = context ? await context.json().catch(() => null) : null;
+  return (parsed as Falha | null) ?? { erro: error.message || "Sem conexão. Tente de novo." };
+}
+const isFalha = (value: unknown): value is Falha =>
+  typeof value === "object" && value !== null && "erro" in value;
+
+function abrirFora(url: string) {
+  // No app desktop, links com target _blank abrem no navegador padrão.
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 function Plano() {
@@ -55,6 +82,76 @@ function Plano() {
   const [cycle, setCycle] = useState<"mensal" | "anual">("mensal");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<
+    | { kind: "confirmar"; plano: PlanLimits; ciclo: Ciclo; previa: Previa }
+    | { kind: "falha"; falha: Falha }
+    | { kind: "aguardando"; plano: PlanLimits; url: string; valor: number }
+    | null
+  >(null);
+  const waitTimer = useRef<number | null>(null);
+
+  const stopWaiting = useCallback(() => {
+    if (waitTimer.current !== null) window.clearInterval(waitTimer.current);
+    waitTimer.current = null;
+  }, []);
+
+  // Quando o cliente volta do navegador (pagou a diferença), atualiza o plano.
+  useEffect(() => {
+    const onFocus = () => void actions.refreshPlan().catch(() => {});
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      stopWaiting();
+    };
+  }, [stopWaiting]);
+
+  const waitForPlan = (planId: string) => {
+    stopWaiting();
+    const started = Date.now();
+    waitTimer.current = window.setInterval(() => {
+      if (Date.now() - started > 15 * 60_000) return stopWaiting();
+      void actions
+        .refreshPlan()
+        .then((now) => {
+          if (now.plan.id === planId) {
+            stopWaiting();
+            setDialog(null);
+            toast.success(`Pronto! Seu plano agora é o ${now.plan.name}.`);
+          }
+        })
+        .catch(() => {});
+    }, 5000);
+  };
+
+  const pedirTroca = async (plano: PlanLimits) => {
+    setBusy(plano.id);
+    const previa = await trocarPlano<Previa>({ plano: plano.id, ciclo: cycle, confirmar: false });
+    setBusy(null);
+    if (isFalha(previa)) return setDialog({ kind: "falha", falha: previa });
+    if (previa.acao === "checkout" && previa.url) return abrirFora(previa.url);
+    setDialog({ kind: "confirmar", plano, ciclo: cycle, previa });
+  };
+
+  const confirmarTroca = async () => {
+    if (dialog?.kind !== "confirmar") return;
+    const { plano, ciclo } = dialog;
+    setBusy("confirmar");
+    const res = await trocarPlano<Resultado>({ plano: plano.id, ciclo, confirmar: true });
+    setBusy(null);
+    if (isFalha(res)) return setDialog({ kind: "falha", falha: res });
+    await actions.refreshPlan().catch(() => {});
+    if (res.acao === "pagar" && res.url) {
+      abrirFora(res.url);
+      setDialog({ kind: "aguardando", plano, url: res.url, valor: res.valor ?? 0 });
+      waitForPlan(plano.id);
+      return;
+    }
+    setDialog(null);
+    if (res.acao === "liberado") toast.success(`Pronto! Seu plano agora é o ${plano.name}.`);
+    else if (res.acao === "agendado") toast.success("Troca agendada para a próxima renovação.");
+    else toast.success("Troca agendada cancelada. Você continua no plano atual.");
+  };
 
   useEffect(() => {
     void actions
@@ -116,6 +213,24 @@ function Plano() {
                 <strong className="text-ink">{date(info.periodEnd)}</strong>
                 {info.cycle && info.status !== "teste" ? ` · cobrança ${info.cycle}` : ""}
               </p>
+              {(info.nextPlan || info.nextCycle) && (
+                <p className="mt-3 flex items-start gap-2 rounded-lg bg-accent px-3 py-2 text-sm">
+                  <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
+                  <span>
+                    Na renovação de <strong>{date(info.periodEnd)}</strong> passa para o{" "}
+                    <strong>
+                      {(info.nextPlan ?? info.plan).name} {info.nextCycle ?? info.cycle}
+                    </strong>
+                    .
+                  </span>
+                </p>
+              )}
+              {info.pendingUpgrade && (
+                <p className="mt-3 rounded-lg bg-busy-bg px-3 py-2 text-sm text-busy">
+                  Aguardando o pagamento de {money(info.pendingUpgrade.amount)} para liberar o plano
+                  novo. Assim que cair, ele é liberado sozinho.
+                </p>
+              )}
               <div className="mt-5 space-y-3">
                 <Usage label="Mesas" used={info.usage.tables} max={info.plan.maxTables} />
                 <Usage label="Garçons" used={info.usage.waiters} max={info.plan.maxWaiters} />
@@ -170,7 +285,21 @@ function Plano() {
             {plans.map((plan) => {
               const current = info?.plan.id === plan.id && info.status !== "teste";
               const featured = plan.id === "profissional";
-              const link = checkoutLink(plan.id, cycle, info?.restaurantCode ?? "");
+              const scheduledAway = Boolean(info?.nextPlan || info?.nextCycle);
+              const scheduledHere =
+                scheduledAway &&
+                (info?.nextPlan?.id ?? info?.plan.id) === plan.id &&
+                (info?.nextCycle ?? info?.cycle) === cycle;
+              const order = (id: string) => plans.findIndex((p) => p.id === id);
+              const buttonLabel = !info?.onlinePayment
+                ? "Assinar este plano"
+                : current && scheduledAway && cycle === info?.cycle
+                  ? "Manter este plano"
+                  : current
+                    ? `Mudar para ${cycle}`
+                    : order(plan.id) > order(info?.plan.id ?? "")
+                      ? "Subir para este plano"
+                      : "Mudar para este plano";
               const price = cycle === "mensal" ? plan.monthlyPrice : plan.yearlyPrice;
               return (
                 <div
@@ -222,25 +351,27 @@ function Plano() {
                     <Feature ok text={`Suporte: ${plan.support}`} />
                   </ul>
                   {role === "caixa" &&
-                    (current ? (
+                    (!info?.owner ? (
+                      <Btn variant="outline" disabled className="w-full">
+                        {current ? "Plano atual" : "Só o dono da conta troca o plano"}
+                      </Btn>
+                    ) : current && !scheduledAway && cycle === info?.cycle ? (
                       <Btn variant="outline" disabled className="w-full">
                         Plano atual
                       </Btn>
-                    ) : link ? (
-                      <a
-                        href={link}
-                        target="_blank"
-                        rel="noreferrer"
-                        className={cn(
-                          btn({ variant: featured ? "primary" : "outline" }),
-                          "h-10 w-full",
-                        )}
-                      >
-                        {info?.plan.id === plan.id ? "Assinar" : "Mudar para este plano"}
-                      </a>
-                    ) : (
+                    ) : scheduledHere ? (
                       <Btn variant="outline" disabled className="w-full">
-                        Pagamento online em breve
+                        Agendado para {date(info?.periodEnd ?? null)}
+                      </Btn>
+                    ) : (
+                      <Btn
+                        variant={featured ? "primary" : "outline"}
+                        className="h-10 w-full"
+                        disabled={busy !== null}
+                        onClick={() => void pedirTroca(plan)}
+                      >
+                        {busy === plan.id && <Loader2 className="h-4 w-4 animate-spin" />}
+                        {buttonLabel}
                       </Btn>
                     ))}
                 </div>
@@ -249,6 +380,82 @@ function Plano() {
           </div>
         </section>
       </div>
+
+      <Dialog
+        open={dialog !== null}
+        onOpenChange={(open) => !open && (stopWaiting(), setDialog(null))}
+      >
+        <DialogContent>
+          {dialog?.kind === "confirmar" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>
+                  {dialog.previa.acao === "upgrade"
+                    ? `Subir para o ${dialog.plano.name}`
+                    : dialog.previa.acao === "manter"
+                      ? "Manter o plano atual"
+                      : `Mudar para o ${dialog.plano.name} ${dialog.ciclo}`}
+                </DialogTitle>
+                <DialogDescription className="text-base leading-relaxed">
+                  {dialog.previa.resumo}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Btn variant="outline" onClick={() => setDialog(null)} disabled={busy !== null}>
+                  Voltar
+                </Btn>
+                <Btn onClick={() => void confirmarTroca()} disabled={busy !== null}>
+                  {busy === "confirmar" && <Loader2 className="h-4 w-4 animate-spin" />}
+                  {dialog.previa.acao === "upgrade" && (dialog.previa.valor ?? 0) > 0
+                    ? `Pagar ${money(dialog.previa.valor ?? 0)}`
+                    : "Confirmar"}
+                </Btn>
+              </DialogFooter>
+            </>
+          )}
+          {dialog?.kind === "aguardando" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Aguardando o pagamento</DialogTitle>
+                <DialogDescription className="text-base leading-relaxed">
+                  Abrimos a cobrança de {money(dialog.valor)} no seu navegador. Pague com Pix,
+                  boleto ou cartão. Assim que o pagamento cair, o {dialog.plano.name} é liberado
+                  aqui sozinho, sem precisar reiniciar.
+                </DialogDescription>
+              </DialogHeader>
+              <p className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" /> Conferindo o pagamento…
+              </p>
+              <DialogFooter>
+                <Btn variant="outline" onClick={() => abrirFora(dialog.url)}>
+                  Abrir a cobrança de novo
+                </Btn>
+                <Btn onClick={() => (stopWaiting(), setDialog(null))}>Fechar</Btn>
+              </DialogFooter>
+            </>
+          )}
+          {dialog?.kind === "falha" && (
+            <>
+              <DialogHeader>
+                <DialogTitle>Não deu para trocar agora</DialogTitle>
+                <DialogDescription className="text-base leading-relaxed">
+                  {dialog.falha.erro}
+                </DialogDescription>
+              </DialogHeader>
+              {dialog.falha.excedentes && dialog.falha.excedentes.length > 0 && (
+                <ul className="list-disc space-y-1 pl-5 text-sm">
+                  {dialog.falha.excedentes.map((item) => (
+                    <li key={item}>{item}</li>
+                  ))}
+                </ul>
+              )}
+              <DialogFooter>
+                <Btn onClick={() => setDialog(null)}>Entendi</Btn>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
     </AppShell>
   );
 }

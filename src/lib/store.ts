@@ -155,6 +155,15 @@ export type PlanInfo = {
   active: boolean;
   restaurantCode: string;
   usage: { tables: number; waiters: number; cashiers: number; areas: number };
+  /** Assinatura paga no Asaas: a troca de plano acontece dentro do app. */
+  onlinePayment: boolean;
+  /** O usuário logado é o dono da conta (só ele troca de plano). */
+  owner: boolean;
+  /** Troca agendada para a próxima renovação (descer de plano ou trocar mensal/anual). */
+  nextPlan: PlanLimits | null;
+  nextCycle: "mensal" | "anual" | null;
+  /** Subida de plano esperando o pagamento da diferença. */
+  pendingUpgrade: { planId: string; amount: number } | null;
 };
 
 export function mapPlan(value: unknown): PlanLimits {
@@ -195,6 +204,16 @@ function mapPlanInfo(value: unknown): PlanInfo {
       cashiers: Number(usage["caixas"] ?? 0),
       areas: Number(usage["areas"] ?? 0),
     },
+    onlinePayment: row["pagamento_online"] === true,
+    owner: row["dono"] === true,
+    nextPlan: row["plano_proximo"] ? mapPlan(row["plano_proximo"]) : null,
+    nextCycle: (row["ciclo_proximo"] as PlanInfo["nextCycle"]) ?? null,
+    pendingUpgrade: (() => {
+      const pending = row["troca_aguardando"] as Record<string, unknown> | null | undefined;
+      return pending
+        ? { planId: String(pending["para_plano"] ?? ""), amount: Number(pending["valor"] ?? 0) }
+        : null;
+    })(),
   };
 }
 
@@ -1403,7 +1422,9 @@ export const actions = {
   async refreshPlan() {
     const { data, error } = await supabase.rpc("minha_assinatura");
     if (error) throw error;
-    publish({ plan: mapPlanInfo(data) });
+    const plan = mapPlanInfo(data);
+    publish({ plan });
+    return plan;
   },
   markOrderSent(tableId: string) {
     publish({ orderSentMesaId: tableId });

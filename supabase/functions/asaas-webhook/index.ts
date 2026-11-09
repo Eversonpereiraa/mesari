@@ -40,6 +40,40 @@ async function buscarAsaas(path: string) {
   return await res.json();
 }
 
+const precoDo = (p: Record<string, any>, ciclo: string) => Number(ciclo === "anual" ? p.preco_anual : p.preco_mensal);
+
+/** Diferença da troca de plano foi paga: libera o plano novo e ajusta a assinatura no Asaas. */
+async function aplicarTroca(db: any, trocaId: string, pagamento: Record<string, any>) {
+  const { data: troca } = await db.from("plano_trocas").select("*").eq("id", trocaId).maybeSingle();
+  if (!troca || troca.status !== "aguardando") return;
+  if (troca.asaas_cobranca_id && troca.asaas_cobranca_id !== pagamento.id) return;
+
+  const { data: a } = await db.from("assinaturas").select("*").eq("restaurante_id", troca.restaurante_id).maybeSingle();
+  const { data: novo } = await db.from("planos").select("*").eq("id", troca.para_plano).maybeSingle();
+  if (!a || !novo) return;
+
+  if (a.gateway_assinatura_id) {
+    await fetch(`${baseAsaas()}/subscriptions/${a.gateway_assinatura_id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", access_token: Deno.env.get("ASAAS_API_KEY") ?? "", "User-Agent": "Mesari" },
+      body: JSON.stringify({
+        value: precoDo(novo, troca.ciclo),
+        cycle: troca.ciclo === "anual" ? "YEARLY" : "MONTHLY",
+        description: `Mesari ${novo.nome} (${troca.ciclo})`,
+        updatePendingPayments: true,
+      }),
+    }).catch((e) => console.warn("Não atualizou o valor da assinatura", e));
+  }
+
+  await db.from("assinaturas").update({
+    plano_id: troca.para_plano,
+    plano_proximo: null,
+    ciclo_proximo: troca.ciclo !== a.ciclo ? troca.ciclo : null,
+    atualizado_em: new Date().toISOString(),
+  }).eq("restaurante_id", troca.restaurante_id);
+  await db.from("plano_trocas").update({ status: "pago", atualizado_em: new Date().toISOString() }).eq("id", troca.id);
+}
+
 /** Recarrega do Asaas o recurso citado no aviso, para não confiar no corpo recebido. */
 async function confirmarNoAsaas(bruto: Record<string, any>) {
   const evento = String(bruto.event);
@@ -97,7 +131,14 @@ Deno.serve(async (req) => {
     const pagamento = corpo.payment ?? null;
     const assinaturaAsaas = corpo.subscription ?? null;
     const subId: string | null = pagamento?.subscription ?? assinaturaAsaas?.id ?? null;
-    if (!subId) return ok(); // cobrança avulsa: não é do Mesari
+    if (!subId) {
+      // Cobrança avulsa: só interessa se for a diferença de uma troca de plano feita no app.
+      const ref = String(pagamento?.externalReference ?? "");
+      if (ref.startsWith("troca:") && (evento === "PAYMENT_CONFIRMED" || evento === "PAYMENT_RECEIVED")) {
+        await aplicarTroca(db, ref.slice("troca:".length), pagamento);
+      }
+      return ok();
+    }
 
     const { data: pedido } = await db
       .from("checkout_pedidos")
@@ -145,17 +186,25 @@ Deno.serve(async (req) => {
         }).catch((e) => console.warn("Não cancelou a assinatura antiga", e));
       }
 
+      // Renovação da mesma assinatura: vale o plano atual (que pode ter sido trocado no app)
+      // ou a troca agendada para esta renovação. Primeira cobrança: vale o que foi comprado.
+      const renovacao = atual?.gateway_assinatura_id === subId;
+      const planoFinal: string = renovacao ? (atual.plano_proximo ?? atual.plano_id) : pedido.plano_id;
+      const cicloFinal: string = renovacao ? (atual.ciclo_proximo ?? atual.ciclo ?? pedido.ciclo) : pedido.ciclo;
+
       const vencimento = String(pagamento?.dueDate ?? new Date().toISOString().slice(0, 10));
-      let periodoFim = somarPeriodo(vencimento, pedido.ciclo);
+      let periodoFim = somarPeriodo(vencimento, cicloFinal);
       if (atual?.periodo_fim && atual.gateway_assinatura_id === subId && atual.periodo_fim > periodoFim) {
         periodoFim = atual.periodo_fim;
       }
 
       const { error: erroAssinatura } = await db.from("assinaturas").upsert({
         restaurante_id: restauranteId,
-        plano_id: pedido.plano_id,
+        plano_id: planoFinal,
+        plano_proximo: null,
+        ciclo_proximo: null,
         status: "ativa",
-        ciclo: pedido.ciclo,
+        ciclo: cicloFinal,
         periodo_fim: periodoFim,
         renovacao_automatica: true,
         gateway: "asaas",
@@ -169,6 +218,10 @@ Deno.serve(async (req) => {
         .from("checkout_pedidos")
         .update({ status: "pago", restaurante_id: restauranteId, atualizado_em: new Date().toISOString() })
         .eq("id", pedido.id);
+      if (renovacao && (atual.plano_proximo || atual.ciclo_proximo)) {
+        await db.from("plano_trocas").update({ status: "aplicada", atualizado_em: new Date().toISOString() })
+          .eq("restaurante_id", restauranteId).eq("status", "agendada");
+      }
       return ok();
     }
 
