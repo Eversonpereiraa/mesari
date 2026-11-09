@@ -50,7 +50,7 @@ module.exports = {
     uninstallDisplayName: "Mesari",
     language: "1046",
     installerLanguages: ["pt_BR"],
-    multiLanguageInstaller: false,
+    multiLanguageInstaller: true, // "false" faria o electron-builder voltar para inglês; com só pt_BR na lista, não aparece seletor de idioma
     deleteAppDataOnUninstall: false,
     include: "build/installer.nsh",
   },

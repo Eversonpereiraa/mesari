@@ -9,35 +9,46 @@
 ; então a opção aparece igual dentro do app e pode ser desligada lá.
 
 !include nsDialogs.nsh
+!include FileFunc.nsh
 
+; Estas variáveis só existem no instalador. O electron-builder também compila este arquivo para o
+; desinstalador (BUILD_UNINSTALLER), e lá uma variável não usada vira erro.
+!ifndef BUILD_UNINSTALLER
 Var MesariChkAtalho
 Var MesariAtalho
+!endif
 
+; As funções da página ficam dentro do macro: assim elas são montadas no ponto das páginas,
+; quando o MUI2 (MUI_HEADER_TEXT) e o FileFunc já estão disponíveis.
 !macro customPageAfterChangeDir
   Page custom MesariOpcoesPage MesariOpcoesLeave
+
+  Function MesariOpcoesPage
+    ; Atualização silenciosa (--updated): não mostra a página.
+    ${GetParameters} $R0
+    ClearErrors
+    ${GetOptions} $R0 "--updated" $R1
+    ${IfNot} ${Errors}
+      Abort
+    ${EndIf}
+    !insertmacro MUI_HEADER_TEXT "Opções de instalação" "Escolha como o Mesari vai aparecer no seu computador."
+    nsDialogs::Create 1018
+    Pop $0
+    ${NSD_CreateLabel} 0 0 100% 24u "Marque o que deseja. Você pode mudar isso depois, se quiser."
+    Pop $0
+    ${NSD_CreateCheckbox} 0 32u 100% 12u "Criar atalho na Área de Trabalho"
+    Pop $MesariChkAtalho
+    ${NSD_Check} $MesariChkAtalho
+    ${NSD_CreateLabel} 12u 48u 95% 20u "Um ícone do Mesari na sua tela inicial para abrir o sistema com dois cliques."
+    Pop $0
+    SetCtlColors $0 "808080" "transparent"
+    nsDialogs::Show
+  FunctionEnd
+
+  Function MesariOpcoesLeave
+    ${NSD_GetState} $MesariChkAtalho $MesariAtalho
+  FunctionEnd
 !macroend
-
-Function MesariOpcoesPage
-  ${if} ${isUpdated}
-    Abort ; atualização: não mostra a página
-  ${endif}
-  !insertmacro MUI_HEADER_TEXT "Opções de instalação" "Escolha como o Mesari vai aparecer no seu computador."
-  nsDialogs::Create 1018
-  Pop $0
-  ${NSD_CreateLabel} 0 0 100% 24u "Marque o que deseja. Você pode mudar isso depois, se quiser."
-  Pop $0
-  ${NSD_CreateCheckbox} 0 32u 100% 12u "Criar atalho na Área de Trabalho"
-  Pop $MesariChkAtalho
-  ${NSD_Check} $MesariChkAtalho
-  ${NSD_CreateLabel} 12u 48u 95% 20u "Um ícone do Mesari na sua tela inicial para abrir o sistema com dois cliques."
-  Pop $0
-  SetCtlColors $0 "808080" "transparent"
-  nsDialogs::Show
-FunctionEnd
-
-Function MesariOpcoesLeave
-  ${NSD_GetState} $MesariChkAtalho $MesariAtalho
-FunctionEnd
 
 !macro customInstall
   ${if} ${isUpdated}
