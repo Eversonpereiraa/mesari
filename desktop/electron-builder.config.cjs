@@ -54,5 +54,5 @@ module.exports = {
     deleteAppDataOnUninstall: false,
     include: "build/installer.nsh",
   },
-  publish: [{ provider: "github", owner, repo, private: isPrivate, releaseType: "release" }],
+  publish: [{ provider: "github", owner, repo, private: isPrivate, releaseType: "release", tagNamePrefix: "desktop-v" }],
 };
