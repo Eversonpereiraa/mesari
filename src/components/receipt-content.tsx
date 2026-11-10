@@ -1,6 +1,7 @@
 import type { CSSProperties } from "react";
 import { brl, paymentMethodLabel } from "@/lib/store";
 import type { PrintReceipt, PrintRestaurant } from "@/lib/printing";
+import { cpfCnpjLabel, displayCpfCnpj, displayPhone, formatInstagram } from "@/lib/masks";
 import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
 
 export function ReceiptContent({
@@ -52,9 +53,13 @@ export function ReceiptContent({
         {restaurant.address && (
           <div className="receipt-restaurant-detail">{restaurant.address}</div>
         )}
-        {restaurant.phone && <div className="receipt-restaurant-detail">{restaurant.phone}</div>}
+        {restaurant.phone && (
+          <div className="receipt-restaurant-detail">{displayPhone(restaurant.phone)}</div>
+        )}
         {restaurant.cnpj && (
-          <div className="receipt-restaurant-detail">CNPJ: {restaurant.cnpj}</div>
+          <div className="receipt-restaurant-detail">
+            {cpfCnpjLabel(restaurant.cnpj)}: {displayCpfCnpj(restaurant.cnpj)}
+          </div>
         )}
       </header>
 
@@ -72,7 +77,7 @@ export function ReceiptContent({
         <time className="receipt-date">{dateText}</time>
       </div>
       {isDelivery && receipt.customerPhone && (
-        <div className="receipt-meta">Telefone: {receipt.customerPhone}</div>
+        <div className="receipt-meta">Telefone: {displayPhone(receipt.customerPhone)}</div>
       )}
       {isDelivery && receipt.customerAddress && (
         <div className="receipt-meta">Endereço: {receipt.customerAddress}</div>
@@ -164,7 +169,7 @@ export function ReceiptContent({
           <strong>Obrigado pela preferência!</strong>
         </div>
         <div className="receipt-thanks-small">Volte sempre</div>
-        <div className="receipt-thanks-small">{restaurant.instagram || "@mesari"}</div>
+        <div className="receipt-thanks-small">{formatInstagram(restaurant.instagram) || "@mesari"}</div>
         <div className="receipt-thanks-small">Não é documento fiscal</div>
       </footer>
     </article>

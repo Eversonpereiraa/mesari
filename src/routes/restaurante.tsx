@@ -6,6 +6,17 @@ import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { useConfirm } from "@/components/system-dialog-provider";
 import { supabase } from "@/lib/supabase";
 import { DEFAULT_FOOTER, LOGO_DETAIL_WARNING, processLogoFile } from "@/lib/printing";
+import { MaskedInput, MoneyInput } from "@/components/masked-input";
+import {
+  cleanName,
+  decimalInput,
+  formatInstagram,
+  maskError,
+  onlyDigits,
+  parseDecimal,
+  phoneDigits,
+  roundMoney,
+} from "@/lib/masks";
 
 export const Route = createFileRoute("/restaurante")({
   head: () => ({
@@ -25,7 +36,8 @@ function Restaurante() {
   const staff = useStore((s) => s.staff);
   const role = useStore((s) => s.user?.role);
   const [f, setF] = useState(r);
-  const [deliveryFee, setDeliveryFee] = useState("0,00");
+  const [deliveryFee, setDeliveryFee] = useState<number | null>(0);
+  const [percentDraft, setPercentDraft] = useState(decimalInput(r.serviceChargePercent));
   const [ok, setOk] = useState(false);
   const [saveError, setSaveError] = useState("");
   const [printLogoWarning, setPrintLogoWarning] = useState("");
@@ -44,13 +56,8 @@ function Restaurante() {
     logoMigrated.current = true;
     void actions.migrateLogo().catch(() => undefined);
   }, [role, r.logo]);
-  useEffect(() => {
-    setDeliveryFee(
-      Number(r.deliveryFee || 0)
-        .toFixed(2)
-        .replace(".", ","),
-    );
-  }, [r.deliveryFee]);
+  useEffect(() => setDeliveryFee(roundMoney(Number(r.deliveryFee || 0))), [r.deliveryFee]);
+  useEffect(() => setPercentDraft(decimalInput(r.serviceChargePercent)), [r.serviceChargePercent]);
 
   const onLogo = (file?: File) => {
     if (!file) return;
@@ -86,7 +93,7 @@ function Restaurante() {
 
   const saveStaff = async (event: React.FormEvent) => {
     event.preventDefault();
-    const name = staffDraft?.name?.trim() ?? "";
+    const name = cleanName(staffDraft?.name ?? "");
     const username = staffDraft?.username ?? "";
     const password = staffDraft?.password ?? "";
     if (!name) {
@@ -170,14 +177,21 @@ function Restaurante() {
             onSubmit={async (e) => {
               e.preventDefault();
               setSaveError("");
-              const normalizedFee = deliveryFee.trim().replace(",", ".");
-              const parsedFee = Number(normalizedFee);
-              if (!/^\d+(?:\.\d{1,2})?$/.test(normalizedFee) || !Number.isFinite(parsedFee)) {
-                setSaveError("Informe uma taxa de entrega válida, sem valor negativo.");
+              const parsedFee = roundMoney(deliveryFee ?? 0);
+              const invalid = maskError("phone", f.phone) || maskError("cpfCnpj", f.cnpj);
+              if (invalid) {
+                setSaveError(invalid);
                 return;
               }
               try {
-                await actions.updateRestaurant(f);
+                // Banco: telefone e CPF/CNPJ só com dígitos.
+                await actions.updateRestaurant({
+                  ...f,
+                  name: cleanName(f.name),
+                  phone: phoneDigits(f.phone),
+                  cnpj: onlyDigits(f.cnpj),
+                  instagram: formatInstagram(f.instagram),
+                });
                 const { error } = await supabase.rpc("definir_taxa_entrega", {
                   p_valor: parsedFee,
                 });
@@ -191,17 +205,18 @@ function Restaurante() {
             }}
           >
             <Field label="Nome do restaurante">
-              <input
-                className="field"
+              <MaskedInput
+                mask="name"
+                autoComplete="organization"
                 value={f.name}
-                onChange={(e) => setF({ ...f, name: e.target.value })}
+                onValueChange={(name) => setF((x) => ({ ...x, name }))}
               />
             </Field>
             <Field label="Telefone">
-              <input
-                className="field"
+              <MaskedInput
+                mask="phone"
                 value={f.phone}
-                onChange={(e) => setF({ ...f, phone: e.target.value })}
+                onValueChange={(phone) => setF((x) => ({ ...x, phone }))}
               />
             </Field>
             <Field
@@ -211,26 +226,28 @@ function Restaurante() {
               <textarea
                 className="field min-h-[4.5rem]"
                 rows={2}
+                maxLength={200}
+                autoComplete="street-address"
                 value={f.address}
                 onChange={(e) => setF({ ...f, address: e.target.value })}
               />
             </Field>
-            <Field label="CNPJ">
-              <input
-                className="field"
+            <Field label="CNPJ ou CPF">
+              <MaskedInput
+                mask="cpfCnpj"
                 value={f.cnpj}
-                onChange={(e) => setF({ ...f, cnpj: e.target.value })}
+                onValueChange={(cnpj) => setF((x) => ({ ...x, cnpj }))}
               />
             </Field>
             <Field
               label="Instagram"
               hint="Opcional. Será exibido no rodapé do cupom em vez do telefone."
             >
-              <input
-                className="field"
-                placeholder="@restaurante"
+              <MaskedInput
+                mask="instagram"
+                maxLength={31}
                 value={f.instagram}
-                onChange={(e) => setF({ ...f, instagram: e.target.value })}
+                onValueChange={(instagram) => setF((x) => ({ ...x, instagram }))}
               />
             </Field>
             <div className="space-y-3 border-t pt-4">
@@ -245,20 +262,17 @@ function Restaurante() {
               </label>
               <Field label="Percentual da taxa de serviço">
                 <div className="relative">
-                  <input
+                  <MaskedInput
+                    mask="percent"
                     className="field pr-10"
-                    type="number"
-                    min="0"
-                    max="100"
-                    step="0.5"
+                    aria-label="Percentual da taxa de serviço"
+                    placeholder="10"
                     disabled={!f.serviceChargeEnabled}
-                    value={f.serviceChargePercent}
-                    onChange={(e) =>
-                      setF({
-                        ...f,
-                        serviceChargePercent: e.target.value === "" ? 0 : Number(e.target.value),
-                      })
-                    }
+                    value={percentDraft}
+                    onValueChange={(value) => {
+                      setPercentDraft(value);
+                      setF((x) => ({ ...x, serviceChargePercent: parseDecimal(value) ?? 0 }));
+                    }}
                   />
                   <span className="absolute right-3 top-2.5 text-sm text-muted-foreground">%</span>
                 </div>
@@ -266,12 +280,10 @@ function Restaurante() {
                   label="Taxa de entrega (R$)"
                   hint="Valor fixo somado a todos os pedidos de entrega. Retirada não paga taxa."
                 >
-                  <input
-                    className="field"
-                    inputMode="decimal"
+                  <MoneyInput
                     aria-label="Taxa de entrega"
                     value={deliveryFee}
-                    onChange={(event) => setDeliveryFee(event.target.value)}
+                    onValueChange={setDeliveryFee}
                   />
                 </Field>
               </Field>
@@ -360,6 +372,7 @@ function Restaurante() {
                   <textarea
                     className="field min-h-[4.5rem]"
                     rows={2}
+                    maxLength={300}
                     placeholder={DEFAULT_FOOTER}
                     value={f.receiptFooter || DEFAULT_FOOTER}
                     onChange={(e) => setF({ ...f, receiptFooter: e.target.value })}
@@ -484,23 +497,23 @@ function Restaurante() {
               {staffDraft.id ? "Editar garçom" : "Novo garçom"}
             </h2>
             <Field label="Nome">
-              <input
+              <MaskedInput
+                mask="name"
                 autoFocus
-                className="field"
+                autoComplete="off"
+                maxLength={60}
                 value={staffDraft.name ?? ""}
-                onChange={(event) => setStaffDraft({ ...staffDraft, name: event.target.value })}
+                onValueChange={(name) => setStaffDraft((x) => (x ? { ...x, name } : x))}
               />
             </Field>
             <Field label="Usuário">
-              <input
-                autoComplete="username"
-                className="field"
+              <MaskedInput
+                mask="username"
+                autoComplete="off"
                 minLength={3}
                 maxLength={30}
                 value={staffDraft.username ?? ""}
-                onChange={(event) =>
-                  setStaffDraft({ ...staffDraft, username: event.target.value.toLowerCase() })
-                }
+                onValueChange={(username) => setStaffDraft((x) => (x ? { ...x, username } : x))}
               />
             </Field>
             {!staffDraft.id && (
@@ -509,6 +522,7 @@ function Restaurante() {
                   autoComplete="new-password"
                   type="password"
                   minLength={6}
+                  maxLength={72}
                   required
                   className="field"
                   value={staffDraft.password ?? ""}
@@ -553,6 +567,7 @@ function Restaurante() {
                 autoComplete="new-password"
                 type="password"
                 minLength={6}
+                maxLength={72}
                 required
                 className="field"
                 value={passwordResetDraft}

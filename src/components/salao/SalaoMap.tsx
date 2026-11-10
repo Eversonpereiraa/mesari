@@ -27,6 +27,7 @@ import {
   snapInArea,
   sortAreasBackToFront,
   wallSpot,
+  tableAreaOf,
 } from "./areas";
 import {
   CHAIR_COLORS,
@@ -625,7 +626,7 @@ export const SalaoMap = memo(function SalaoMap({
     }
     const chairColors = CHAIR_COLORS[mode];
     for (const t of tables) {
-      const areaId = t.areaId ?? "";
+      const areaId = tableAreaOf(t, areas) ?? "";
       const info = live?.[t.id];
       const status = info?.status ?? t.status ?? "livre";
       const palette = mode === "edit" ? COLORS.edit : COLORS[status];
@@ -755,7 +756,7 @@ export const SalaoMap = memo(function SalaoMap({
             selected={selectedTable === spec.id}
             scale={scale}
             lift={p.lift}
-            dim={dimmed(spec.t.areaId)}
+            dim={dimmed(tableAreaOf(spec.t, areas))}
             warn={spec.warn}
           />
         );

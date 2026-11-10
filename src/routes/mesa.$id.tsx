@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { actions, brl, errorMessage, tableStatus, total, useStore } from "@/lib/store";
 import { Btn, StatusTag, btn } from "@/components/ui-kit";
 import { MobileFrame } from "@/components/mobile-frame";
+import { PrinterOfflineMessage } from "@/components/printer-offline-message";
 
 export const Route = createFileRoute("/mesa/$id")({
   head: () => ({
@@ -22,6 +23,7 @@ function Mesa() {
   const { id } = Route.useParams();
   const s = useStore((x) => x);
   const nav = useNavigate();
+  const home = s.user?.role === "caixa" ? "/caixa" : "/garcom";
   const t = s.tables.find((x) => x.id === id);
   const lines = s.orders[id] ?? [];
   const st = tableStatus(s, id);
@@ -45,7 +47,7 @@ function Mesa() {
     <MobileFrame
       title={`Mesa ${String(t.number).padStart(2, "0")}`}
       subtitle="Detalhe da mesa"
-      onBack={() => nav({ to: "/garcom" })}
+      onBack={() => nav({ to: home })}
       footer={
         <div className="grid gap-2">
           <Link
@@ -75,7 +77,7 @@ function Mesa() {
             >
               {st === "conta" ? "Conta pedida" : "Pedir conta"}
             </Btn>
-            <Btn size="lg" variant="neutral" onClick={() => nav({ to: "/garcom" })}>
+            <Btn size="lg" variant="neutral" onClick={() => nav({ to: home })}>
               Voltar
             </Btn>
           </div>
@@ -90,9 +92,11 @@ function Mesa() {
           role="status"
           className="mx-3 mt-3 rounded-xl bg-free px-4 py-3 text-sm font-bold text-white shadow-sm"
         >
-          {kitchenOffline
-            ? "Impressora desconectada. O pedido foi enviado, avise o caixa."
-            : "Pedido enviado para a cozinha"}
+          {kitchenOffline ? (
+            <PrinterOfflineMessage cashier={s.user?.role === "caixa"} />
+          ) : (
+            "Pedido enviado para a cozinha"
+          )}
         </div>
       )}
       {lines.length === 0 ? (

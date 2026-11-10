@@ -13,6 +13,7 @@ import {
   uploadLogo,
   uploadPrintLogo,
 } from "@/lib/logo-storage";
+import { money } from "@/lib/printing/format";
 
 export type Status = "livre" | "ocupada" | "conta";
 export type RealtimeStatus = "connected" | "reconnecting" | "offline";
@@ -157,6 +158,8 @@ export type PlanInfo = {
   usage: { tables: number; waiters: number; cashiers: number; areas: number };
   /** Assinatura paga no Asaas: a troca de plano acontece dentro do app. */
   onlinePayment: boolean;
+  /** Onde a assinatura é paga: "mercadopago" (renovação paga pelo app), "asaas" (legado) ou null. */
+  gateway: string | null;
   /** O usuário logado é o dono da conta (só ele troca de plano). */
   owner: boolean;
   /** Troca agendada para a próxima renovação (descer de plano ou trocar mensal/anual). */
@@ -205,6 +208,7 @@ function mapPlanInfo(value: unknown): PlanInfo {
       areas: Number(usage["areas"] ?? 0),
     },
     onlinePayment: row["pagamento_online"] === true,
+    gateway: row["gateway"] ? String(row["gateway"]) : null,
     owner: row["dono"] === true,
     nextPlan: row["plano_proximo"] ? mapPlan(row["plano_proximo"]) : null,
     nextCycle: (row["ciclo_proximo"] as PlanInfo["nextCycle"]) ?? null,
@@ -959,8 +963,8 @@ export function useStore<T>(select: (snapshot: State) => T): T {
   );
 }
 
-export const brl = (value: number) =>
-  value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+/** "R$ 1.234,56": o mesmo formato da tela e da impressão. */
+export const brl = (value: number) => money(value);
 
 export function tableStatus(snapshot: Pick<State, "tables">, id: string): Status {
   const table = snapshot.tables.find((entry) => entry.id === id);

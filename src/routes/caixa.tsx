@@ -47,6 +47,7 @@ import {
 } from "@/components/salao/TablePanel";
 import { useLiveInfo, useMinuteClock, useSalaoData } from "@/components/salao/useSalao";
 import { tableNumber } from "@/components/salao/iso";
+import { countTablesByArea } from "@/components/salao/areas";
 
 export const Route = createFileRoute("/caixa")({
   head: () => ({
@@ -82,11 +83,10 @@ function Caixa() {
   const salaoTables = salao.tables;
   const liveInfo = useLiveInfo(salaoTables);
   const [areaFilter, setAreaFilter] = useState<string | null>(null);
-  const tablesPerArea = useMemo(() => {
-    const counts: Record<string, number> = {};
-    for (const t of salaoTables) if (t.areaId) counts[t.areaId] = (counts[t.areaId] ?? 0) + 1;
-    return counts;
-  }, [salaoTables]);
+  const tablesPerArea = useMemo(
+    () => countTablesByArea(salaoTables, salao.areas),
+    [salaoTables, salao.areas],
+  );
   const focusAreaId =
     areaFilter && salao.areas.some((a) => a.id === areaFilter) ? areaFilter : null;
   const now = useMinuteClock();

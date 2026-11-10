@@ -59,10 +59,13 @@ import { WebUsbTransport } from "./transports/web-usb";
 import { BluetoothWebTransport } from "./transports/bluetooth-web";
 import { NativeBluetoothTransport, NativeTcpTransport } from "./transports/native";
 import { BrowserPrintTransport } from "./transports/browser";
-import { ElectronTransport, isDesktopApp } from "./transports/electron";
+import { ElectronTransport, desktopPrinterApi, isDesktopApp } from "./transports/electron";
 
 const CONNECT_TIMEOUT_MS = 8000;
 const WRITE_TIMEOUT_MS = 30000;
+/** Verificação real da impressora (app desktop): a cada 30 s com o caixa aberto. */
+export const PRINTER_CHECK_MS = 30_000;
+const CHECK_TIMEOUT_MS = 6000;
 
 export type PrinterStatus = {
   connection: ConnectionKind;
@@ -72,6 +75,13 @@ export type PrinterStatus = {
   name: string;
   /** Mensagem amigável do último problema, ou null. */
   error: string | null;
+  /**
+   * A impressora existe/responde (verificação real do app desktop). false = nem adianta tentar
+   * imprimir (sem impressora instalada, impressora configurada ausente, IP sem resposta).
+   */
+  reachable: boolean;
+  /** A verificação real já rodou para a configuração atual (app desktop). */
+  verified: boolean;
 };
 
 export type PrintResult = { connection: ConnectionKind };
@@ -155,11 +165,40 @@ function statusFrom(connection: ConnectionKind, next: TransportStatus): PrinterS
     connected: next.state === "conectado",
     name: next.deviceName ?? CONNECTION_LABELS[connection],
     error: next.state === "erro" || next.message ? (next.message ?? FRIENDLY_PRINT_ERROR) : null,
+    reachable: true,
+    verified: false,
   };
 }
 
+let base: { connection: ConnectionKind; next: TransportStatus } = {
+  connection: "navegador",
+  next: { state: "desconectado" },
+};
+/** Resultado da última verificação real, ligado à configuração verificada. */
+let check: { key: string; ok: boolean; reason: string | null } | null = null;
+/** Última impressão que falhou de verdade; some no próximo sucesso. */
+let lastFailure: { key: string; message: string } | null = null;
+
 function publish(connection: ConnectionKind, next: TransportStatus) {
-  status = statusFrom(connection, next);
+  base = { connection, next };
+  refreshStatus();
+}
+
+/** Status mostrado = transporte + verificação real + última falha de impressão. */
+function refreshStatus() {
+  const key = checkKey(loadConfig());
+  let next = statusFrom(base.connection, base.next);
+  const verified = check?.key === key ? check : null;
+  const failure = lastFailure?.key === key ? lastFailure.message : null;
+  next.verified = Boolean(verified);
+  if (verified && !verified.ok) {
+    next = { ...next, state: "erro", connected: false, error: verified.reason, reachable: false };
+  } else if (failure) {
+    next = { ...next, state: "erro", connected: false, error: failure };
+  } else if (verified?.ok) {
+    next = { ...next, state: "conectado", connected: true, error: null };
+  }
+  status = next;
   statusListeners.forEach((listener) => listener());
 }
 
@@ -190,7 +229,137 @@ export function getTransport(): PrinterTransport {
 subscribeConfig(() => {
   // Configuração mudou na tela "Impressão": atualiza o status para o novo transporte.
   if (current && current.key !== transportKey(loadConfig())) getTransport();
+  refreshStatus();
+  // Outra impressora: verifica de novo na hora (se o monitor estiver ligado).
+  if (monitorTimer !== null && check?.key !== checkKey(loadConfig())) void verificarImpressora();
 });
+
+// ---------------------------------------------------------------------------------------------
+// Verificação real (app desktop)
+
+function isDesktopRenderer() {
+  return typeof window !== "undefined" && Boolean(window.mesariDesktop);
+}
+
+/** Identifica a impressora verificada: mudou a configuração, o resultado antigo não vale. */
+function checkKey(config: PrinterConfig) {
+  switch (config.connection) {
+    case "rede":
+      return `rede|${config.ip}|${config.port}`;
+    case "windows":
+      return `windows|${config.windowsPrinter}`;
+    case "serial":
+      return `serial|${config.comPort}`;
+    default:
+      return config.connection;
+  }
+}
+
+/** Só o app desktop sabe se a impressora existe: no navegador fica o status do transporte. */
+function canVerify(config: PrinterConfig) {
+  if (!isDesktopRenderer()) return false;
+  if (config.connection === "navegador") return true;
+  return isDesktopApp() && ["rede", "windows", "serial"].includes(config.connection);
+}
+
+export const NO_PRINTER_INSTALLED = "Nenhuma impressora instalada neste computador.";
+
+async function probe(config: PrinterConfig): Promise<string | null> {
+  const desktop = window.mesariDesktop!;
+  if (config.connection === "navegador") {
+    const printers = await desktop.listPrinters();
+    if (!printers.length) return NO_PRINTER_INSTALLED;
+    const chosen = (await desktop.getSettings()).printerComanda;
+    if (chosen && !printers.some((printer) => printer.name === chosen)) {
+      return `A impressora "${chosen}" não foi encontrada.`;
+    }
+    return null;
+  }
+  const api = desktopPrinterApi()!;
+  if (config.connection === "windows") {
+    const printers = await api.listWindows();
+    if (!printers.length) return NO_PRINTER_INSTALLED;
+    if (!config.windowsPrinter) return "Escolha a impressora do Windows.";
+    if (!printers.some((printer) => printer.nome === config.windowsPrinter)) {
+      return `A impressora "${config.windowsPrinter}" não foi encontrada.`;
+    }
+    return null;
+  }
+  if (config.connection === "serial") {
+    if (!config.comPort) return "Escolha a porta da impressora.";
+    const ports = await api.listSerial();
+    return ports.some((port) => port.path === config.comPort)
+      ? null
+      : `A porta ${config.comPort} não foi encontrada. Confira o cabo da impressora.`;
+  }
+  // Rede: só abre e fecha a conexão, sem enviar nada.
+  if (!config.ip) return "Informe o IP da impressora.";
+  const outcome = await api.network({ ip: config.ip, porta: config.port }, null);
+  return outcome.ok ? null : outcome.mensagem;
+}
+
+let verifying: Promise<PrinterStatus> | null = null;
+
+/**
+ * Confere de verdade se a impressora configurada existe/responde (app desktop). Sem impressora
+ * no Windows, impressora escolhida ausente, IP sem resposta ou porta COM sumida: desconectada.
+ */
+export function verificarImpressora(): Promise<PrinterStatus> {
+  if (verifying) return verifying;
+  verifying = (async () => {
+    const config = loadConfig();
+    if (!canVerify(config)) {
+      check = null;
+      refreshStatus();
+      return status;
+    }
+    const key = checkKey(config);
+    let reason: string | null;
+    try {
+      reason = await withTimeout(
+        probe(config),
+        CHECK_TIMEOUT_MS,
+        "A impressora não respondeu a tempo.",
+      );
+    } catch (cause) {
+      reason = cause instanceof PrinterError ? cause.message : FRIENDLY_PRINT_ERROR;
+    }
+    check = { key, ok: reason === null, reason };
+    refreshStatus();
+    return status;
+  })().finally(() => {
+    verifying = null;
+  });
+  return verifying;
+}
+
+let monitorTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Verifica agora e a cada 30 s (a fila liga com o caixa aberto e desliga ao sair). */
+export function startPrinterMonitor() {
+  if (monitorTimer !== null) return;
+  void verificarImpressora();
+  monitorTimer = setInterval(() => void verificarImpressora(), PRINTER_CHECK_MS);
+}
+
+export function stopPrinterMonitor() {
+  if (monitorTimer !== null) clearInterval(monitorTimer);
+  monitorTimer = null;
+}
+
+function markFailure(message: string) {
+  lastFailure = { key: checkKey(loadConfig()), message };
+  refreshStatus();
+}
+
+function markSuccess() {
+  const key = checkKey(loadConfig());
+  if (lastFailure === null && check?.key === key && check.ok) return;
+  lastFailure = null;
+  // Imprimiu: a impressora existe, mesmo que a verificação anterior dissesse o contrário.
+  if (check?.key === key) check = { key, ok: true, reason: null };
+  refreshStatus();
+}
 
 export function subscribePrinterStatus(listener: () => void) {
   statusListeners.add(listener);
@@ -291,9 +460,13 @@ async function deliver(
       if (options.openDrawer) parts.push(drawerBytes(config));
       await sendBytes(transport, concat(parts));
     }
+    if (!options.transport || options.transport === current?.transport) markSuccess();
     return { connection: transport.kind };
   } catch (cause) {
-    throw friendly(cause);
+    const error = friendly(cause);
+    // Só a impressora configurada neste aparelho conta (não a caixa de diálogo forçada).
+    if (!options.transport || options.transport === current?.transport) markFailure(error.message);
+    throw error;
   }
 }
 
@@ -424,6 +597,13 @@ export function abrirGaveta() {
 /** Testa a conexão sem imprimir. */
 export async function testarConexao() {
   const transport = getTransport();
+  if (canVerify(loadConfig())) {
+    const verified = await verificarImpressora();
+    if (!verified.reachable) throw new PrinterError(verified.error ?? FRIENDLY_PRINT_ERROR);
+    // O usuário testou de novo: a próxima comanda diz se a falha anterior continua.
+    lastFailure = null;
+    refreshStatus();
+  }
   try {
     // Conexões sem estado (agente, rede, navegador): força uma checagem nova.
     if (["rede", "windows", "serial", "navegador"].includes(transport.kind)) {
@@ -481,6 +661,12 @@ export function initializePrinter() {
 export function resetPrinterForTests() {
   current?.unsubscribe();
   current = null;
+  stopPrinterMonitor();
+  check = null;
+  lastFailure = null;
+  verifying = null;
+  base = { connection: "navegador", next: { state: "desconectado" } };
+  status = statusFrom("navegador", { state: "desconectado" });
   pending.clear();
   queue = Promise.resolve();
 }

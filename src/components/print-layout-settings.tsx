@@ -2,6 +2,8 @@ import { useState, type ReactNode } from "react";
 import { Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
 import { Switch } from "@/components/ui/switch";
+import { MaskedInput } from "@/components/masked-input";
+import { decimalInput, parseDecimal } from "@/lib/masks";
 import {
   COLUMN_OPTIONS,
   PRINT_PRESETS,
@@ -46,21 +48,18 @@ function NumberInput({
   const [draft, setDraft] = useState<string | null>(null);
   const commit = () => {
     if (draft === null) return;
-    const parsed = Number(draft.replace(",", "."));
-    if (Number.isFinite(parsed)) onCommit(Math.max(min, Math.min(max, parsed)));
+    const parsed = parseDecimal(draft);
+    if (parsed !== null) onCommit(Math.max(min, Math.min(max, parsed)));
     setDraft(null);
   };
   return (
     <Field label={label} {...(hint ? { hint } : {})}>
-      <input
-        className="field"
-        type="number"
-        inputMode="decimal"
-        min={min}
+      <MaskedInput
+        mask="decimal"
+        decimals={Number.isInteger(step) ? 0 : 1}
         max={max}
-        step={step}
-        value={draft ?? String(value)}
-        onChange={(event) => setDraft(event.target.value)}
+        value={draft ?? decimalInput(value)}
+        onValueChange={setDraft}
         onBlur={commit}
         onKeyDown={(event) => {
           if (event.key === "Enter") commit();
@@ -244,7 +243,7 @@ function Calibration({ config, update, disabled }: Props & { disabled: boolean }
   };
 
   const save = () => {
-    const mm = Number(lastMm.replace(",", "."));
+    const mm = parseDecimal(lastMm) ?? NaN;
     const chars = Number(lastChar);
     if (!Number.isFinite(mm) || mm < 30 || mm > config.paperWidth) {
       setError(`Informe o último número da régua em mm (entre 40 e ${config.paperWidth}).`);
@@ -281,24 +280,25 @@ function Calibration({ config, update, disabled }: Props & { disabled: boolean }
       {step === "perguntas" && (
         <div className="mt-3 space-y-3">
           <Field label="1. Qual o último número da régua que apareceu inteiro?">
-            <input
-              className="field"
-              inputMode="numeric"
+            <MaskedInput
+              mask="decimal"
+              decimals={1}
+              max={config.paperWidth}
               placeholder="Ex.: 72"
               value={lastMm}
-              onChange={(event) => setLastMm(event.target.value)}
+              onValueChange={setLastMm}
             />
           </Field>
           <Field
             label="2. Qual o último número da régua de caracteres que apareceu inteiro?"
             hint="Conte a posição usando a linha das dezenas acima da régua (ex.: 48)."
           >
-            <input
-              className="field"
-              inputMode="numeric"
+            <MaskedInput
+              mask="integer"
+              maxDigits={3}
               placeholder="Ex.: 48"
               value={lastChar}
-              onChange={(event) => setLastChar(event.target.value)}
+              onValueChange={setLastChar}
             />
           </Field>
           <fieldset>

@@ -11,7 +11,11 @@
 //   • Descer de plano ou trocar mensal↔anual → vale na próxima renovação; a assinatura no Asaas
 //     já passa a cobrar o valor novo a partir do próximo vencimento.
 //
-// Secrets: ASAAS_API_KEY, ASAAS_BASE_URL (opcional), MESARI_SITE_URL (opcional).
+// Mercado Pago (gateway "mercadopago"): não há assinatura recorrente no gateway. O upgrade gera um
+// link de pagamento (Pix/boleto/cartão) com external_reference "troca:<id>"; descer de plano ou
+// trocar o ciclo só fica marcado em plano_proximo/ciclo_proximo e vale no próximo "Pagar renovação".
+//
+// Secrets: MP_ACCESS_TOKEN | ASAAS_API_KEY, ASAAS_BASE_URL (opcional), MESARI_SITE_URL (opcional).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 type Ciclo = "mensal" | "anual";
@@ -56,6 +60,24 @@ async function asaas(path: string, init: RequestInit = {}) {
   return body;
 }
 
+async function preferenciaMP(body: unknown) {
+  const res = await fetch("https://api.mercadopago.com/checkout/preferences", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}`,
+      "X-Idempotency-Key": crypto.randomUUID(),
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error("Mercado Pago", res.status, JSON.stringify(data));
+    throw new Error(data?.message ? `Mercado Pago: ${data.message}` : `Mercado Pago respondeu ${res.status}`);
+  }
+  return data;
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
   if (req.method !== "POST") return json({ erro: "Método não permitido" }, 405);
@@ -92,8 +114,10 @@ Deno.serve(async (req) => {
     const { data: rest } = await db.from("restaurante").select("codigo").eq("id", rid).maybeSingle();
 
     // ---------- sem assinatura paga: vai para o checkout da landing ----------
-    const pagaNoAsaas = a?.gateway === "asaas" && a?.gateway_assinatura_id && ["ativa", "atrasada"].includes(a?.status);
-    if (!pagaNoAsaas) {
+    const ehMP = a?.gateway === "mercadopago";
+    const ehAsaas = a?.gateway === "asaas" && Boolean(a?.gateway_assinatura_id);
+    const pagaOnline = (ehMP || ehAsaas) && ["ativa", "atrasada"].includes(a?.status);
+    if (!pagaOnline) {
       const site = Deno.env.get("MESARI_SITE_URL") ?? "https://mesari-site.vercel.app";
       const url = new URL(site + "/");
       url.searchParams.set("plano", novo.id);
@@ -102,7 +126,7 @@ Deno.serve(async (req) => {
       return json({ acao: "checkout", url: url.toString() });
     }
     if (a.status === "atrasada") {
-      return json({ erro: "Há uma mensalidade em aberto. Pague a fatura pendente antes de trocar de plano." }, 409);
+      return json({ erro: "Há uma mensalidade em aberto. Pague a renovação pendente antes de trocar de plano." }, 409);
     }
 
     const atual = porId.get(a.plano_id)!;
@@ -116,7 +140,7 @@ Deno.serve(async (req) => {
       if (!confirmar) {
         return json({ acao: "manter", resumo: `Cancelar a troca agendada e continuar no ${atual.nome} ${cicloAtual}.` });
       }
-      await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
+      if (ehAsaas) await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
         method: "PUT",
         body: JSON.stringify({
           value: preco(atual, cicloAtual),
@@ -151,7 +175,7 @@ Deno.serve(async (req) => {
       // Cancela cobrança de troca anterior que ficou em aberto (o cliente desistiu e pediu outra).
       const { data: abertas } = await db.from("plano_trocas").select("id, asaas_cobranca_id").eq("restaurante_id", rid).eq("status", "aguardando");
       for (const t of abertas ?? []) {
-        if (t.asaas_cobranca_id) await asaas(`/payments/${t.asaas_cobranca_id}`, { method: "DELETE" }).catch(() => null);
+        if (ehAsaas && t.asaas_cobranca_id) await asaas(`/payments/${t.asaas_cobranca_id}`, { method: "DELETE" }).catch(() => null);
         await db.from("plano_trocas").update({ status: "cancelada", atualizado_em: new Date().toISOString() }).eq("id", t.id);
       }
 
@@ -167,7 +191,7 @@ Deno.serve(async (req) => {
 
       if (diferenca < MINIMO_ASAAS) {
         // Diferença pequena: libera direto.
-        await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
+        if (ehAsaas) await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
           method: "PUT",
           body: JSON.stringify({ value: recorrente, cycle: cicloAsaas(cicloFinal), description: `Mesari ${novo.nome} (${cicloFinal})`, updatePendingPayments: true }),
         });
@@ -178,6 +202,27 @@ Deno.serve(async (req) => {
         }).eq("restaurante_id", rid);
         await db.from("plano_trocas").update({ status: "aplicada", atualizado_em: new Date().toISOString() }).eq("id", troca.id);
         return json({ acao: "liberado" });
+      }
+
+      if (ehMP) {
+        const site = Deno.env.get("MESARI_SITE_URL") ?? "https://mesari-site.vercel.app";
+        const { data: dono } = await db.from("profiles").select("nome").eq("id", auth.user.id).maybeSingle();
+        const pref = await preferenciaMP({
+          items: [{
+            id: `mesari-troca-${novo.id}`,
+            title: `Mesari: troca do ${atual.nome} para o ${novo.nome} (${restantes} dias restantes)`,
+            quantity: 1, unit_price: diferenca, currency_id: "BRL",
+          }],
+          payer: { email: auth.user.email, name: dono?.nome ?? undefined },
+          external_reference: `troca:${troca.id}`,
+          notification_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/mp-webhook`,
+          back_urls: { success: `${site}/obrigado/?tipo=troca`, pending: `${site}/obrigado/?tipo=troca&status=pendente`, failure: `${site}/obrigado/?tipo=troca&status=falhou` },
+          auto_return: "approved",
+          statement_descriptor: "MESARI",
+          expires: true,
+          expiration_date_to: new Date(Date.now() + 3 * DIA).toISOString(),
+        });
+        return json({ acao: "pagar", url: pref.init_point, valor: diferenca });
       }
 
       const cobranca = await asaas("/payments", {
@@ -206,7 +251,7 @@ Deno.serve(async (req) => {
     const resumo = `Você continua no ${atual.nome} até ${new Date(fimPeriodo).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}. A partir daí passa para o ${novo.nome} ${cicloPedido}, por ${reais(recorrente)} por ${cicloPedido === "anual" ? "ano" : "mês"}. Nada é cobrado agora.`;
     if (!confirmar) return json({ acao: "agendar", renovaEm, recorrente, resumo });
 
-    await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
+    if (ehAsaas) await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
       method: "PUT",
       body: JSON.stringify({
         value: recorrente,

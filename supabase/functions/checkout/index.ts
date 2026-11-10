@@ -1,4 +1,6 @@
 // Mesari — checkout da landing page.
+// Com MP_ACCESS_TOKEN configurado, usa o Mercado Pago (Checkout Pro: Pix, boleto e cartão).
+// Sem ele, continua no Asaas (legado).
 // Recebe os dados do formulário, cria cliente + assinatura no Asaas e devolve o link da
 // primeira cobrança (o cliente escolhe Pix, boleto ou cartão na página do Asaas).
 //
@@ -70,11 +72,30 @@ async function asaas(path: string, init: RequestInit = {}) {
   return body;
 }
 
+async function mercadoPago(path: string, body: unknown) {
+  const res = await fetch("https://api.mercadopago.com" + path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}`,
+      "X-Idempotency-Key": crypto.randomUUID(),
+    },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    console.error("Mercado Pago", res.status, JSON.stringify(data));
+    throw new Error(data?.message ? `Mercado Pago: ${data.message}` : `Mercado Pago respondeu ${res.status}`);
+  }
+  return data;
+}
+
 Deno.serve(async (req) => {
   const headers = cors(req.headers.get("origin"));
   if (req.method === "OPTIONS") return new Response("ok", { headers });
   if (req.method !== "POST") return json({ erro: "Método não permitido" }, 405, headers);
-  if (!Deno.env.get("ASAAS_API_KEY")) {
+  const usaMP = Boolean(Deno.env.get("MP_ACCESS_TOKEN"));
+  if (!usaMP && !Deno.env.get("ASAAS_API_KEY")) {
     return json({ erro: "Pagamento ainda não configurado. Fale com a gente no WhatsApp." }, 503, headers);
   }
 
@@ -116,10 +137,40 @@ Deno.serve(async (req) => {
       .insert({
         email, nome, telefone, restaurante_nome: restauranteNome || null, restaurante_codigo: codigo,
         plano_id: plano.id, ciclo, valor, restaurante_id: restauranteId,
+        gateway: usaMP ? "mercadopago" : "asaas",
       })
       .select("id")
       .single();
     if (erroPedido) throw erroPedido;
+
+    if (usaMP) {
+      const site = Deno.env.get("MESARI_SITE_URL") ?? "https://mesari-site.vercel.app";
+      const titulo = `Mesari ${plano.nome} (${ciclo})${restauranteNome ? " - " + restauranteNome : ""}`;
+      const [primeiro, ...resto] = nome.split(/\s+/);
+      const preferencia = await mercadoPago("/checkout/preferences", {
+        items: [{ id: `mesari-${plano.id}-${ciclo}`, title: titulo, quantity: 1, unit_price: valor, currency_id: "BRL" }],
+        payer: {
+          name: primeiro,
+          surname: resto.join(" ") || undefined,
+          email,
+          identification: { type: cpfCnpj.length === 14 ? "CNPJ" : "CPF", number: cpfCnpj },
+        },
+        external_reference: `pedido:${pedido.id}`,
+        notification_url: `${Deno.env.get("SUPABASE_URL")}/functions/v1/mp-webhook`,
+        back_urls: {
+          success: `${site}/obrigado/`,
+          pending: `${site}/obrigado/?status=pendente`,
+          failure: `${site}/?pagamento=falhou#preco`,
+        },
+        auto_return: "approved",
+        statement_descriptor: "MESARI",
+        payment_methods: { installments: ciclo === "anual" ? 12 : 1 },
+        expires: true,
+        expiration_date_to: new Date(Date.now() + 3 * 86_400_000).toISOString(),
+      });
+      await db.from("checkout_pedidos").update({ mp_preference_id: preferencia.id }).eq("id", pedido.id);
+      return json({ url: preferencia.init_point }, 200, headers);
+    }
 
     const cliente = await asaas("/customers", {
       method: "POST",

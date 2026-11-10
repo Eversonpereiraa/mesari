@@ -2,12 +2,14 @@ import { useState, type FormEvent } from "react";
 import { Banknote, CreditCard, Plus, QrCode, Trash2, WalletCards, X } from "lucide-react";
 import { brl, errorMessage, type PaymentInput } from "@/lib/store";
 import { Btn } from "@/components/ui-kit";
+import { MoneyInput } from "@/components/masked-input";
 
 type Method = PaymentInput["forma"];
 type PaymentLine = {
   id: number;
   method: Method | null;
-  amount: string;
+  /** Centavos; null = campo vazio. */
+  amount: number | null;
 };
 
 const methods: { value: Method; label: string; Icon: typeof Banknote }[] = [
@@ -17,28 +19,6 @@ const methods: { value: Method; label: string; Icon: typeof Banknote }[] = [
   { value: "debito", label: "Débito", Icon: WalletCards },
 ];
 
-const moneyToCents = (value: string) => {
-  const normalized = value.trim().replace(/[^\d.,]/g, "");
-  let whole = normalized;
-  let fraction = "00";
-  if (normalized.includes(",")) {
-    if (!/^(?:\d+|\d{1,3}(?:\.\d{3})+)(?:,\d{0,2})?$/.test(normalized)) return 0;
-    const [integer = "", decimal = ""] = normalized.split(",");
-    whole = integer.replace(/\./g, "");
-    fraction = decimal.padEnd(2, "0");
-  } else if (/^\d{1,3}(?:\.\d{3})+$/.test(normalized)) {
-    whole = normalized.replace(/\./g, "");
-  } else if (/^\d*(?:\.\d{0,2})?$/.test(normalized) && normalized.includes(".")) {
-    const [integer = "", decimal = ""] = normalized.split(".");
-    whole = integer;
-    fraction = decimal.padEnd(2, "0");
-  } else if (!/^\d+$/.test(normalized)) {
-    return 0;
-  }
-  return (Number(whole) || 0) * 100 + (Number(fraction) || 0);
-};
-const inputValue = (cents: number) =>
-  `${Math.floor(cents / 100)},${String(cents % 100).padStart(2, "0")}`;
 
 /**
  * Converte as linhas em pagamentos. Pix/cartão entram pelo valor digitado; o troco sai do
@@ -84,7 +64,7 @@ export function PaymentDialog({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const cents = payments.map((payment) => moneyToCents(payment.amount));
+  const cents = payments.map((payment) => payment.amount ?? 0);
   const paidCents = cents.reduce((sum, value) => sum + value, 0);
   const remainingCents = Math.max(0, totalCents - paidCents);
   const hasCash = payments.some((payment) => payment.method === "dinheiro");
@@ -106,7 +86,7 @@ export function PaymentDialog({
     (paidCents === totalCents || hasCash);
 
   const chooseFirstMethod = (method: Method) => {
-    setPayments([{ id: Date.now(), method, amount: inputValue(totalCents) }]);
+    setPayments([{ id: Date.now(), method, amount: totalCents }]);
   };
 
   const updatePayment = (id: number, updates: Partial<PaymentLine>) => {
@@ -118,7 +98,7 @@ export function PaymentDialog({
   const addPayment = () => {
     setPayments((current) => [
       ...current,
-      { id: Date.now(), method: null, amount: inputValue(remainingCents) },
+      { id: Date.now(), method: null, amount: remainingCents },
     ]);
   };
 
@@ -252,14 +232,16 @@ export function PaymentDialog({
                         className={`mt-1 flex items-center rounded-lg border bg-background px-3 focus-within:ring-2 focus-within:ring-ring ${overLimit[index] ? "border-destructive" : ""}`}
                       >
                         <span className="text-muted-foreground">R$</span>
-                        <input
+                        <MoneyInput
+                          currency={false}
                           aria-label={`Valor do pagamento ${index + 1}`}
                           aria-invalid={overLimit[index]}
-                          inputMode="decimal"
                           className="min-w-0 flex-1 bg-transparent px-2 py-2.5 text-right font-semibold outline-none"
-                          value={payment.amount}
-                          onChange={(event) =>
-                            updatePayment(payment.id, { amount: event.target.value })
+                          value={payment.amount === null ? null : payment.amount / 100}
+                          onValueChange={(value) =>
+                            updatePayment(payment.id, {
+                              amount: value === null ? null : Math.round(value * 100),
+                            })
                           }
                         />
                       </div>
@@ -274,7 +256,7 @@ export function PaymentDialog({
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => updatePayment(payment.id, { amount: inputValue(max) })}
+                          onClick={() => updatePayment(payment.id, { amount: max })}
                           className="rounded-full border border-primary/30 bg-card px-3 py-1.5 text-xs font-semibold text-primary hover:bg-background"
                         >
                           Valor exato
@@ -284,7 +266,7 @@ export function PaymentDialog({
                             key={note}
                             type="button"
                             onClick={() =>
-                              updatePayment(payment.id, { amount: inputValue(amountCents + note) })
+                              updatePayment(payment.id, { amount: amountCents + note })
                             }
                             className="rounded-full border bg-card px-3 py-1.5 text-xs font-semibold hover:bg-background"
                           >

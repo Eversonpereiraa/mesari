@@ -6,6 +6,8 @@ import { actions, brl, errorMessage, useStore, type MenuItem } from "@/lib/store
 import { AppShell, Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
 import { useConfirm, usePrompt } from "@/components/system-dialog-provider";
+import { MaskedInput, MoneyInput } from "@/components/masked-input";
+import { cleanName, roundMoney } from "@/lib/masks";
 
 export const Route = createFileRoute("/cardapio")({
   head: () => ({
@@ -19,7 +21,7 @@ export const Route = createFileRoute("/cardapio")({
   component: Cardapio,
 });
 
-type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: string };
+type Draft = Omit<MenuItem, "id" | "price"> & { id?: string; price: number | null };
 
 function Cardapio() {
   const cats = useStore((s) => s.categories);
@@ -49,12 +51,13 @@ function Cardapio() {
       maxLength: 60,
       confirmText: "Criar categoria",
     });
-    if (n?.trim()) setCat(await actions.addCategory(n.trim()));
+    const name = cleanName(n ?? "");
+    if (name) setCat(await actions.addCategory(name));
   };
   const save = async () => {
-    if (!draft || !draft.name.trim()) return;
-    const price = parseFloat(draft.price.replace(",", ".")) || 0;
-    await actions.saveItem({ ...draft, name: draft.name.trim(), price });
+    const name = cleanName(draft?.name ?? "");
+    if (!draft || !name) return;
+    await actions.saveItem({ ...draft, name, price: roundMoney(draft.price ?? 0) });
     setDraft(null);
   };
 
@@ -71,7 +74,7 @@ function Cardapio() {
             size="sm"
             className="whitespace-nowrap"
             onClick={() =>
-              setDraft({ name: "", categoryId: cat, price: "", description: "", active: true })
+              setDraft({ name: "", categoryId: cat, price: null, description: "", active: true })
             }
           >
             <Plus className="h-4 w-4" />
@@ -87,6 +90,7 @@ function Cardapio() {
             className="field h-11 max-w-sm pl-10"
             aria-label="Buscar item"
             placeholder="Buscar item"
+            maxLength={60}
             value={q}
             onChange={(e) => setQ(e.target.value)}
           />
@@ -184,7 +188,7 @@ function Cardapio() {
                         aria-label={`Editar ${i.name}`}
                         className="mr-2 inline-flex h-9 w-9 items-center justify-center rounded-lg text-primary hover:bg-accent"
                         onClick={() =>
-                          setDraft({ ...i, price: i.price.toFixed(2).replace(".", ",") })
+                          setDraft({ ...i, price: i.price })
                         }
                       >
                         <Pencil className="h-4 w-4" />
@@ -238,11 +242,12 @@ function Cardapio() {
             </h2>
             <div className="space-y-4 p-5">
               <Field label="Nome do item">
-                <input
-                  className="field"
+                <MaskedInput
+                  mask="name"
                   autoFocus
+                  autoComplete="off"
                   value={draft.name}
-                  onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                  onValueChange={(name) => setDraft((x) => (x ? { ...x, name } : x))}
                 />
               </Field>
               <div className="grid grid-cols-2 gap-3">
@@ -255,18 +260,18 @@ function Cardapio() {
                   />
                 </Field>
                 <Field label="Preço (R$)">
-                  <input
+                  <MoneyInput
                     className="field num"
-                    inputMode="decimal"
-                    placeholder="0,00"
+                    aria-label="Preço"
                     value={draft.price}
-                    onChange={(e) => setDraft({ ...draft, price: e.target.value })}
+                    onValueChange={(price) => setDraft((x) => (x ? { ...x, price } : x))}
                   />
                 </Field>
               </div>
               <Field label="Descrição (opcional)">
                 <textarea
                   className="field h-20 py-2"
+                  maxLength={300}
                   value={draft.description}
                   onChange={(e) => setDraft({ ...draft, description: e.target.value })}
                 />

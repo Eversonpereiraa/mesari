@@ -12,8 +12,12 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { brl, errorMessage, useStore, type MenuItem } from "@/lib/store";
-import { isKitchenStationOnline, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
+import { kitchenPrinterReady, startKitchenPresenceObserver } from "@/lib/kitchen-presence";
 import { Btn } from "./ui-kit";
+import { PrinterOfflineMessage } from "./printer-offline-message";
+
+/** Aviso de pedido enviado com a impressora fora do ar (texto depende de quem lançou). */
+const PRINTER_OFFLINE = "impressora-offline";
 
 export type MenuCartEntry = { item: MenuItem; qty: number; note: string };
 
@@ -36,6 +40,7 @@ export function MenuPicker({
 }) {
   const cats = useStore((s) => s.categories);
   const items = useStore((s) => s.items);
+  const cashier = useStore((s) => s.user?.role === "caixa");
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState<MenuItem | null>(null);
   const [qty, setQty] = useState(1);
@@ -125,14 +130,14 @@ export function MenuPicker({
     }
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    const stationOnline = kitchenPrinterReady();
     try {
       await onAdd(selected, qty, note.trim(), true);
       setFlash(
         printOrders
           ? stationOnline
             ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa."
+            : PRINTER_OFFLINE
           : "Pedido enviado para a mesa.",
       );
       setSelected(null);
@@ -148,7 +153,7 @@ export function MenuPicker({
     if (!cart.length || sending) return;
     setSending(true);
     setSubmitError("");
-    const stationOnline = isKitchenStationOnline();
+    const stationOnline = kitchenPrinterReady();
     try {
       if (onSubmit) await onSubmit(cart, printOrders);
       else for (const entry of cart) await onAdd(entry.item, entry.qty, entry.note, true);
@@ -160,7 +165,7 @@ export function MenuPicker({
           ? "Pedido enviado para a mesa."
           : stationOnline
             ? "Pedido enviado para a cozinha"
-            : "Impressora desconectada. O pedido foi enviado, avise o caixa.",
+            : PRINTER_OFFLINE,
       );
       window.setTimeout(() => setFlash(""), 4000);
     } catch (cause) {
@@ -184,6 +189,7 @@ export function MenuPicker({
             className="field h-11 pl-10"
             aria-label="Buscar item do cardápio"
             placeholder="Buscar item do cardápio"
+            maxLength={60}
             value={q}
             onChange={(event) => setQ(event.target.value)}
           />
@@ -320,6 +326,7 @@ export function MenuPicker({
                         className="field h-11"
                         aria-label={`Observação para ${item.name}`}
                         placeholder="Observação (ex.: sem cebola)"
+                        maxLength={140}
                         value={note}
                         onChange={(event) => updateNote(event.target.value)}
                       />
@@ -349,10 +356,15 @@ export function MenuPicker({
       {flash && (
         <div
           role="status"
-          className="flex shrink-0 items-center gap-2 border-t bg-free-bg px-4 py-3 text-sm font-semibold text-free"
+          className={cn(
+            "flex shrink-0 items-center gap-2 border-t px-4 py-3 text-sm font-semibold",
+            flash === PRINTER_OFFLINE ? "bg-amber-50 text-amber-900" : "bg-free-bg text-free",
+          )}
         >
-          <Check className="h-4 w-4" />
-          {flash}
+          <Check className="h-4 w-4 shrink-0" />
+          <span>
+            {flash === PRINTER_OFFLINE ? <PrinterOfflineMessage cashier={cashier} /> : flash}
+          </span>
         </div>
       )}
       {!hideCartControls && (mobile || onSubmit) && (
@@ -466,6 +478,7 @@ export function MenuPicker({
                       className="field ml-auto h-11 max-w-[190px]"
                       aria-label={`Observação para ${entry.item.name}`}
                       placeholder="Observação"
+                      maxLength={140}
                       value={entry.note}
                       onChange={(event) =>
                         setCart((current) =>

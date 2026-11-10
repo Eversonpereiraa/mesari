@@ -14,7 +14,6 @@ import {
   Printer,
   ReceiptText,
   Settings2,
-  Smartphone,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, useStore, type Status } from "@/lib/store";
@@ -173,7 +172,6 @@ const nav = [
   { to: "/caixa", label: "Mesas", Icon: LayoutGrid },
   { to: "/delivery", label: "Delivery", Icon: Bike },
   { to: "/vendas", label: "Vendas", Icon: ReceiptText },
-  { to: "/garcom", label: "App do garçom", Icon: Smartphone },
   { to: "/cardapio", label: "Cardápio", Icon: BookOpen },
   { to: "/layout", label: "Layout do salão", Icon: Map },
   { to: "/impressao", label: "Impressão", Icon: Printer },

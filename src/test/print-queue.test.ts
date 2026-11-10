@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   imprimirComanda: vi.fn(),
   imprimirNota: vi.fn(),
   config: { printKitchenEnabled: true, connection: "rede" },
+  printer: { connected: true, reachable: true, label: "Rede (IP)", error: null as string | null },
 }));
 
 vi.mock("@/lib/supabase", () => {
@@ -33,12 +34,14 @@ vi.mock("@/lib/supabase", () => {
 });
 
 vi.mock("@/lib/printing", () => ({
-  getPrinterStatus: () => ({ connected: true, label: "Rede (IP)", error: null }),
+  getPrinterStatus: () => mocks.printer,
   imprimirComanda: mocks.imprimirComanda,
   imprimirNota: mocks.imprimirNota,
   initializePrinter: async () => undefined,
   loadConfig: () => mocks.config,
   printErrorMessage: (cause: unknown) => (cause instanceof Error ? cause.message : String(cause)),
+  startPrinterMonitor: () => undefined,
+  stopPrinterMonitor: () => undefined,
   subscribeConfig: () => () => undefined,
   subscribePrinterStatus: () => () => undefined,
 }));
@@ -91,6 +94,7 @@ beforeEach(() => {
   resetPrintQueueForTests();
   mocks.batches = [];
   mocks.config = { printKitchenEnabled: true, connection: "rede" };
+  mocks.printer = { connected: true, reachable: true, label: "Rede (IP)", error: null };
   mocks.imprimirComanda.mockReset().mockResolvedValue({ connection: "rede" });
   mocks.imprimirNota.mockReset().mockResolvedValue({ connection: "rede" });
   mocks.rpc.mockReset().mockImplementation(async (name: string) => {
@@ -176,6 +180,20 @@ describe("fila de impressão", () => {
 
   it("navegador sem impressora direta não reserva trabalhos (abriria a caixa de diálogo)", async () => {
     mocks.config = { printKitchenEnabled: true, connection: "navegador" };
+    startPrintQueue({ id: "u1", name: "Caixa" });
+    await settle();
+    await tick();
+    expect(getQueueState().canPrint).toBe(false);
+    expect(mocks.rpc.mock.calls.some(([name]) => name === "reservar_impressao")).toBe(false);
+  });
+
+  it("impressora que não existe/responde: não reserva comandas neste aparelho", async () => {
+    mocks.printer = {
+      connected: false,
+      reachable: false,
+      label: "Impressora do Windows",
+      error: "Nenhuma impressora instalada neste computador.",
+    };
     startPrintQueue({ id: "u1", name: "Caixa" });
     await settle();
     await tick();

@@ -4,6 +4,7 @@ import { actions, useStore } from "@/lib/store";
 import { savedRestaurantCode } from "@/lib/tenant";
 import { Btn, Field } from "@/components/ui-kit";
 import { MesariLogo } from "@/components/mesari-logo";
+import { MaskedInput } from "@/components/masked-input";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -54,24 +55,21 @@ function Login() {
         </div>
         <div className="space-y-4">
           <Field label="Usuário ou e-mail">
-            <input
-              className="field"
+            <MaskedInput
+              mask="username"
               autoFocus
-              autoComplete="username"
-              autoCapitalize="none"
+              maxLength={120}
               value={u}
-              onChange={(e) => setU(e.target.value)}
+              onValueChange={setU}
             />
           </Field>
           {!isEmail && (
             <Field label="Código do restaurante">
-              <input
+              <MaskedInput
+                mask="restaurantCode"
                 className="field num tracking-widest"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="6 números"
                 value={code}
-                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                onValueChange={setCode}
               />
             </Field>
           )}
@@ -80,6 +78,7 @@ function Login() {
               className="field num tracking-widest"
               type="password"
               autoComplete="current-password"
+              maxLength={72}
               value={c}
               onChange={(e) => setC(e.target.value)}
             />

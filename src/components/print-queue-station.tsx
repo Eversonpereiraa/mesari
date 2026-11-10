@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { Btn } from "@/components/ui-kit";
 import { KitchenPrintStation } from "@/components/kitchen-print-station";
 import { BillPrintStation } from "@/components/bill-print-station";
+import { PrinterSetupWizard } from "@/components/printer-setup-wizard";
 import { errorMessage, useStore } from "@/lib/store";
 import { getPrinterStatus, subscribePrinterStatus } from "@/lib/printing";
 import {
@@ -95,68 +96,61 @@ export function PrintQueueBars() {
   if (queue.available === null) return null;
   return (
     <>
-      <PrinterIndicator />
-      <UnprintedAlert jobs={queue.jobs} />
-      {!isDesktop() && <DesktopAppNotice />}
+      {/* Fixos no canto: aparecem sem empurrar a tela (nada muda de lugar sob o dedo). */}
+      <div className="pointer-events-none fixed bottom-24 right-4 z-40 flex w-[min(24rem,calc(100vw-2rem))] flex-col items-stretch gap-2">
+        <PrinterIndicator />
+        <UnprintedAlert jobs={queue.jobs} />
+      </div>
+      {isDesktop() ? <PrinterSetupWizard /> : <DesktopAppNotice />}
     </>
   );
 }
 
+/** Falhas recentes de impressão (última 1 h) que ainda não foram resolvidas. */
+const RECENT_FAILURE_MS = 60 * 60 * 1000;
+
+/**
+ * Só aparece quando há algo a resolver: nenhuma estação consegue imprimir, ou as últimas
+ * comandas falharam. Com tudo funcionando, a tela do caixa fica limpa.
+ */
 function PrinterIndicator() {
   const queue = usePrintQueue();
   const printer = useSyncExternalStore(subscribePrinterStatus, getPrinterStatus, getPrinterStatus);
-  const self = queue.stations.find((station) => station.self);
   const others = queue.stations.filter((station) => !station.self && station.ready);
-  const localReady = queue.canPrint && (isDesktop() || printer.connected);
+  // Status real: no app desktop, impressora instalada/respondendo e sem falha recente.
+  const localReady = queue.canPrint && printer.connected;
   const connected = localReady || others.length > 0;
-  const printingNow = queue.stations.find((station) => station.printing);
-  const stationCount = queue.stations.filter((station) => station.ready || station.self).length;
-  const printingName = printingNow?.name ?? (stationCount >= 2 ? queue.lastStation : null) ?? null;
+  const now = Date.now();
+  const failing = queue.jobs.filter(
+    (job) =>
+      job.status !== "impresso" &&
+      job.attempts > 0 &&
+      Boolean(job.error) &&
+      now - job.createdAt < RECENT_FAILURE_MS,
+  );
+  const lastError = printer.error ?? failing[0]?.error;
+
+  if (connected && failing.length === 0) return null;
 
   return (
     <div
       role="status"
-      className={`sticky top-16 z-20 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 border-b px-4 py-2 text-sm ${connected ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}
+      className="pointer-events-auto rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800 shadow-lg"
     >
-      <span className="font-semibold">Impressora: {connected ? "conectada" : "desconectada"}</span>
-      {localReady && <span className="text-xs">· este computador ({printer.label})</span>}
-      {!localReady && others.length > 0 && (
-        <span className="text-xs">· imprimindo em {others[0]!.name}</span>
-      )}
-      {!connected && (
-        <Link to="/impressao" className="text-xs font-semibold underline">
-          {queue.canPrint ? (printer.error ?? "Verificar impressora") : "Configurar impressão"}
-        </Link>
-      )}
-      {stationCount >= 2 && (
-        <details className="text-xs">
-          <summary className="cursor-pointer">
-            {stationCount} estações abertas
-            {printingName ? ` · imprimindo: ${printingName}` : ""}
-          </summary>
-          <ul className="mt-1 space-y-0.5">
-            {queue.stations
-              .filter((station) => station.ready || station.self)
-              .map((station) => (
-                <li key={`${station.key}-${station.name}`}>
-                  {station.name}
-                  {station === self ? " (este computador)" : ""}
-                  {station.printing
-                    ? " · imprimindo agora"
-                    : station.ready
-                      ? " · pronta"
-                      : " · sem impressora"}
-                </li>
-              ))}
-          </ul>
-        </details>
-      )}
+      <div className="font-semibold">
+        {connected ? "A impressora não está imprimindo" : "Impressora desconectada"}
+      </div>
+      {lastError && <div className="mt-0.5 text-xs">{lastError}</div>}
+      <Link to="/impressao" className="mt-1 inline-block text-xs font-semibold underline">
+        {queue.canPrint || isDesktop() ? "Verificar impressora" : "Configurar impressão"}
+      </Link>
     </div>
   );
 }
 
 function UnprintedAlert({ jobs }: { jobs: QueueJob[] }) {
   const [busy, setBusy] = useState(false);
+  const [showList, setShowList] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 60_000);
@@ -175,12 +169,15 @@ function UnprintedAlert({ jobs }: { jobs: QueueJob[] }) {
     }
   };
   return (
-    <div role="alert" className="border-b bg-amber-100 px-4 py-2 text-sm text-amber-950">
-      <div className="flex flex-wrap items-center justify-center gap-3">
-        <strong>
-          {unprinted.length}{" "}
-          {unprinted.length === 1 ? "comanda não impressa" : "comandas não impressas"}
-        </strong>
+    <div
+      role="alert"
+      className="pointer-events-auto rounded-xl border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950 shadow-lg"
+    >
+      <strong className="block">
+        {unprinted.length}{" "}
+        {unprinted.length === 1 ? "comanda não impressa" : "comandas não impressas"}
+      </strong>
+      <div className="mt-2 flex flex-wrap gap-2">
         <Btn
           size="sm"
           disabled={busy}
@@ -197,13 +194,20 @@ function UnprintedAlert({ jobs }: { jobs: QueueJob[] }) {
         >
           Imprimir pendentes
         </Btn>
+        <Btn
+          size="sm"
+          variant="outline"
+          aria-expanded={showList}
+          onClick={() => setShowList((value) => !value)}
+        >
+          {showList ? "Esconder lista" : "Ver lista"}
+        </Btn>
       </div>
-      <details className="mx-auto mt-1 max-w-3xl">
-        <summary className="cursor-pointer text-center text-xs">Ver lista</summary>
-        <ul className="mt-2 space-y-1.5">
+      {showList && (
+        <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto border-t border-amber-200 pt-2 text-xs">
           {unprinted.map((job) => (
-            <li key={job.id} className="flex flex-wrap items-center justify-between gap-2">
-              <span>
+            <li key={job.id} className="flex items-center justify-between gap-2">
+              <span className="min-w-0">
                 {job.label} ·{" "}
                 {new Date(job.createdAt).toLocaleTimeString("pt-BR", {
                   hour: "2-digit",
@@ -224,7 +228,7 @@ function UnprintedAlert({ jobs }: { jobs: QueueJob[] }) {
             </li>
           ))}
         </ul>
-      </details>
+      )}
     </div>
   );
 }

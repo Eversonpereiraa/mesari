@@ -18,6 +18,8 @@ import { AppSelect } from "@/components/app-select";
 import { MenuPicker, type MenuCartEntry } from "@/components/menu-picker";
 import { PaymentDialog } from "@/components/payment-dialog";
 import { usePrompt } from "@/components/system-dialog-provider";
+import { MaskedInput, MoneyInput } from "@/components/masked-input";
+import { cleanName, displayPhone, maskError, parseInteger, phoneDigits } from "@/lib/masks";
 import { supabase } from "@/lib/supabase";
 import { brl, errorMessage, type PaymentInput, type PaymentMethod, useStore } from "@/lib/store";
 import {
@@ -141,13 +143,6 @@ function mapOrder(value: unknown): DeliveryOrder {
   };
 }
 
-function amountFromInput(value: string): number | null {
-  const normalized = value.trim().replace(/\s/g, "").replace(",", ".");
-  if (!/^\d+(?:\.\d{1,2})?$/.test(normalized)) return null;
-  const amount = Number(normalized);
-  return Number.isFinite(amount) && amount >= 0 ? Math.round(amount * 100) / 100 : null;
-}
-
 function paymentData(order: DeliveryOrder) {
   const raw = asRecord(order.raw["pagamento_previsto"]);
   const forma = raw["forma"];
@@ -235,12 +230,12 @@ function Delivery() {
   const [observation, setObservation] = useState("");
   const [paymentForm, setPaymentForm] = useState<Exclude<PaymentMethod, "nao_informado"> | "">("");
   const [isPaid, setIsPaid] = useState(false);
-  const [changeFor, setChangeFor] = useState("");
+  const [changeFor, setChangeFor] = useState<number | null>(null);
   const [menuCart, setMenuCart] = useState<MenuCartEntry[]>([]);
   const [extras, setExtras] = useState<ExtraItem[]>([]);
   const [extraOpen, setExtraOpen] = useState(false);
   const [extraName, setExtraName] = useState("");
-  const [extraPrice, setExtraPrice] = useState("");
+  const [extraPrice, setExtraPrice] = useState<number | null>(null);
   const [extraQuantity, setExtraQuantity] = useState("1");
   const [formError, setFormError] = useState("");
   const formRef = useRef<HTMLFormElement>(null);
@@ -336,7 +331,7 @@ function Delivery() {
     setObservation("");
     setPaymentForm("");
     setIsPaid(false);
-    setChangeFor("");
+    setChangeFor(null);
     setMenuCart([]);
     setExtras([]);
     setExtraOpen(false);
@@ -346,8 +341,13 @@ function Delivery() {
   const saveOrder = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setFormError("");
-    if (!customerName.trim()) {
+    if (!cleanName(customerName)) {
       setFormError("Informe o nome do cliente.");
+      return;
+    }
+    const phoneError = maskError("phone", phone);
+    if (phoneError) {
+      setFormError(phoneError);
       return;
     }
     if (type === "entrega" && !address.trim()) {
@@ -358,18 +358,14 @@ function Delivery() {
       setFormError("Adicione pelo menos um item ao pedido.");
       return;
     }
-    const troco = changeFor.trim() ? amountFromInput(changeFor) : null;
-    if (changeFor.trim() && (troco === null || paymentForm !== "dinheiro")) {
-      setFormError("Informe um valor de troco válido para pagamento em dinheiro.");
-      return;
-    }
+    const troco = paymentForm === "dinheiro" && changeFor ? changeFor : null;
     setBusy(true);
     try {
       const p_dados = {
         canal: channel,
         tipo: type,
-        cliente_nome: customerName.trim(),
-        telefone: phone.replace(/\D/g, "") || null,
+        cliente_nome: cleanName(customerName),
+        telefone: phoneDigits(phone) || null,
         endereco: type === "entrega" ? address.trim() : "",
         observacao: observation.trim(),
         pagamento_previsto: {
@@ -470,7 +466,7 @@ function Delivery() {
         confirmText: "Confirmar saída",
       });
       if (answer === null) return;
-      courier = answer.trim();
+      courier = cleanName(answer);
     }
     void runOrderAction(order, next, courier);
   };
@@ -525,18 +521,19 @@ function Delivery() {
 
   const addExtra = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const price = amountFromInput(extraPrice);
-    const quantity = Number(extraQuantity);
-    if (!extraName.trim() || price === null || !Number.isInteger(quantity) || quantity < 1) {
+    const price = extraPrice;
+    const quantity = parseInteger(extraQuantity, { min: 1, max: 999 }) ?? 0;
+    const name = cleanName(extraName);
+    if (!name || price === null || quantity < 1) {
       setFormError("Informe nome, valor válido e quantidade do item avulso.");
       return;
     }
     setExtras((current) => [
       ...current,
-      { id: crypto.randomUUID(), name: extraName.trim(), price, quantity, note: "" },
+      { id: crypto.randomUUID(), name, price, quantity, note: "" },
     ]);
     setExtraName("");
-    setExtraPrice("");
+    setExtraPrice(null);
     setExtraQuantity("1");
     setExtraOpen(false);
   };
@@ -762,28 +759,23 @@ function Delivery() {
                   </div>
                   <div className="mt-4 grid gap-3 sm:grid-cols-2">
                     <Field label="Nome do cliente *">
-                      <input
-                        className="field"
-                        autoComplete="name"
+                      <MaskedInput
+                        mask="name"
+                        autoComplete="off"
                         value={customerName}
-                        onChange={(event) => setCustomerName(event.target.value)}
+                        onValueChange={setCustomerName}
                         required
                       />
                     </Field>
                     <Field label="Telefone">
-                      <input
-                        className="field"
-                        type="tel"
-                        autoComplete="tel"
-                        value={phone}
-                        onChange={(event) => setPhone(event.target.value)}
-                      />
+                      <MaskedInput mask="phone" autoComplete="off" value={phone} onValueChange={setPhone} />
                     </Field>
                     {type === "entrega" && (
                       <Field label="Endereço *">
                         <input
                           className="field"
-                          autoComplete="street-address"
+                          autoComplete="off"
+                          maxLength={200}
                           value={address}
                           onChange={(event) => setAddress(event.target.value)}
                           required
@@ -794,6 +786,7 @@ function Delivery() {
                       <input
                         className="field"
                         placeholder="Referência, instruções..."
+                        maxLength={300}
                         value={observation}
                         onChange={(event) => setObservation(event.target.value)}
                       />
@@ -835,6 +828,7 @@ function Delivery() {
                             className="field h-10 w-24"
                             aria-label={`Observação de ${item.name}`}
                             placeholder="Observação"
+                            maxLength={140}
                             value={item.note}
                             onChange={(event) =>
                               setExtras((current) =>
@@ -891,12 +885,11 @@ function Delivery() {
                 </Field>
                 {paymentForm === "dinheiro" && (
                   <Field label="Troco para quanto?">
-                    <input
-                      className="field"
-                      inputMode="decimal"
-                      placeholder="Ex.: 100,00"
+                    <MoneyInput
+                      aria-label="Troco para quanto?"
+                      placeholder="Ex.: R$ 100,00"
                       value={changeFor}
-                      onChange={(event) => setChangeFor(event.target.value)}
+                      onValueChange={setChangeFor}
                     />
                   </Field>
                 )}
@@ -965,33 +958,32 @@ function Delivery() {
               >
                 <h2 className="font-display text-xl font-bold text-ink">Adicionar item avulso</h2>
                 <Field label="Nome do item">
-                  <input
-                    className="field"
+                  <MaskedInput
+                    mask="name"
                     autoFocus
+                    autoComplete="off"
                     value={extraName}
-                    onChange={(event) => setExtraName(event.target.value)}
+                    onValueChange={setExtraName}
                     required
                   />
                 </Field>
                 <div className="grid grid-cols-2 gap-3">
                   <Field label="Valor unitário (R$)">
-                    <input
-                      className="field"
-                      inputMode="decimal"
-                      placeholder="0,00"
+                    <MoneyInput
+                      aria-label="Valor unitário"
                       value={extraPrice}
-                      onChange={(event) => setExtraPrice(event.target.value)}
+                      onValueChange={setExtraPrice}
                       required
                     />
                   </Field>
                   <Field label="Quantidade">
-                    <input
-                      className="field"
-                      type="number"
-                      min="1"
-                      step="1"
+                    <MaskedInput
+                      mask="integer"
+                      aria-label="Quantidade"
+                      min={1}
+                      max={999}
                       value={extraQuantity}
-                      onChange={(event) => setExtraQuantity(event.target.value)}
+                      onValueChange={setExtraQuantity}
                       required
                     />
                   </Field>
@@ -1063,7 +1055,9 @@ function OrderCard({
       </header>
       <div className="mt-3 border-t pt-3">
         <div className="font-semibold text-ink">{order.customerName}</div>
-        {order.phone && <div className="mt-0.5 text-xs text-muted-foreground">{order.phone}</div>}
+        {order.phone && (
+          <div className="mt-0.5 text-xs text-muted-foreground">{displayPhone(order.phone)}</div>
+        )}
         {order.type === "entrega" && order.address && (
           <div className="mt-1 line-clamp-2 text-xs text-muted-foreground">{order.address}</div>
         )}

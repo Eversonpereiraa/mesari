@@ -1,5 +1,5 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { Armchair, LayoutGrid, ListFilter, LogOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { actions, brl, count, tableStatus, total, useStore } from "@/lib/store";
@@ -29,7 +29,14 @@ function Garcom() {
   const storeTables = useStore((x) => x.tables);
   const orders = useStore((x) => x.orders);
   const user = useStore((x) => x.user);
+  const navigate = useNavigate();
   const [myTables, setMyTables] = useState(false);
+
+  // O app do garçom é só do perfil garçom: o caixa volta para a tela dele.
+  useEffect(() => {
+    if (user?.role === "caixa") void navigate({ to: "/caixa", replace: true });
+  }, [navigate, user?.role]);
+
   const allTables = [...storeTables].sort((a, b) => a.number - b.number);
   const tables = myTables
     ? allTables.filter((table) =>
@@ -38,6 +45,7 @@ function Garcom() {
         ),
       )
     : allTables;
+  if (user?.role === "caixa") return null;
   return (
     <MobileFrame
       title="Mesas"

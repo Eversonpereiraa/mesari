@@ -41,6 +41,14 @@ const date = (ms: number | null) =>
     ? "—"
     : new Date(ms).toLocaleDateString("pt-BR", { day: "2-digit", month: "long", year: "numeric" });
 
+/**
+ * Data da próxima cobrança. Para assinaturas pagas no Asaas, o acesso fica liberado 3 dias
+ * além do vencimento (folga para o pagamento compensar), então a renovação é 3 dias antes.
+ */
+const GRACE_MS = 3 * 86_400_000;
+const renewalDate = (info: { periodEnd: number | null; onlinePayment: boolean }) =>
+  info.periodEnd !== null && info.onlinePayment ? info.periodEnd - GRACE_MS : info.periodEnd;
+
 type Ciclo = "mensal" | "anual";
 type Previa = {
   acao: "checkout" | "upgrade" | "agendar" | "manter";
@@ -70,6 +78,17 @@ async function trocarPlano<T>(body: {
 const isFalha = (value: unknown): value is Falha =>
   typeof value === "object" && value !== null && "erro" in value;
 
+/** Chama a Edge Function "renovar" (Mercado Pago) e devolve o link de pagamento. */
+async function pedirRenovacao(): Promise<
+  { acao: "pagar" | "checkout"; url: string; valor?: number } | Falha
+> {
+  const { data, error } = await supabase.functions.invoke("renovar", { body: { confirmar: true } });
+  if (!error) return data as { acao: "pagar" | "checkout"; url: string; valor?: number };
+  const context = (error as { context?: Response }).context;
+  const parsed = context ? await context.json().catch(() => null) : null;
+  return (parsed as Falha | null) ?? { erro: error.message || "Sem conexão. Tente de novo." };
+}
+
 function abrirFora(url: string) {
   // No app desktop, links com target _blank abrem no navegador padrão.
   window.open(url, "_blank", "noopener,noreferrer");
@@ -90,6 +109,20 @@ function Plano() {
     | null
   >(null);
   const waitTimer = useRef<number | null>(null);
+  const [renewing, setRenewing] = useState<"idle" | "busy" | "aberto">("idle");
+
+  const pagarRenovacao = async () => {
+    setError("");
+    setRenewing("busy");
+    const res = await pedirRenovacao();
+    if (isFalha(res)) {
+      setRenewing("idle");
+      setError(res.erro);
+      return;
+    }
+    abrirFora(res.url);
+    setRenewing("aberto");
+  };
 
   const stopWaiting = useCallback(() => {
     if (waitTimer.current !== null) window.clearInterval(waitTimer.current);
@@ -207,17 +240,27 @@ function Plano() {
               <p className="mt-2 text-sm text-muted-foreground">
                 {info.status === "teste"
                   ? "O teste termina em "
-                  : info.autoRenew
-                    ? "Renova em "
-                    : "Válido até "}
-                <strong className="text-ink">{date(info.periodEnd)}</strong>
+                  : info.gateway === "mercadopago"
+                    ? info.active
+                      ? "Vence em "
+                      : "Venceu em "
+                    : info.autoRenew
+                      ? "Renova em "
+                      : "Válido até "}
+                <strong className="text-ink">
+                  {date(
+                    (info.autoRenew || info.gateway === "mercadopago") && info.status !== "teste"
+                      ? renewalDate({ ...info, onlinePayment: true })
+                      : info.periodEnd,
+                  )}
+                </strong>
                 {info.cycle && info.status !== "teste" ? ` · cobrança ${info.cycle}` : ""}
               </p>
               {(info.nextPlan || info.nextCycle) && (
                 <p className="mt-3 flex items-start gap-2 rounded-lg bg-accent px-3 py-2 text-sm">
                   <CalendarClock className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
                   <span>
-                    Na renovação de <strong>{date(info.periodEnd)}</strong> passa para o{" "}
+                    Na renovação de <strong>{date(renewalDate(info))}</strong> passa para o{" "}
                     <strong>
                       {(info.nextPlan ?? info.plan).name} {info.nextCycle ?? info.cycle}
                     </strong>
@@ -225,6 +268,47 @@ function Plano() {
                   </span>
                 </p>
               )}
+              {info.gateway === "mercadopago" &&
+                info.owner &&
+                info.status !== "teste" &&
+                (() => {
+                  const vence = renewalDate({ ...info, onlinePayment: true });
+                  const dias = vence === null ? 0 : Math.ceil((vence - Date.now()) / 86_400_000);
+                  const urgente = !info.active || dias <= 7;
+                  return (
+                    <div
+                      className={cn(
+                        "mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm",
+                        urgente ? "bg-busy-bg text-busy" : "bg-accent",
+                      )}
+                    >
+                      <span>
+                        {!info.active
+                          ? "Sua assinatura venceu. Pague a renovação para voltar a usar tudo."
+                          : dias <= 0
+                            ? "A renovação vence hoje. Você ainda tem 3 dias de folga para pagar."
+                            : dias <= 7
+                              ? `A renovação vence em ${dias} ${dias === 1 ? "dia" : "dias"}. Pague com Pix, boleto ou cartão.`
+                              : "Pode pagar a renovação antes do vencimento, sem perder nenhum dia."}
+                        {renewing === "aberto" &&
+                          " Abrimos o pagamento no navegador; quando cair, o plano atualiza sozinho."}
+                      </span>
+                      <Btn
+                        type="button"
+                        size="sm"
+                        variant={urgente ? "primary" : "outline"}
+                        disabled={renewing === "busy"}
+                        onClick={() => void pagarRenovacao()}
+                      >
+                        {renewing === "busy"
+                          ? "Gerando pagamento..."
+                          : renewing === "aberto"
+                            ? "Abrir pagamento de novo"
+                            : "Pagar renovação"}
+                      </Btn>
+                    </div>
+                  );
+                })()}
               {info.pendingUpgrade && (
                 <p className="mt-3 rounded-lg bg-busy-bg px-3 py-2 text-sm text-busy">
                   Aguardando o pagamento de {money(info.pendingUpgrade.amount)} para liberar o plano
@@ -361,7 +445,7 @@ function Plano() {
                       </Btn>
                     ) : scheduledHere ? (
                       <Btn variant="outline" disabled className="w-full">
-                        Agendado para {date(info?.periodEnd ?? null)}
+                        Agendado para {date(info ? renewalDate(info) : null)}
                       </Btn>
                     ) : (
                       <Btn

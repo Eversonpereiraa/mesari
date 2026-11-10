@@ -24,6 +24,8 @@ import {
   initializePrinter,
   loadConfig,
   printErrorMessage,
+  startPrinterMonitor,
+  stopPrinterMonitor,
   subscribeConfig,
   subscribePrinterStatus,
 } from "@/lib/printing";
@@ -198,8 +200,27 @@ function printsSilently() {
   return isDesktop() || loadConfig().connection !== "navegador";
 }
 
+/**
+ * Imprime sozinho neste aparelho? Além da configuração, a impressora tem que existir de verdade
+ * (no app desktop: impressora instalada, IP respondendo, porta COM presente). Sem isso a fila não
+ * reserva comandas aqui — outra estação pode imprimir — e o caixa vê o motivo.
+ */
 function computeCanPrint() {
-  return loadConfig().printKitchenEnabled && printsSilently();
+  return (
+    loadConfig().printKitchenEnabled &&
+    printsSilently() &&
+    getPrinterStatus().reachable !== false
+  );
+}
+
+/**
+ * Alguma estação vai imprimir agora? true/false pelo status real; null = fila indisponível
+ * (banco antigo), quem chama usa a presença.
+ */
+export function printingReady(): boolean | null {
+  if (state.available !== true) return null;
+  const others = state.stations.some((station) => !station.self && station.ready);
+  return others || (state.canPrint && getPrinterStatus().connected);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -233,7 +254,7 @@ function trackPresence() {
     .track({
       tipo: "estacao-impressao",
       // A tela do garçom considera a estação pronta quando ela imprime sozinha.
-      pronta: state.canPrint && (isDesktop() || getPrinterStatus().connected),
+      pronta: state.canPrint && getPrinterStatus().connected,
       usuario: stationName,
       estacao: stationName,
       desktop: isDesktop(),
@@ -502,6 +523,7 @@ export function startPrintQueue(user: { id: string; name: string }) {
     subscribeConfig(refreshCanPrint),
     subscribePrinterStatus(() => {
       const connected = getPrinterStatus().connected;
+      refreshCanPrint();
       trackPresence();
       // Impressora voltou: imprime o que falhou nas últimas 3 h.
       if (connected && !wasConnected) void retryRecentFailures().then(() => tick());
@@ -523,6 +545,8 @@ export function startPrintQueue(user: { id: string; name: string }) {
   session.unsubscribe.push(() => window.removeEventListener("online", online));
 
   void initializePrinter().catch((cause: unknown) => console.warn("[fila] impressora", cause));
+  // App desktop: confere de verdade a impressora agora e a cada 30 s.
+  startPrinterMonitor();
   // Ao abrir: carrega a lista e imprime o que ficou pendente (até 3 h).
   void loadJobs()
     .then(() => tick())
@@ -536,6 +560,7 @@ export function stopPrintQueue() {
   const current = session;
   session = null;
   current.timers.forEach((timer) => window.clearInterval(timer));
+  stopPrinterMonitor();
   current.unsubscribe.forEach((unsubscribe) => unsubscribe());
   void supabase.removeChannel(current.channel);
   void supabase.removeChannel(current.presence);

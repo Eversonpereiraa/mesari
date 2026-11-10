@@ -1,7 +1,17 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Banknote, CalendarDays, CreditCard, QrCode, WalletCards } from "lucide-react";
-import { AppShell } from "@/components/ui-kit";
+import {
+  Banknote,
+  CalendarDays,
+  CreditCard,
+  Download,
+  Lock,
+  QrCode,
+  WalletCards,
+} from "lucide-react";
+import { toast } from "sonner";
+import { AppShell, Btn } from "@/components/ui-kit";
+import { downloadCsv, fetchAllSales, salesCsv } from "@/lib/sales-export";
 import { AppSelect } from "@/components/app-select";
 import { BillViewer } from "@/components/bill-viewer";
 import {
@@ -99,6 +109,8 @@ function Vendas() {
   const [salesLoading, setSalesLoading] = useState(true);
   const [salesError, setSalesError] = useState("");
   const salesRequest = useRef(0);
+  const canExport = useStore((value) => value.plan?.plan.export === true);
+  const [exporting, setExporting] = useState(false);
   const range = useMemo(
     () => periodRange(period, selectedDate, selectedEndDate),
     [period, selectedDate, selectedEndDate],
@@ -185,6 +197,26 @@ function Vendas() {
     ),
     ...summary.filter((row) => row.forma === "nao_informado"),
   ];
+  const exportSales = async () => {
+    setExporting(true);
+    try {
+      const all = await fetchAllSales(range.start.toISOString(), range.end.toISOString(), filter);
+      if (!all.length) {
+        toast.info("Nenhuma venda no período para exportar.");
+        return;
+      }
+      const startKey = saoPauloDateKey(range.start);
+      const endKey = saoPauloDateKey(range.end);
+      const name = startKey === endKey ? startKey : `${startKey}_a_${endKey}`;
+      downloadCsv(`vendas-mesari-${name}.csv`, salesCsv(all));
+      toast.success(all.length === 1 ? "1 venda exportada." : `${all.length} vendas exportadas.`);
+    } catch (cause) {
+      toast.error(errorMessage(cause));
+    } finally {
+      setExporting(false);
+    }
+  };
+
   if (user?.role !== "caixa") return null;
 
   return (
@@ -196,6 +228,29 @@ function Vendas() {
             <p className="mt-1 text-sm text-muted-foreground">
               Totais e formas de pagamento no período selecionado.
             </p>
+            <div className="mt-3">
+              {canExport ? (
+                <Btn
+                  size="sm"
+                  variant="outline"
+                  disabled={exporting}
+                  onClick={() => void exportSales()}
+                >
+                  <Download className="h-4 w-4" aria-hidden />
+                  {exporting ? "Exportando..." : "Exportar planilha"}
+                </Btn>
+              ) : (
+                <Link
+                  to="/plano"
+                  title="Disponível no plano Completo"
+                  className="inline-flex min-h-9 items-center gap-2 rounded-lg border px-3 text-sm font-semibold text-muted-foreground hover:text-ink"
+                >
+                  <Lock className="h-4 w-4" aria-hidden />
+                  Exportar planilha
+                  <span className="text-xs font-normal">· plano Completo</span>
+                </Link>
+              )}
+            </div>
           </div>
           <div className="flex flex-wrap gap-2" aria-label="Período do relatório">
             {(

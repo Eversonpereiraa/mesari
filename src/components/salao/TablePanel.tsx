@@ -12,6 +12,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { MaskedInput } from "@/components/masked-input";
 import {
   brl,
   type AreaKind,
@@ -415,12 +416,14 @@ function NumberStepper({
         >
           <Minus className="h-4 w-4" />
         </Btn>
-        <input
+        <MaskedInput
+          mask="decimal"
           id={id}
           className="field num w-20 text-center"
-          inputMode="decimal"
+          decimals={Number.isInteger(step) ? 0 : 1}
+          max={max}
           value={draft}
-          onChange={(e) => setDraft(e.target.value)}
+          onValueChange={setDraft}
           onBlur={() => commit(draft)}
           onKeyDown={(e) => {
             if (e.key === "Enter") commit(draft);
@@ -479,12 +482,13 @@ export function AreaPanel({
       />
       <label className="flex flex-col gap-2">
         <span className="text-sm font-medium text-ink">Nome</span>
-        <input
-          className="field"
+        <MaskedInput
+          mask="name"
+          autoComplete="off"
           value={nameDraft}
           maxLength={40}
           placeholder="Ex.: Varanda, Calçada, Piscina"
-          onChange={(e) => onNameChange(e.target.value)}
+          onValueChange={onNameChange}
         />
       </label>
       <Seg label="Tipo" options={areaKinds} value={area.kind} onChange={onKind} />
@@ -677,14 +681,14 @@ export function EditTablePanel({
       <PanelHeader title={`Mesa ${tableNumber(table.number)}`} onClose={onClose} />
       <label className="flex flex-col gap-2">
         <span className="text-sm font-medium text-ink">Número da mesa</span>
-        <input
+        <MaskedInput
+          mask="integer"
           className="field num"
-          type="number"
-          inputMode="numeric"
           min={1}
+          max={999}
           value={numberDraft}
           aria-invalid={Boolean(numberError)}
-          onChange={(e) => onNumberChange(e.target.value)}
+          onValueChange={onNumberChange}
         />
         {numberError && (
           <span role="alert" className="text-xs text-destructive">
@@ -707,16 +711,15 @@ export function EditTablePanel({
           >
             <Minus className="h-4 w-4" />
           </Btn>
-          <input
+          <MaskedInput
+            mask="integer"
             id="salao-lugares"
             className="field num w-20 text-center"
-            type="number"
-            inputMode="numeric"
             min={MIN_SEATS}
             max={MAX_SEATS}
             value={seatsDraft}
             aria-invalid={Boolean(seatsError)}
-            onChange={(e) => onSeatsChange(e.target.value)}
+            onValueChange={onSeatsChange}
           />
           <Btn
             variant="outline"

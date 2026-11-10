@@ -5,7 +5,11 @@ import { AppSelect } from "@/components/app-select";
 import { Switch } from "@/components/ui/switch";
 import { usePrintQueue } from "@/lib/print-queue";
 import { PrintLayoutSettings } from "@/components/print-layout-settings";
-import { DesktopPrinterConnection } from "@/components/desktop-printer-connection";
+import {
+  DesktopPrinterConnection,
+  NO_WINDOWS_PRINTER,
+} from "@/components/desktop-printer-connection";
+import { MaskedInput } from "@/components/masked-input";
 import {
   AGENT_NOT_FOUND,
   BAUD_RATES,
@@ -37,6 +41,7 @@ import {
   testarConexao,
   transportAvailability,
   updateConfig,
+  verificarImpressora,
   type BaudRate,
   type Codepage,
   type ConnectionKind,
@@ -242,14 +247,25 @@ function Impressao() {
     getTransport();
     void initializePrinter();
     if (window.mesariDesktop) {
-      void Promise.all([window.mesariDesktop.getSettings(), window.mesariDesktop.listPrinters()])
-        .then(([settings, printers]) => {
-          setDesktopSettings(settings);
-          setDesktopPrinters(printers);
-        })
-        .catch((cause: unknown) => console.error("[impressão] app desktop", cause));
+      void loadDesktopPrinters();
+      // Status real: impressora instalada / configurada / respondendo.
+      void verificarImpressora();
     }
   }, []);
+
+  const loadDesktopPrinters = async () => {
+    if (!window.mesariDesktop) return;
+    try {
+      const [settings, printers] = await Promise.all([
+        window.mesariDesktop.getSettings(),
+        window.mesariDesktop.listPrinters(),
+      ]);
+      setDesktopSettings(settings);
+      setDesktopPrinters(printers);
+    } catch (cause) {
+      console.error("[impressão] app desktop", cause);
+    }
+  };
 
   const checkAgent = useCallback(async () => {
     setAgent({ state: "verificando" });
@@ -338,6 +354,7 @@ function Impressao() {
     if (!window.mesariDesktop) return;
     try {
       setDesktopSettings(await window.mesariDesktop.setSettings(patch));
+      if ("printerComanda" in patch) void verificarImpressora();
     } catch (cause) {
       console.error("[impressão] app desktop", cause);
       setError("Não foi possível salvar a configuração do app desktop.");
@@ -418,21 +435,20 @@ function Impressao() {
                         label="IP da impressora"
                         hint="Ex.: 192.168.0.50. Veja na página de autoteste da impressora."
                       >
-                        <input
-                          className="field"
-                          inputMode="decimal"
+                        <MaskedInput
+                          mask="ip"
+                          aria-label="IP da impressora"
                           value={ipDraft}
-                          onChange={(event) => setIpDraft(event.target.value)}
+                          onValueChange={setIpDraft}
                           onBlur={saveNetwork}
-                          placeholder="192.168.0.50"
                         />
                       </Field>
                       <Field label="Porta">
-                        <input
-                          className="field"
-                          inputMode="numeric"
+                        <MaskedInput
+                          mask="port"
+                          aria-label="Porta"
                           value={portDraft}
-                          onChange={(event) => setPortDraft(event.target.value)}
+                          onValueChange={setPortDraft}
                           onBlur={saveNetwork}
                         />
                       </Field>
@@ -680,6 +696,11 @@ function Impressao() {
                 <div className="mt-2 max-w-sm">
                   <input
                     className="field"
+                    aria-label="Endereço do agente"
+                    inputMode="url"
+                    autoComplete="off"
+                    spellCheck={false}
+                    maxLength={200}
                     value={agentDraft}
                     onChange={(event) => setAgentDraft(event.target.value)}
                     onBlur={saveNetwork}
@@ -844,6 +865,21 @@ function Impressao() {
 
           {desktopSettings && (
             <Section eyebrow="App desktop" title="Windows">
+              {desktopPrinters.length === 0 && (
+                <div
+                  role="alert"
+                  className="mb-4 flex flex-wrap items-center justify-between gap-2 rounded-md bg-amber-50 p-3 text-sm text-amber-900"
+                >
+                  <span>{NO_WINDOWS_PRINTER}</span>
+                  <Btn
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void loadDesktopPrinters().then(() => verificarImpressora())}
+                  >
+                    Atualizar lista
+                  </Btn>
+                </div>
+              )}
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Impressora da nota (modo Navegador)">
                   <AppSelect

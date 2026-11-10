@@ -1,4 +1,5 @@
 import { supabase } from "@/lib/supabase";
+import { printingReady } from "@/lib/print-queue";
 
 let presenceChannel: ReturnType<typeof supabase.channel> | null = null;
 let presenceJoined = false;
@@ -28,3 +29,11 @@ export function isKitchenStationOnline() {
 
 
 
+
+/**
+ * Alguma estação vai imprimir a comanda agora? No caixa, usa o status real da impressora (fila
+ * de impressão); no garçom, a presença das estações (que publicam o mesmo status real).
+ */
+export function kitchenPrinterReady() {
+  return printingReady() ?? isKitchenStationOnline();
+}

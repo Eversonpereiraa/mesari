@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Bluetooth, Cable, Network, RefreshCw } from "lucide-react";
 import { Btn, Field } from "@/components/ui-kit";
 import { AppSelect } from "@/components/app-select";
+import { MaskedInput } from "@/components/masked-input";
 import {
   BAUD_RATES,
   BluetoothWebTransport,
@@ -11,6 +12,9 @@ import {
 } from "@/lib/printing";
 
 type Group = NonNullable<PrinterConfig["desktopGroup"]>;
+
+export const NO_WINDOWS_PRINTER =
+  "Nenhuma impressora instalada no Windows. Instale o driver da sua impressora térmica e clique em Atualizar lista.";
 type Props = {
   config: PrinterConfig;
   update: (patch: Partial<PrinterConfig>) => void;
@@ -40,6 +44,7 @@ export function DesktopPrinterConnection({ config, update, busy, run }: Props) {
   const [ipDraft, setIpDraft] = useState(config.ip);
   const [portDraft, setPortDraft] = useState(String(config.port));
   const [loading, setLoading] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async () => {
     if (!api) return;
@@ -48,6 +53,7 @@ export function DesktopPrinterConnection({ config, update, busy, run }: Props) {
       const [serial, windows] = await Promise.all([api.listSerial(), api.listWindows()]);
       setPorts(serial);
       setPrinters(windows);
+      setLoaded(true);
     } finally {
       setLoading(false);
     }
@@ -167,21 +173,20 @@ export function DesktopPrinterConnection({ config, update, busy, run }: Props) {
       {group === "rede" && (
         <div className="grid gap-3 sm:grid-cols-[1fr_110px]">
           <Field label="IP da impressora" hint="Veja na página de autoteste da impressora.">
-            <input
-              className="field"
-              inputMode="decimal"
-              placeholder="192.168.0.50"
+            <MaskedInput
+              mask="ip"
+              aria-label="IP da impressora"
               value={ipDraft}
-              onChange={(event) => setIpDraft(event.target.value)}
+              onValueChange={setIpDraft}
               onBlur={saveNetwork}
             />
           </Field>
           <Field label="Porta">
-            <input
-              className="field"
-              inputMode="numeric"
+            <MaskedInput
+              mask="port"
+              aria-label="Porta"
               value={portDraft}
-              onChange={(event) => setPortDraft(event.target.value)}
+              onValueChange={setPortDraft}
               onBlur={saveNetwork}
             />
           </Field>
@@ -190,6 +195,11 @@ export function DesktopPrinterConnection({ config, update, busy, run }: Props) {
 
       {group === "usb" && (
         <div className="space-y-3">
+          {loaded && printers.length === 0 && (
+            <p role="alert" className="rounded-md bg-amber-50 p-3 text-sm text-amber-900">
+              {NO_WINDOWS_PRINTER}
+            </p>
+          )}
           <Field
             label="Impressora instalada no Windows"
             hint="Os comandos vão direto para a impressora (modo RAW)."

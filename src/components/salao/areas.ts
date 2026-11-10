@@ -96,6 +96,35 @@ export function areaAtPoint(areas: FloorArea[], x: number, y: number) {
   });
 }
 
+/**
+ * Área da mesa para contar e filtrar: a gravada (se ainda existir), senão a área onde ela está
+ * desenhada, senão a primeira área. Assim nenhuma mesa fica fora das abas.
+ */
+export function tableAreaOf(
+  table: { areaId?: string | null; x?: number | null; y?: number | null },
+  areas: FloorArea[],
+): string | null {
+  if (table.areaId && areas.some((area) => area.id === table.areaId)) return table.areaId;
+  const byPoint =
+    table.x != null && table.y != null && Number.isFinite(table.x) && Number.isFinite(table.y)
+      ? areaAtPoint(areas, table.x, table.y)
+      : undefined;
+  return (byPoint ?? areas[0])?.id ?? null;
+}
+
+/** Quantas mesas em cada área (abas do caixa), pela mesma regra do filtro do mapa. */
+export function countTablesByArea(
+  tables: { areaId?: string | null; x?: number | null; y?: number | null }[],
+  areas: FloorArea[],
+) {
+  const counts: Record<string, number> = {};
+  for (const table of tables) {
+    const id = tableAreaOf(table, areas);
+    if (id) counts[id] = (counts[id] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export function fitsInArea(area: FloorArea, r: Rect, pad = AREA_PAD[area.kind]) {
   const e = areaEdges(area);
   const eps = 1e-6;

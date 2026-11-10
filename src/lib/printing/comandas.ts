@@ -6,6 +6,7 @@
  */
 import { amount, date, money, percent, phone, splitAddress, time } from "./format";
 import type { DocLine, PrintDoc } from "./layout";
+import { cpfCnpjLabel, displayCpfCnpj, formatInstagram } from "../masks";
 import type { PrintLogo } from "./logo";
 import type { KitchenTicket, PrintReceipt, PrintRestaurant } from "./types";
 
@@ -240,7 +241,9 @@ export function contaMesa(
   const lines: DocLine[] = [...brand(restaurant, options.logo, "tall")];
   for (const line of splitAddress(restaurant.address).lines) lines.push(center(line));
   if (restaurant.phone.trim()) lines.push(center(phone(restaurant.phone)));
-  if (restaurant.cnpj.trim()) lines.push(center(`CNPJ: ${restaurant.cnpj.trim()}`));
+  if (restaurant.cnpj.trim()) {
+    lines.push(center(`${cpfCnpjLabel(restaurant.cnpj)}: ${displayCpfCnpj(restaurant.cnpj)}`));
+  }
   lines.push(EQ);
   lines.push(center(receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO", { bold: true }));
   lines.push(center("Não é documento fiscal"));
@@ -310,7 +313,7 @@ export function contaMesa(
   for (const line of footer.split("\n")) {
     if (line.trim()) lines.push(center(line.trim()));
   }
-  if (restaurant.instagram.trim()) lines.push(center(restaurant.instagram.trim()));
+  if (restaurant.instagram.trim()) lines.push(center(formatInstagram(restaurant.instagram)));
   return { title: receipt.preBill ? "Conta" : "Nota", lines };
 }
 
