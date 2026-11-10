@@ -1,25 +1,43 @@
-// Mesari — webhook do Mercado Pago (Checkout Pro).
-// O corpo do aviso não é usado como verdade: o pagamento é buscado de novo na API do Mercado Pago.
-// external_reference decide o que fazer:
+// Mesari — webhook do Mercado Pago.
+// O corpo do aviso não é usado como verdade: o recurso é buscado de novo na API do Mercado Pago.
+//
+// Pagamentos avulsos (Pix, boleto, Checkout Pro) — external_reference decide:
 //   pedido:<uuid>  compra pela landing → cria a conta do dono e ativa o plano
 //   renov:<uuid>   renovação paga pelo app → estende a validade (aplica troca agendada)
 //   troca:<uuid>   diferença de upgrade paga pelo app → libera o plano novo
+// Assinatura no cartão (preapproval) — tópicos subscription_authorized_payment / subscription_preapproval:
+//   1ª cobrança aprovada → ativa o pedido; próximas → renovam sozinhas; recusa → avisa a página / atrasa.
 // Estorno/contestação → assinatura expirada.
 //
-// Secrets:
-//   MP_ACCESS_TOKEN    obrigatório
-//   MP_WEBHOOK_SECRET  opcional: "assinatura secreta" do webhook (confere o x-signature)
-//   MESARI_SITE_URL    opcional (padrão: https://mesari-site.vercel.app)
+// No painel do Mercado Pago (Suas integrações → Mesari → Webhooks) ative os eventos
+// "Pagamentos" e "Planos e assinaturas" com a URL desta função.
+//
+// Secrets: MP_ACCESS_TOKEN, MP_WEBHOOK_SECRET (opcional), MESARI_SITE_URL (opcional)
 import { createClient } from "npm:@supabase/supabase-js@2";
 
 const ok = () => new Response("ok", { status: 200 });
 const DIA = 86_400_000;
 const FOLGA = 3 * DIA; // dias de folga após o vencimento para pagar a renovação
+const MESES: Record<string, number> = { mensal: 1, trimestral: 3, anual: 12 };
+
+const RECUSA: Record<string, string> = {
+  cc_rejected_insufficient_amount: "O cartão não tem limite suficiente. Tente outro cartão ou pague com Pix.",
+  cc_rejected_bad_filled_security_code: "O código de segurança (CVV) está errado. Confira e tente de novo.",
+  cc_rejected_bad_filled_date: "A validade do cartão está errada. Confira e tente de novo.",
+  cc_rejected_bad_filled_card_number: "O número do cartão está errado. Confira e tente de novo.",
+  cc_rejected_bad_filled_other: "Algum dado do cartão está errado. Confira e tente de novo.",
+  cc_rejected_call_for_authorize: "O banco pediu autorização. Libere a compra no app do seu banco e tente de novo.",
+  cc_rejected_card_disabled: "O cartão está bloqueado ou inativo. Ative no app do banco ou use outro cartão.",
+  cc_rejected_duplicated_payment: "Já existe um pagamento igual a este. Aguarde alguns minutos antes de tentar de novo.",
+  cc_rejected_high_risk: "O pagamento foi recusado pela análise de segurança. Tente outro cartão ou pague com Pix.",
+  cc_rejected_max_attempts: "Muitas tentativas com este cartão. Use outro cartão ou pague com Pix.",
+};
+const motivoRecusa = (detalhe?: string) =>
+  RECUSA[detalhe ?? ""] ?? "O banco recusou o pagamento. Tente outro cartão ou pague com Pix.";
 
 function somarCiclo(base: Date, ciclo: string) {
   const d = new Date(base);
-  if (ciclo === "anual") d.setFullYear(d.getFullYear() + 1);
-  else d.setMonth(d.getMonth() + 1);
+  d.setMonth(d.getMonth() + (MESES[ciclo] ?? 1));
   return d;
 }
 
@@ -55,19 +73,27 @@ async function assinaturaValida(req: Request, dataId: string) {
   return iguais(hex, partes.v1);
 }
 
-async function buscarPagamento(id: string) {
-  const res = await fetch(`https://api.mercadopago.com/v1/payments/${encodeURIComponent(id)}`, {
+async function buscar(path: string) {
+  const res = await fetch("https://api.mercadopago.com" + path, {
     headers: { Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}` },
   });
   if (res.status === 404) return null;
-  if (!res.ok) throw new Error(`Mercado Pago respondeu ${res.status} ao buscar o pagamento ${id}`);
+  if (!res.ok) throw new Error(`Mercado Pago respondeu ${res.status} em ${path}`);
   return await res.json();
+}
+
+async function cancelarPreapproval(id: string) {
+  await fetch(`https://api.mercadopago.com/preapproval/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}` },
+    body: JSON.stringify({ status: "cancelled" }),
+  }).catch((e) => console.warn("Não cancelou a assinatura no MP", id, e));
 }
 
 const valorConfere = (pago: number, esperado: number) => Number(pago) + 0.01 >= Number(esperado);
 const agoraISO = () => new Date().toISOString();
 
-async function ativarPedido(db: any, pedidoId: string, p: Record<string, any>) {
+async function ativarPedido(db: any, pedidoId: string, p: Record<string, any>, preapprovalId: string | null = null) {
   const { data: pedido } = await db.from("checkout_pedidos").select("*").eq("id", pedidoId).maybeSingle();
   if (!pedido) return console.warn("Pagamento sem pedido no Mesari", pedidoId);
   if (pedido.status === "pago") return;
@@ -106,6 +132,9 @@ async function ativarPedido(db: any, pedidoId: string, p: Record<string, any>) {
   }
 
   const { data: atual } = await db.from("assinaturas").select("*").eq("restaurante_id", restauranteId).maybeSingle();
+  // Já tinha assinatura recorrente em outro cartão: cancela a antiga para não cobrar duas vezes.
+  if (atual?.mp_preapproval_id && atual.mp_preapproval_id !== preapprovalId) await cancelarPreapproval(atual.mp_preapproval_id);
+
   const { error: erroAssinatura } = await db.from("assinaturas").upsert({
     restaurante_id: restauranteId,
     plano_id: pedido.plano_id,
@@ -114,19 +143,57 @@ async function ativarPedido(db: any, pedidoId: string, p: Record<string, any>) {
     status: "ativa",
     ciclo: pedido.ciclo,
     periodo_fim: novaValidade(atual, pedido.ciclo, p.date_approved),
-    renovacao_automatica: false,
+    renovacao_automatica: Boolean(preapprovalId),
     gateway: "mercadopago",
     gateway_cliente_id: p.payer?.id ? String(p.payer.id) : null,
     gateway_assinatura_id: null,
+    mp_preapproval_id: preapprovalId,
     atualizado_em: agoraISO(),
   });
   if (erroAssinatura) throw erroAssinatura;
 
   await db.from("checkout_pedidos").update({
-    status: "pago", restaurante_id: restauranteId, mp_payment_id: String(p.id), atualizado_em: agoraISO(),
+    status: "pago", restaurante_id: restauranteId, mp_payment_id: String(p.id), motivo_recusa: null, atualizado_em: agoraISO(),
   }).eq("id", pedido.id);
   await db.from("plano_trocas").update({ status: "cancelada", atualizado_em: agoraISO() })
     .eq("restaurante_id", restauranteId).in("status", ["agendada", "aguardando"]);
+}
+
+/** Cobrança da assinatura no cartão (1ª ou renovação). */
+async function pagamentoDeAssinatura(db: any, preapprovalId: string, p: Record<string, any>) {
+  const { data: pedido } = await db.from("checkout_pedidos").select("*").eq("mp_preapproval_id", preapprovalId).maybeSingle();
+
+  if (p.status === "approved") {
+    if (pedido && pedido.status !== "pago") return await ativarPedido(db, pedido.id, p, preapprovalId);
+    const { data: a } = await db.from("assinaturas").select("*").eq("mp_preapproval_id", preapprovalId).maybeSingle();
+    if (!a) return console.warn("Cobrança de assinatura sem restaurante", preapprovalId);
+    const { error } = await db.from("assinaturas").update({
+      plano_id: a.plano_proximo ?? a.plano_id,
+      plano_proximo: null,
+      status: "ativa",
+      renovacao_automatica: true,
+      periodo_fim: novaValidade(a, a.ciclo, p.date_approved),
+      atualizado_em: agoraISO(),
+    }).eq("restaurante_id", a.restaurante_id);
+    if (error) throw error;
+    await db.from("plano_trocas").update({ status: "aplicada", atualizado_em: agoraISO() })
+      .eq("restaurante_id", a.restaurante_id).eq("status", "agendada");
+    return;
+  }
+
+  if (p.status === "rejected") {
+    if (pedido && pedido.status === "aguardando") {
+      // Primeira cobrança recusada: a página mostra o motivo e a assinatura é cancelada (não fica tentando).
+      await db.from("checkout_pedidos").update({
+        status: "recusado", motivo_recusa: motivoRecusa(p.status_detail), atualizado_em: agoraISO(),
+      }).eq("id", pedido.id);
+      await cancelarPreapproval(preapprovalId);
+      return;
+    }
+    // Renovação recusada: o Mercado Pago tenta de novo nos próximos dias; marcamos como atrasada.
+    await db.from("assinaturas").update({ status: "atrasada", atualizado_em: agoraISO() })
+      .eq("mp_preapproval_id", preapprovalId).eq("status", "ativa");
+  }
 }
 
 async function aplicarRenovacao(db: any, renovId: string, p: Record<string, any>) {
@@ -167,12 +234,29 @@ async function aplicarTroca(db: any, trocaId: string, p: Record<string, any>) {
     atualizado_em: agoraISO(),
   }).eq("restaurante_id", troca.restaurante_id);
   await db.from("plano_trocas").update({ status: "pago", mp_payment_id: String(p.id), atualizado_em: agoraISO() }).eq("id", troca.id);
+  // Cartão recorrente: as próximas cobranças passam a ser do plano novo.
+  if (a.mp_preapproval_id && a.renovacao_automatica) {
+    const { data: novo } = await db.from("planos").select("*").eq("id", troca.para_plano).maybeSingle();
+    const ciclo = a.ciclo ?? "mensal";
+    const valor = Number(ciclo === "anual" ? novo?.preco_anual : ciclo === "trimestral" ? novo?.preco_trimestral : novo?.preco_mensal);
+    if (valor > 0) {
+      await fetch(`https://api.mercadopago.com/preapproval/${encodeURIComponent(a.mp_preapproval_id)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}` },
+        body: JSON.stringify({ auto_recurring: { transaction_amount: valor, currency_id: "BRL" } }),
+      }).catch((e) => console.warn("Não atualizou o valor da assinatura", e));
+    }
+  }
 }
 
 /** Estorno ou contestação: encerra o acesso que aquele pagamento liberou. */
-async function estornar(db: any, ref: string, p: Record<string, any>) {
+async function estornar(db: any, ref: string, p: Record<string, any>, preapprovalId: string | null) {
   let restauranteId: number | null = null;
-  if (ref.startsWith("pedido:")) {
+  if (preapprovalId) {
+    const { data } = await db.from("assinaturas").select("restaurante_id").eq("mp_preapproval_id", preapprovalId).maybeSingle();
+    restauranteId = data?.restaurante_id ?? null;
+    await cancelarPreapproval(preapprovalId);
+  } else if (ref.startsWith("pedido:")) {
     const { data } = await db.from("checkout_pedidos").select("restaurante_id").eq("id", ref.slice(7)).maybeSingle();
     restauranteId = data?.restaurante_id ?? null;
     await db.from("checkout_pedidos").update({ status: "cancelado", atualizado_em: agoraISO() }).eq("id", ref.slice(7));
@@ -181,13 +265,44 @@ async function estornar(db: any, ref: string, p: Record<string, any>) {
     restauranteId = data?.restaurante_id ?? null;
     await db.from("renovacoes").update({ status: "cancelada", atualizado_em: agoraISO() }).eq("id", ref.slice(6));
   } else if (ref.startsWith("troca:")) {
-    // Diferença de upgrade devolvida: só registra; o plano volta na próxima renovação manualmente.
     console.warn("Troca de plano estornada", ref, p.id);
     return;
   }
   if (!restauranteId) return;
-  await db.from("assinaturas").update({ status: "expirada", periodo_fim: agoraISO(), atualizado_em: agoraISO() })
-    .eq("restaurante_id", restauranteId).eq("gateway", "mercadopago");
+  await db.from("assinaturas").update({
+    status: "expirada", periodo_fim: agoraISO(), renovacao_automatica: false, atualizado_em: agoraISO(),
+  }).eq("restaurante_id", restauranteId).eq("gateway", "mercadopago");
+}
+
+async function processarPagamento(db: any, p: Record<string, any>, preapprovalDoAviso: string | null) {
+  const ref = String(p.external_reference ?? "");
+  const preapprovalId: string | null = preapprovalDoAviso ??
+    (p.metadata?.preapproval_id ? String(p.metadata.preapproval_id) : null) ??
+    (p.point_of_interaction?.transaction_data?.subscription_id ? String(p.point_of_interaction.transaction_data.subscription_id) : null);
+
+  // Pagamento da assinatura no cartão: o external_reference pode vir copiado da preapproval ("pedido:...").
+  let assinaturaId = preapprovalId;
+  if (!assinaturaId && ref.startsWith("pedido:") && p.payment_type_id === "credit_card") {
+    const { data } = await db.from("checkout_pedidos").select("mp_preapproval_id").eq("id", ref.slice(7)).maybeSingle();
+    assinaturaId = data?.mp_preapproval_id ?? null;
+  }
+
+  if (!["approved", "rejected", "refunded", "charged_back"].includes(p.status)) return;
+  const chave = `mp:${p.id}:${p.status}`;
+  const { error: dup } = await db.from("webhook_eventos").insert({ id: chave, evento: `mp.payment.${p.status}` });
+  if (dup?.code === "23505") return;
+
+  try {
+    if (p.status === "refunded" || p.status === "charged_back") return await estornar(db, ref, p, assinaturaId);
+    if (assinaturaId) return await pagamentoDeAssinatura(db, assinaturaId, p);
+    if (p.status !== "approved") return;
+    if (ref.startsWith("pedido:")) await ativarPedido(db, ref.slice(7), p);
+    else if (ref.startsWith("renov:")) await aplicarRenovacao(db, ref.slice(6), p);
+    else if (ref.startsWith("troca:")) await aplicarTroca(db, ref.slice(6), p);
+  } catch (e) {
+    await db.from("webhook_eventos").delete().eq("id", chave);
+    throw e;
+  }
 }
 
 Deno.serve(async (req) => {
@@ -197,46 +312,42 @@ Deno.serve(async (req) => {
   const bruto = await req.json().catch(() => ({}));
   const tipo = String(bruto?.type ?? bruto?.topic ?? url.searchParams.get("type") ?? url.searchParams.get("topic") ?? "");
   const dataId = String(bruto?.data?.id ?? url.searchParams.get("data.id") ?? url.searchParams.get("id") ?? "");
-  if (tipo !== "payment" || !dataId || !/^\d+$/.test(dataId)) return ok(); // merchant_order etc.: ignorado
+  if (!dataId || !/^[\w-]{1,64}$/.test(dataId)) return ok();
+  if (!["payment", "subscription_authorized_payment", "authorized_payment", "subscription_preapproval", "preapproval"].includes(tipo)) return ok();
 
   if (!(await assinaturaValida(req, url.searchParams.get("data.id") ?? dataId))) {
     return new Response("Assinatura inválida", { status: 401 });
   }
 
-  let p: Record<string, any> | null;
-  try {
-    p = await buscarPagamento(dataId);
-  } catch (e) {
-    console.error("Não foi possível conferir o pagamento no Mercado Pago", e);
-    return new Response("Tente de novo", { status: 503 });
-  }
-  if (!p) return ok();
-
-  const ref = String(p.external_reference ?? "");
-  const relevante = ["approved", "refunded", "charged_back"].includes(p.status);
-  if (!relevante || !/^(pedido|renov|troca):/.test(ref)) return ok();
-
   const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
     auth: { persistSession: false },
   });
 
-  // Idempotência: o Mercado Pago reenvia o mesmo aviso várias vezes.
-  const chave = `mp:${p.id}:${p.status}`;
-  const { error: dup } = await db.from("webhook_eventos").insert({ id: chave, evento: `mp.payment.${p.status}` });
-  if (dup?.code === "23505") return ok();
-
   try {
-    if (p.status === "approved") {
-      if (ref.startsWith("pedido:")) await ativarPedido(db, ref.slice(7), p);
-      else if (ref.startsWith("renov:")) await aplicarRenovacao(db, ref.slice(6), p);
-      else if (ref.startsWith("troca:")) await aplicarTroca(db, ref.slice(6), p);
-    } else {
-      await estornar(db, ref, p);
+    if (tipo === "payment") {
+      const p = await buscar(`/v1/payments/${encodeURIComponent(dataId)}`);
+      if (p) await processarPagamento(db, p, null);
+      return ok();
+    }
+
+    if (tipo === "subscription_authorized_payment" || tipo === "authorized_payment") {
+      const fatura = await buscar(`/authorized_payments/${encodeURIComponent(dataId)}`);
+      const pagamentoId = fatura?.payment?.id;
+      if (!fatura?.preapproval_id || !pagamentoId) return ok();
+      const p = await buscar(`/v1/payments/${encodeURIComponent(String(pagamentoId))}`);
+      if (p) await processarPagamento(db, p, String(fatura.preapproval_id));
+      return ok();
+    }
+
+    // Mudança na assinatura (cancelada/pausada pelo cliente no Mercado Pago, por exemplo).
+    const pre = await buscar(`/preapproval/${encodeURIComponent(dataId)}`);
+    if (pre && ["cancelled", "paused"].includes(pre.status)) {
+      await db.from("assinaturas").update({ renovacao_automatica: false, atualizado_em: agoraISO() })
+        .eq("mp_preapproval_id", pre.id);
     }
     return ok();
   } catch (e) {
-    console.error("mp-webhook", chave, e);
-    await db.from("webhook_eventos").delete().eq("id", chave);
+    console.error("mp-webhook", tipo, dataId, e);
     return new Response("Erro ao processar", { status: 500 });
   }
 });

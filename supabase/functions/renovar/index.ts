@@ -1,10 +1,10 @@
-// Mesari — renovação paga pelo app (Mercado Pago). Só o dono do restaurante.
+// Mesari — renovação paga pelo app (Mercado Pago, Pix/boleto). Só o dono do restaurante.
 //
 // POST { confirmar }   (Authorization: Bearer <sessão do usuário>)
 //   confirmar=false → prévia: plano, ciclo e valor da próxima renovação.
 //   confirmar=true  → cria o link de pagamento (Pix, boleto ou cartão) e devolve { url }.
 // A renovação usa a troca agendada (plano_proximo/ciclo_proximo), se houver.
-// Quando o pagamento é aprovado, o mp-webhook estende a validade a partir do fim do período atual.
+// Quem assina no cartão (recorrente) não precisa: a cobrança é automática.
 //
 // Secrets: MP_ACCESS_TOKEN, MESARI_SITE_URL (opcional).
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -51,12 +51,16 @@ Deno.serve(async (req) => {
       return json({ acao: "checkout", url: url.toString() });
     }
 
+    if (a.renovacao_automatica && a.mp_preapproval_id && a.status !== "expirada") {
+      return json({ erro: "Sua assinatura renova sozinha no cartão. Não precisa pagar nada agora." }, 409);
+    }
     const planoId: string = a.plano_proximo ?? a.plano_id;
     const ciclo: string = a.ciclo_proximo ?? a.ciclo ?? "mensal";
     const { data: plano } = await db.from("planos").select("*").eq("id", planoId).maybeSingle();
     if (!plano) return json({ erro: "Plano não encontrado." }, 400);
     const valorTeste = Number(Deno.env.get("MESARI_VALOR_TESTE") ?? "");
-    const valor = valorTeste > 0 ? valorTeste : Number(ciclo === "anual" ? plano.preco_anual : plano.preco_mensal);
+    const valor = valorTeste > 0 ? valorTeste
+      : Number(ciclo === "anual" ? plano.preco_anual : ciclo === "trimestral" ? plano.preco_trimestral : plano.preco_mensal);
 
     const vence = a.periodo_fim ? new Date(new Date(a.periodo_fim).getTime() - 3 * DIA) : null;
     const resumo = `Renovação do ${plano.nome} ${ciclo}: ${reais(valor)}. ` +

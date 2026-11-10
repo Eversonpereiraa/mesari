@@ -5,25 +5,23 @@
 //   confirmar=true  → executa.
 //
 // Regras:
-//   • Sem assinatura paga no Asaas (teste grátis, cortesia, vencida) → devolve o link do checkout da landing.
+//   • Sem assinatura paga (teste grátis, cortesia, vencida) → devolve o link do checkout da landing.
 //   • Subir de plano → libera na hora; cobra a diferença proporcional aos dias que faltam no período.
-//     Diferença abaixo de R$ 5 (mínimo do Asaas) → libera sem cobrar.
-//   • Descer de plano ou trocar mensal↔anual → vale na próxima renovação; a assinatura no Asaas
-//     já passa a cobrar o valor novo a partir do próximo vencimento.
-//
-// Mercado Pago (gateway "mercadopago"): não há assinatura recorrente no gateway. O upgrade gera um
-// link de pagamento (Pix/boleto/cartão) com external_reference "troca:<id>"; descer de plano ou
-// trocar o ciclo só fica marcado em plano_proximo/ciclo_proximo e vale no próximo "Pagar renovação".
+//     Diferença abaixo de R$ 5 → libera sem cobrar.
+//   • Descer de plano ou trocar o ciclo → vale na próxima renovação.
+//   • Cartão recorrente (Mercado Pago preapproval): o valor das próximas cobranças é atualizado;
+//     trocar o ciclo (mensal/trimestral/anual) no cartão é feito pelo suporte.
 //
 // Secrets: MP_ACCESS_TOKEN | ASAAS_API_KEY, ASAAS_BASE_URL (opcional), MESARI_SITE_URL (opcional).
 import { createClient } from "npm:@supabase/supabase-js@2";
 
-type Ciclo = "mensal" | "anual";
+type Ciclo = "mensal" | "trimestral" | "anual";
 type Plano = {
   id: string;
   nome: string;
   preco_mensal: number | string;
   preco_anual: number | string;
+  preco_trimestral: number | string;
   ordem: number;
 };
 
@@ -39,7 +37,23 @@ const MINIMO_ASAAS = 5;
 const GRACA_DIAS = 3; // o webhook soma 3 dias de folga ao fim do período
 const DIA = 86_400_000;
 
-const preco = (p: Plano, c: Ciclo) => Number(c === "anual" ? p.preco_anual : p.preco_mensal);
+const preco = (p: Plano, c: Ciclo) =>
+  Number(c === "anual" ? p.preco_anual : c === "trimestral" ? p.preco_trimestral : p.preco_mensal);
+const lerCiclo = (v: unknown): Ciclo => (v === "anual" ? "anual" : v === "trimestral" ? "trimestral" : "mensal");
+const porPeriodo = (c: Ciclo) => (c === "anual" ? "ano" : c === "trimestral" ? "trimestre" : "mês");
+
+/** Assinatura recorrente no cartão: muda o valor das próximas cobranças. */
+async function valorDaAssinaturaMP(preapprovalId: string, valor: number) {
+  const res = await fetch(`https://api.mercadopago.com/preapproval/${encodeURIComponent(preapprovalId)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${Deno.env.get("MP_ACCESS_TOKEN") ?? ""}` },
+    body: JSON.stringify({ auto_recurring: { transaction_amount: valor, currency_id: "BRL" } }),
+  });
+  if (!res.ok) {
+    console.error("Não atualizou a assinatura no MP", res.status, await res.text().catch(() => ""));
+    throw new Error("Não foi possível atualizar a cobrança no cartão agora. Tente de novo em instantes.");
+  }
+}
 const cicloAsaas = (c: Ciclo) => (c === "anual" ? "YEARLY" : "MONTHLY");
 const reais = (v: number) => v.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 const hojeSP = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Sao_Paulo" }).format(new Date());
@@ -102,7 +116,7 @@ Deno.serve(async (req) => {
     const rid: number = perfil.restaurante_id;
 
     const corpo = await req.json().catch(() => ({}));
-    const cicloPedido: Ciclo = corpo.ciclo === "anual" ? "anual" : "mensal";
+    const cicloPedido: Ciclo = lerCiclo(corpo.ciclo);
     const confirmar = corpo.confirmar === true;
 
     const { data: planos } = await db.from("planos").select("*");
@@ -130,7 +144,13 @@ Deno.serve(async (req) => {
     }
 
     const atual = porId.get(a.plano_id)!;
-    const cicloAtual: Ciclo = a.ciclo === "anual" ? "anual" : "mensal";
+    const cicloAtual: Ciclo = lerCiclo(a.ciclo);
+    const recorrenteMP: string | null = ehMP && a.renovacao_automatica && a.mp_preapproval_id ? a.mp_preapproval_id : null;
+    if (recorrenteMP && cicloPedido !== cicloAtual) {
+      return json({
+        erro: `Sua assinatura é cobrada no cartão a cada ${porPeriodo(cicloAtual)}. Para mudar para ${cicloPedido}, fale com a gente no WhatsApp que fazemos a troca sem perder nenhum dia.`,
+      }, 409);
+    }
     const fimPeriodo = new Date(a.periodo_fim).getTime() - GRACA_DIAS * DIA;
     const renovaEm = new Date(fimPeriodo).toISOString();
 
@@ -149,6 +169,7 @@ Deno.serve(async (req) => {
           updatePendingPayments: true,
         }),
       });
+      if (recorrenteMP) await valorDaAssinaturaMP(recorrenteMP, preco(atual, cicloAtual));
       await db.from("assinaturas").update({ plano_proximo: null, ciclo_proximo: null, atualizado_em: new Date().toISOString() }).eq("restaurante_id", rid);
       await db.from("plano_trocas").update({ status: "cancelada", atualizado_em: new Date().toISOString() }).eq("restaurante_id", rid).eq("status", "agendada");
       return json({ acao: "mantido" });
@@ -158,15 +179,15 @@ Deno.serve(async (req) => {
 
     // ---------- SUBIR DE PLANO: na hora, cobrando a diferença proporcional ----------
     if (sobe) {
-      const total = cicloAtual === "anual" ? 365 : 30;
+      const total = cicloAtual === "anual" ? 365 : cicloAtual === "trimestral" ? 91 : 30;
       const restantes = Math.max(0, Math.min(total, Math.ceil((fimPeriodo - Date.now()) / DIA)));
       const diferenca = Math.round((preco(novo, cicloAtual) - preco(atual, cicloAtual)) * (restantes / total) * 100) / 100;
       const cicloFinal = cicloPedido;
       const recorrente = preco(novo, cicloFinal);
       const resumo =
         diferenca >= MINIMO_ASAAS
-          ? `Você paga agora ${reais(diferenca)}, referente aos ${restantes} dias que faltam neste período, e o ${novo.nome} é liberado assim que o pagamento cair. Depois, a mensalidade passa para ${reais(recorrente)} por ${cicloFinal === "anual" ? "ano" : "mês"}.`
-          : `O ${novo.nome} é liberado agora, sem cobrança extra neste período. A partir da próxima renovação você paga ${reais(recorrente)} por ${cicloFinal === "anual" ? "ano" : "mês"}.`;
+          ? `Você paga agora ${reais(diferenca)}, referente aos ${restantes} dias que faltam neste período, e o ${novo.nome} é liberado assim que o pagamento cair. Depois, a mensalidade passa para ${reais(recorrente)} por ${porPeriodo(cicloFinal)}.`
+          : `O ${novo.nome} é liberado agora, sem cobrança extra neste período. A partir da próxima renovação você paga ${reais(recorrente)} por ${porPeriodo(cicloFinal)}.`;
 
       if (!confirmar) {
         return json({ acao: "upgrade", valor: diferenca >= MINIMO_ASAAS ? diferenca : 0, dias: restantes, recorrente, resumo });
@@ -195,6 +216,7 @@ Deno.serve(async (req) => {
           method: "PUT",
           body: JSON.stringify({ value: recorrente, cycle: cicloAsaas(cicloFinal), description: `Mesari ${novo.nome} (${cicloFinal})`, updatePendingPayments: true }),
         });
+        if (recorrenteMP) await valorDaAssinaturaMP(recorrenteMP, recorrente);
         await db.from("assinaturas").update({
           plano_id: novo.id, plano_proximo: null,
           ciclo_proximo: cicloFinal !== cicloAtual ? cicloFinal : null,
@@ -248,7 +270,7 @@ Deno.serve(async (req) => {
       }
     }
     const recorrente = preco(novo, cicloPedido);
-    const resumo = `Você continua no ${atual.nome} até ${new Date(fimPeriodo).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}. A partir daí passa para o ${novo.nome} ${cicloPedido}, por ${reais(recorrente)} por ${cicloPedido === "anual" ? "ano" : "mês"}. Nada é cobrado agora.`;
+    const resumo = `Você continua no ${atual.nome} até ${new Date(fimPeriodo).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo" })}. A partir daí passa para o ${novo.nome} ${cicloPedido}, por ${reais(recorrente)} por ${porPeriodo(cicloPedido)}. Nada é cobrado agora.`;
     if (!confirmar) return json({ acao: "agendar", renovaEm, recorrente, resumo });
 
     if (ehAsaas) await asaas(`/subscriptions/${a.gateway_assinatura_id}`, {
@@ -260,6 +282,7 @@ Deno.serve(async (req) => {
         updatePendingPayments: true,
       }),
     });
+    if (recorrenteMP) await valorDaAssinaturaMP(recorrenteMP, recorrente);
     await db.from("assinaturas").update({
       plano_proximo: novo.id !== atual.id ? novo.id : null,
       ciclo_proximo: cicloPedido !== cicloAtual ? cicloPedido : null,
