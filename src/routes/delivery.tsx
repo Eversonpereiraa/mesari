@@ -28,8 +28,15 @@ import {
   imprimirComanda,
   loadConfig,
   printErrorMessage,
+  type ComandaParte,
   type KitchenTicket,
 } from "@/lib/printing";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { toast } from "sonner";
 import { getQueueState, reprintExternalOrder } from "@/lib/print-queue";
 
@@ -193,6 +200,9 @@ function orderTicket(order: DeliveryOrder): KitchenTicket {
       customerName: order.customerName,
       phone: order.phone,
       address: order.address,
+      ...(String(order.raw["referencia"] ?? "").trim()
+        ? { reference: String(order.raw["referencia"]).trim() }
+        : {}),
       observation: order.observation,
       subtotal: numeric(externalData["subtotal"], order.subtotal),
       deliveryFee: numeric(externalData["taxa_entrega"], order.deliveryFee),
@@ -538,14 +548,24 @@ function Delivery() {
     setExtraOpen(false);
   };
 
-  const reprintOrder = async (order: DeliveryOrder) => {
+  const reprintOrder = async (order: DeliveryOrder, parte: ComandaParte = "todas") => {
     setBusy(true);
     setListError("");
     try {
-      // Com a fila, a estação de impressão reimprime; pedido antigo (sem fila) imprime aqui.
-      const queued = getQueueState().available === true && (await reprintExternalOrder(order.id));
-      if (!queued) await imprimirComanda(orderTicket(order));
-      setNotice(`Pedido #${order.number} enviado para impressão.`);
+      // As duas: a estação de impressão reimprime pela fila (pedido antigo, sem fila, imprime aqui).
+      // Só uma delas: imprime neste aparelho.
+      const queued =
+        parte === "todas" &&
+        getQueueState().available === true &&
+        (await reprintExternalOrder(order.id));
+      if (!queued) await imprimirComanda(orderTicket(order), { parte });
+      const qual =
+        parte === "cozinha"
+          ? "Comanda da cozinha do pedido"
+          : parte === "entregador"
+            ? "Comanda do entregador do pedido"
+            : "Pedido";
+      setNotice(`${qual} #${order.number} enviado para impressão.`);
     } catch (cause) {
       setListError(`Pedido #${order.number} não imprimiu. ${printErrorMessage(cause)}`);
     } finally {
@@ -658,7 +678,7 @@ function Delivery() {
                   busy={busy}
                   onAdvance={advanceOrder}
                   onComplete={setPaymentOrder}
-                  onReprint={() => void reprintOrder(order)}
+                  onReprint={(parte) => void reprintOrder(order, parte)}
                   onCancel={() => cancelOrder(order)}
                 />
               ))}
@@ -692,7 +712,7 @@ function Delivery() {
                             busy={busy}
                             onAdvance={advanceOrder}
                             onComplete={setPaymentOrder}
-                            onReprint={() => void reprintOrder(order)}
+                            onReprint={(parte) => void reprintOrder(order, parte)}
                             onCancel={() => cancelOrder(order)}
                           />
                         ))}
@@ -768,7 +788,12 @@ function Delivery() {
                       />
                     </Field>
                     <Field label="Telefone">
-                      <MaskedInput mask="phone" autoComplete="off" value={phone} onValueChange={setPhone} />
+                      <MaskedInput
+                        mask="phone"
+                        autoComplete="off"
+                        value={phone}
+                        onValueChange={setPhone}
+                      />
                     </Field>
                     {type === "entrega" && (
                       <Field label="Endereço *">
@@ -1024,7 +1049,7 @@ function OrderCard({
   busy: boolean;
   onAdvance: (order: DeliveryOrder) => void;
   onComplete: (order: DeliveryOrder) => void;
-  onReprint: () => void;
+  onReprint: (parte: ComandaParte) => void;
   onCancel: () => void;
 }) {
   const index = stageOrder.indexOf(order.status);
@@ -1089,9 +1114,24 @@ function OrderCard({
             <Check className="h-4 w-4" /> Concluir e receber
           </Btn>
         )}
-        <Btn size="sm" variant="outline" disabled={busy} onClick={onReprint}>
-          <Printer className="h-4 w-4" /> Reimprimir
-        </Btn>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Btn size="sm" variant="outline" disabled={busy}>
+              <Printer className="h-4 w-4" /> Reimprimir
+            </Btn>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onSelect={() => onReprint("todas")}>
+              As duas comandas
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onReprint("cozinha")}>
+              Só a da cozinha
+            </DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => onReprint("entregador")}>
+              {order.type === "entrega" ? "Só a do entregador" : "Só a de retirada (cliente)"}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         {!isFinalized && (
           <Btn size="sm" variant="danger" disabled={busy} onClick={onCancel}>
             Cancelar

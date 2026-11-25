@@ -21,6 +21,7 @@ import { Route as ManifestDotwebmanifestRouteImport } from './routes/manifest[.]
 import { Route as PlanoRouteImport } from './routes/plano'
 import { Route as RestauranteRouteImport } from './routes/restaurante'
 import { Route as VendasRouteImport } from './routes/vendas'
+import { Route as WhatsappRouteImport } from './routes/whatsapp'
 import { Route as MesaIdRouteImport } from './routes/mesa.$id'
 import { Route as PedidoIdRouteImport } from './routes/pedido.$id'
 
@@ -84,6 +85,11 @@ const VendasRoute = VendasRouteImport.update({
   path: '/vendas',
   getParentRoute: () => rootRouteImport,
 } as any)
+const WhatsappRoute = WhatsappRouteImport.update({
+  id: '/whatsapp',
+  path: '/whatsapp',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const MesaIdRoute = MesaIdRouteImport.update({
   id: '/mesa/$id',
   path: '/mesa/$id',
@@ -108,6 +114,7 @@ export interface FileRoutesByFullPath {
   '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
+  '/whatsapp': typeof WhatsappRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -124,6 +131,7 @@ export interface FileRoutesByTo {
   '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
+  '/whatsapp': typeof WhatsappRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -141,6 +149,7 @@ export interface FileRoutesById {
   '/plano': typeof PlanoRoute
   '/restaurante': typeof RestauranteRoute
   '/vendas': typeof VendasRoute
+  '/whatsapp': typeof WhatsappRoute
   '/mesa/$id': typeof MesaIdRoute
   '/pedido/$id': typeof PedidoIdRoute
 }
@@ -159,6 +168,7 @@ export interface FileRouteTypes {
     | '/plano'
     | '/restaurante'
     | '/vendas'
+    | '/whatsapp'
     | '/mesa/$id'
     | '/pedido/$id'
   fileRoutesByTo: FileRoutesByTo
@@ -175,6 +185,7 @@ export interface FileRouteTypes {
     | '/plano'
     | '/restaurante'
     | '/vendas'
+    | '/whatsapp'
     | '/mesa/$id'
     | '/pedido/$id'
   id:
@@ -191,6 +202,7 @@ export interface FileRouteTypes {
     | '/plano'
     | '/restaurante'
     | '/vendas'
+    | '/whatsapp'
     | '/mesa/$id'
     | '/pedido/$id'
   fileRoutesById: FileRoutesById
@@ -208,6 +220,7 @@ export interface RootRouteChildren {
   PlanoRoute: typeof PlanoRoute
   RestauranteRoute: typeof RestauranteRoute
   VendasRoute: typeof VendasRoute
+  WhatsappRoute: typeof WhatsappRoute
   MesaIdRoute: typeof MesaIdRoute
   PedidoIdRoute: typeof PedidoIdRoute
 }
@@ -298,6 +311,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VendasRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/whatsapp': {
+      id: '/whatsapp'
+      path: '/whatsapp'
+      fullPath: '/whatsapp'
+      preLoaderRoute: typeof WhatsappRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/mesa/$id': {
       id: '/mesa/$id'
       path: '/mesa/$id'
@@ -328,6 +348,7 @@ const rootRouteChildren: RootRouteChildren = {
   PlanoRoute: PlanoRoute,
   RestauranteRoute: RestauranteRoute,
   VendasRoute: VendasRoute,
+  WhatsappRoute: WhatsappRoute,
   MesaIdRoute: MesaIdRoute,
   PedidoIdRoute: PedidoIdRoute,
 }

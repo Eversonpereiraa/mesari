@@ -482,10 +482,22 @@ async function restaurantLogo(restaurant: PrintRestaurant): Promise<PrintLogo | 
   }
 }
 
+/** Qual parte da comanda imprimir: as duas (padrão), só a da cozinha ou só a do entregador. */
+export type ComandaParte = "todas" | "cozinha" | "entregador";
+
 /** Comanda de cozinha e, no delivery/retirada, também a comanda que vai com o entregador. */
-async function comandaDocs(ticket: KitchenTicket, restaurant: PrintRestaurant, now?: number) {
-  const docs = [comandaCozinha(ticket, now === undefined ? {} : { now })];
-  if (ticket.external) {
+async function comandaDocs(
+  ticket: KitchenTicket,
+  restaurant: PrintRestaurant,
+  now?: number,
+  parte: ComandaParte = "todas",
+) {
+  if (parte === "entregador" && !ticket.external) {
+    throw new Error("Só pedidos de delivery ou retirada têm comanda do entregador.");
+  }
+  const docs = [];
+  if (parte !== "entregador") docs.push(comandaCozinha(ticket, now === undefined ? {} : { now }));
+  if (ticket.external && parte !== "cozinha") {
     docs.push(comandaDelivery(ticket, restaurant, { logo: await restaurantLogo(restaurant) }));
   }
   return docs;
@@ -498,10 +510,14 @@ async function comandaDocs(ticket: KitchenTicket, restaurant: PrintRestaurant, n
  * Comanda do pedido inteiro (modelo "Comanda de cozinha"); pedidos de delivery/retirada saem
  * também com a "Comanda de delivery". `force: "navegador"` imprime pela caixa do sistema.
  */
-export function imprimirComanda(ticket: KitchenTicket, options: { force?: "navegador" } = {}) {
-  return enqueue(`comanda:${ticket.id}:${options.force ?? ""}`, async () => {
+export function imprimirComanda(
+  ticket: KitchenTicket,
+  options: { force?: "navegador"; parte?: ComandaParte } = {},
+) {
+  const parte = options.parte ?? "todas";
+  return enqueue(`comanda:${ticket.id}:${options.force ?? ""}:${parte}`, async () => {
     const config = loadConfig();
-    return deliver(await comandaDocs(ticket, getPrintRestaurant()), {
+    return deliver(await comandaDocs(ticket, getPrintRestaurant(), undefined, parte), {
       copies: config.copies,
       ...(options.force ? { transport: new BrowserPrintTransport("comanda") } : {}),
     });

@@ -67,6 +67,7 @@ export {
   testarConexao,
   transportAvailability,
   verificarImpressora,
+  type ComandaParte,
   type ExampleKind,
   type PrinterStatus,
   type PrintResult,

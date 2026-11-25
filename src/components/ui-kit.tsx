@@ -11,6 +11,7 @@ import {
   Lock,
   LogOut,
   Map,
+  MessageCircle,
   Printer,
   ReceiptText,
   Settings2,
@@ -171,6 +172,7 @@ export function StoreErrorBanner() {
 const nav = [
   { to: "/caixa", label: "Mesas", Icon: LayoutGrid },
   { to: "/delivery", label: "Delivery", Icon: Bike },
+  { to: "/whatsapp", label: "WhatsApp", Icon: MessageCircle },
   { to: "/vendas", label: "Vendas", Icon: ReceiptText },
   { to: "/cardapio", label: "Cardápio", Icon: BookOpen },
   { to: "/layout", label: "Layout do salão", Icon: Map },
@@ -265,17 +267,19 @@ export function AppShell({
                 (item.to !== "/vendas" &&
                   item.to !== "/impressao" &&
                   item.to !== "/delivery" &&
+                  item.to !== "/whatsapp" &&
                   item.to !== "/plano") ||
                 user?.role === "caixa",
             )
             .map(({ Icon, ...item }) => {
-              const locked = item.to === "/delivery" && !deliveryAllowed;
+              const locked =
+                (item.to === "/delivery" || item.to === "/whatsapp") && !deliveryAllowed;
               return (
                 <Link
                   key={item.to}
                   title={
                     locked
-                      ? "Delivery: disponível a partir do plano Profissional"
+                      ? `${item.label}: disponível a partir do plano Profissional`
                       : collapsed
                         ? item.label
                         : undefined
