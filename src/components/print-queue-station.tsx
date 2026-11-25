@@ -17,9 +17,10 @@ import {
   usePrintQueue,
   type QueueJob,
 } from "@/lib/print-queue";
+import { DESKTOP_RELEASES_URL, downloadInstaller, installerUrl } from "@/lib/desktop-download";
 
-/** Instalador do app desktop (Releases do GitHub, gerado pelo workflow do desktop). */
-export const DESKTOP_DOWNLOAD_URL = "https://github.com/Eversonpereiraa/mesari/releases/latest";
+/** Página de Releases do app desktop (o botão Baixar baixa o .exe direto; isto é o reserva). */
+export const DESKTOP_DOWNLOAD_URL = DESKTOP_RELEASES_URL;
 
 const isDesktop = () => typeof window !== "undefined" && Boolean(window.mesariDesktop);
 
@@ -234,6 +235,10 @@ function UnprintedAlert({ jobs }: { jobs: QueueJob[] }) {
 }
 
 function DesktopAppNotice() {
+  // Já descobre o link do .exe ao aparecer, para o clique baixar na hora.
+  useEffect(() => {
+    void installerUrl();
+  }, []);
   return (
     <div className="fixed bottom-3 left-3 z-40 max-w-[calc(100vw-1.5rem)] rounded-md border bg-card/95 px-3 py-2 text-xs text-muted-foreground shadow-sm backdrop-blur">
       Para imprimir automaticamente, use o app Mesari para Windows.{" "}
@@ -241,6 +246,10 @@ function DesktopAppNotice() {
         href={DESKTOP_DOWNLOAD_URL}
         target="_blank"
         rel="noreferrer"
+        onClick={(event) => {
+          event.preventDefault();
+          void downloadInstaller();
+        }}
         className="font-semibold text-primary underline"
       >
         Baixar
