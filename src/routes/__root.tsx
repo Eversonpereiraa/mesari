@@ -16,6 +16,7 @@ import { initializeStore } from "@/lib/store";
 import { MESARI_BRAND } from "@/lib/branding";
 import { SystemDialogProvider } from "@/components/system-dialog-provider";
 import { Toaster } from "@/components/ui/sonner";
+import { setPrintAppVersion } from "@/lib/printing/comandas";
 import { DesktopUpdateBanner } from "@/components/desktop-update-banner";
 import { PrintQueueBootstrap } from "@/components/print-queue-station";
 
@@ -146,6 +147,11 @@ function RootComponent() {
 function StoreBootstrap() {
   useEffect(() => {
     initializeStore();
+    // Versão do app desktop na última linha das comandas ("Sistema Mesari · v1.2.7").
+    void window.mesariDesktop
+      ?.getAppInfo?.()
+      .then((info) => setPrintAppVersion(info.versao))
+      .catch(() => undefined);
   }, []);
   return null;
 }

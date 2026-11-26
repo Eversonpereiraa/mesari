@@ -34,6 +34,7 @@ import {
   windowsTarget,
 } from "./printing";
 import {
+  checkForUpdatesNow,
   downloadUpdate,
   installUpdateNow,
   startUpdater,
@@ -566,6 +567,13 @@ function createTray() {
   tray.setContextMenu(
     Menu.buildFromTemplate([
       { label: "Abrir Mesari", click: bringToFront },
+      {
+        label: "Verificar atualizações",
+        click: () => {
+          bringToFront();
+          checkForUpdatesNow();
+        },
+      },
       {
         label: "Abrir pasta de logs",
         click: () => {

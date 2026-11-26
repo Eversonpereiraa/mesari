@@ -2,7 +2,7 @@
  * Atualização automática pelo GitHub Releases (electron-updater).
  *
  * Fluxo:
- *   1. Ao abrir (15 s depois) e a cada 4 horas, verifica em segundo plano se há versão nova.
+ *   1. Ao abrir (15 s depois), a cada 30 min e ao voltar o foco na janela, verifica se há versão nova.
  *   2. Achou → avisa o app ("Nova atualização disponível") com a versão e as novidades.
  *   3. "Atualizar agora" → baixa mostrando o progresso → instala em silêncio e reabre o Mesari.
  *   4. "Depois" → baixa quietinho em segundo plano e instala quando o Mesari for fechado.
@@ -121,12 +121,25 @@ export function startUpdater(getWindow: () => BrowserWindow | null, log: Log) {
     }
   });
 
-  const check = () => {
+  // O Mesari fica na bandeja o dia todo (fechar a janela não encerra o app), então só verificar
+  // ao abrir deixava a versão nova esperando horas. Agora verifica: 15 s após abrir, a cada
+  // 30 min e sempre que a janela volta ao foco (no máximo uma vez a cada 10 min).
+  let ultimaVerificacao = 0;
+  const check = (intervaloMinimoMs = 0) => {
     if (downloading || state.fase === "pronta") return;
+    if (Date.now() - ultimaVerificacao < intervaloMinimoMs) return;
+    ultimaVerificacao = Date.now();
     void autoUpdater.checkForUpdates().catch((error: unknown) => log("Falha ao verificar atualização", error));
   };
-  setTimeout(check, 15_000);
-  setInterval(check, 4 * 60 * 60 * 1000);
+  setTimeout(() => check(), 15_000);
+  setInterval(() => check(), 30 * 60 * 1000);
+  app.on("browser-window-focus", () => check(10 * 60 * 1000));
+}
+
+/** "Verificar atualizações" do menu da bandeja: sempre consulta na hora. */
+export function checkForUpdatesNow() {
+  if (!app.isPackaged || downloading || state.fase === "pronta") return;
+  void autoUpdater.checkForUpdates().catch(() => undefined);
 }
 
 /** Começa a baixar. Chamado por "Atualizar agora" e também por "Depois" (em segundo plano). */

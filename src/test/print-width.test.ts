@@ -82,10 +82,10 @@ function docWords(doc: PrintDoc, config: PrinterConfig) {
     words.push(
       ...printableText(value, config.codepage)
         .split(/\s+/)
-        .filter((word) => word && !/^(-+|=+)$/.test(word)),
+        .filter((word) => word && !/^(-+|=+|\*+)$/.test(word)),
     );
   for (const line of doc.lines) {
-    if (line.kind === "text" || line.kind === "raw") add(line.text);
+    if (line.kind === "text" || line.kind === "raw" || line.kind === "banner") add(line.text);
     else if (line.kind === "entry") {
       add(`${line.prefix ?? ""}${line.text}`);
       add(line.value ?? "");
@@ -143,7 +143,7 @@ describe.each(PROFILES)("perfil $paperWidth mm / $printableMm mm / $columns colu
     // Nenhuma palavra some e a ordem é mantida.
     const printed = lines
       .flatMap((line) => line.text.split(/\s+/))
-      .filter((word) => word && !/^(-+|=+)$/.test(word));
+      .filter((word) => word && !/^(-+|=+|\*+)$/.test(word));
     expect(printed).toEqual(docWords(doc, config));
     // Linhas rótulo/valor: o valor termina exatamente na última coluna.
     for (const docLine of doc.lines) {

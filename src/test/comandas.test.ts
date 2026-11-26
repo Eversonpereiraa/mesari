@@ -58,42 +58,37 @@ Itens: 6                    Impresso 16:35
        RESTAURANTE SABOR DO AGRESTE
              (81) 99634-1234
 ==========================================
-          PEDIDO #128 - ENTREGA
-==========================================
-Data: 05/11/2026               Hora: 15:14
-Origem: WhatsApp
+ENTREGA #128
+WhatsApp                  05/11/2026 15:14
 ------------------------------------------
-CLIENTE
-João da Silva
-(81) 98765-4321
-Rua das Acácias, 123, apto 45
-Jardim São Paulo - Surubim/PE
+Cliente: João da Silva
+Fone: (81) 98765-4321
+End.: Rua das Acácias, 123, apto 45 -
+      Jardim São Paulo - Surubim/PE
 Ref.: ao lado da padaria
 ------------------------------------------
-QTD ITEM                             TOTAL
+QTD DESCRIÇÃO                        VALOR
 ------------------------------------------
-2x X-Burguer da Casa                 57,80
-   R$ 28,90 cada
+2  X-Burguer da Casa                 57,80
    obs: sem cebola
-1x Batata frita com cheddar e bacon
+1  Batata frita com cheddar e bacon
    (porção grande)                   32,00
-1x Suco de laranja 500 ml            19,00
+1  Suco de laranja 500 ml            19,00
    obs: pouco gelo
 ------------------------------------------
-Subtotal                         R$ 108,80
-Taxa de entrega                    R$ 7,00
-Desconto                          -R$ 5,00
-==========================================
-TOTAL                            R$ 110,80
-==========================================
-Pagamento                         Dinheiro
+                        Subtotal R$ 108,80
+                           Entrega R$ 7,00
+                         Desconto -R$ 5,00
+                           TOTAL R$ 110,80
+------------------------------------------
+Pagamento: Dinheiro
 Troco para                       R$ 150,00
-Levar de troco                    R$ 39,20
-------------------------------------------
-OBSERVAÇÃO
-Interfone com defeito, ligar ao chegar.
-------------------------------------------
+LEVAR DE TROCO                    R$ 39,20
+Obs.: Interfone com defeito, ligar ao
+      chegar.
+==========================================
           Não é documento fiscal
+************* Sistema Mesari *************
 `),
     );
   });
@@ -107,30 +102,24 @@ Interfone com defeito, ligar ao chegar.
          Surubim - PE, 55750-000
              (81) 99634-1234
 ==========================================
-             CONTA DE CONSUMO
-          Não é documento fiscal
+MESA 05                   05/11/2026 16:35
+Garçom: Severino Lima
 ------------------------------------------
-MESA 05
-Data: 05/11/2026               Hora: 16:35
-Atendido por: Severino Lima
+QTD DESCRIÇÃO                        VALOR
 ------------------------------------------
-QTD ITEM                             TOTAL
-------------------------------------------
-2x Escondidinho de charque           72,00
-   R$ 36,00 cada
-2x Refrigerante lata                 12,00
-   R$ 6,00 cada
-1x Batata frita com cheddar e bacon
+2  Escondidinho de charque           72,00
+2  Refrigerante lata                 12,00
+1  Batata frita com cheddar e bacon
    (porção grande)                   32,00
 ------------------------------------------
-Subtotal                         R$ 116,00
-Taxa de serviço (10%)             R$ 11,60
+                        Subtotal R$ 116,00
+                      Serviço 10% R$ 11,60
+                           TOTAL R$ 127,60
 ==========================================
-TOTAL                            R$ 127,60
-==========================================
-
+          Não é documento fiscal
         Obrigado pela preferência!
                Volte sempre
+************* Sistema Mesari *************
 `),
     );
   });
@@ -153,19 +142,16 @@ TOTAL                            R$ 127,60
     ]);
     expect(styled(delivery())).toEqual([
       "normal+b: RESTAURANTE SABOR DO AGRESTE",
-      "tall+b: PEDIDO #128 - ENTREGA",
-      "normal+b: CLIENTE",
-      "normal+b: QTD ITEM                             TOTAL",
-      "tall+b: TOTAL                            R$ 110,80",
-      "normal+b: Levar de troco                    R$ 39,20",
-      "normal+b: OBSERVAÇÃO",
+      "big+b: ENTREGA #128",
+      "normal+b: QTD DESCRIÇÃO                        VALOR",
+      "tall+b: TOTAL R$ 110,80",
+      "normal+b: LEVAR DE TROCO                    R$ 39,20",
     ]);
     expect(styled(conta())).toEqual([
       "tall+b: RESTAURANTE SABOR DO AGRESTE",
-      "normal+b: CONTA DE CONSUMO",
-      "big+b: MESA 05",
-      "normal+b: QTD ITEM                             TOTAL",
-      "tall+b: TOTAL                            R$ 127,60",
+      "normal+b: MESA 05                   05/11/2026 16:35",
+      "normal+b: QTD DESCRIÇÃO                        VALOR",
+      "tall+b: TOTAL R$ 127,60",
     ]);
   });
 });
@@ -205,43 +191,38 @@ Itens: 6          Impresso 16:35
   RESTAURANTE SABOR DO AGRESTE
         (81) 99634-1234
 ================================
-     PEDIDO #128 - ENTREGA
-================================
-Data: 05/11/2026     Hora: 15:14
-Origem: WhatsApp
+ENTREGA #128
+WhatsApp        05/11/2026 15:14
 --------------------------------
-CLIENTE
-João da Silva
-(81) 98765-4321
-Rua das Acácias, 123, apto 45
-Jardim São Paulo - Surubim/PE
+Cliente: João da Silva
+Fone: (81) 98765-4321
+End.: Rua das Acácias, 123, apto
+      45 - Jardim São Paulo -
+      Surubim/PE
 Ref.: ao lado da padaria
 --------------------------------
-QTD ITEM                   TOTAL
+QTD DESCRIÇÃO              VALOR
 --------------------------------
-2x X-Burguer da Casa       57,80
-   R$ 28,90 cada
+2  X-Burguer da Casa       57,80
    obs: sem cebola
-1x Batata frita com cheddar e
+1  Batata frita com cheddar e
    bacon (porção grande)   32,00
-1x Suco de laranja 500 ml  19,00
+1  Suco de laranja 500 ml  19,00
    obs: pouco gelo
 --------------------------------
-Subtotal               R$ 108,80
-Taxa de entrega          R$ 7,00
-Desconto                -R$ 5,00
-================================
-TOTAL                  R$ 110,80
-================================
-Pagamento               Dinheiro
+              Subtotal R$ 108,80
+                 Entrega R$ 7,00
+               Desconto -R$ 5,00
+                 TOTAL R$ 110,80
+--------------------------------
+Pagamento: Dinheiro
 Troco para             R$ 150,00
-Levar de troco          R$ 39,20
---------------------------------
-OBSERVAÇÃO
-Interfone com defeito, ligar ao
-chegar.
---------------------------------
+LEVAR DE TROCO          R$ 39,20
+Obs.: Interfone com defeito,
+      ligar ao chegar.
+================================
      Não é documento fiscal
+******** Sistema Mesari ********
 `),
     );
   });
@@ -256,30 +237,24 @@ chegar.
     Surubim - PE, 55750-000
         (81) 99634-1234
 ================================
-        CONTA DE CONSUMO
-     Não é documento fiscal
+MESA 05         05/11/2026 16:35
+Garçom: Severino Lima
 --------------------------------
-MESA 05
-Data: 05/11/2026     Hora: 16:35
-Atendido por: Severino Lima
+QTD DESCRIÇÃO              VALOR
 --------------------------------
-QTD ITEM                   TOTAL
---------------------------------
-2x Escondidinho de charque 72,00
-   R$ 36,00 cada
-2x Refrigerante lata       12,00
-   R$ 6,00 cada
-1x Batata frita com cheddar e
+2  Escondidinho de charque 72,00
+2  Refrigerante lata       12,00
+1  Batata frita com cheddar e
    bacon (porção grande)   32,00
 --------------------------------
-Subtotal               R$ 116,00
-Taxa de serviço (10%)   R$ 11,60
+              Subtotal R$ 116,00
+            Serviço 10% R$ 11,60
+                 TOTAL R$ 127,60
 ================================
-TOTAL                  R$ 127,60
-================================
-
+     Não é documento fiscal
    Obrigado pela preferência!
           Volte sempre
+******** Sistema Mesari ********
 `),
     );
   });
@@ -321,21 +296,25 @@ describe("casos longos", () => {
     const nameEnd = lines.findIndex((line) => line.endsWith("1.234,56"));
     expect(lines[nameEnd]).toHaveLength(columns);
     expect(lines[nameEnd]!.startsWith("   ")).toBe(true);
-    expect(lines[nameEnd + 1]).toBe("   R$ 102,88 cada");
-    expect(lines[nameEnd + 2]!.startsWith("   obs: metade")).toBe(true);
+    // Sem "R$ x cada": a observação vem logo depois do item.
+    expect(lines.some((line) => line.includes("cada"))).toBe(false);
+    expect(lines[nameEnd + 1]!.startsWith("   obs: metade")).toBe(true);
     // Continuações da observação alinhadas depois de "obs: ".
-    expect(lines[nameEnd + 3]!.startsWith("        ")).toBe(true);
-    expect(lines.find((line) => line.startsWith("TOTAL"))).toBe(
-      `TOTAL${" ".repeat(columns - 5 - 11)}R$ 1.234,56`,
+    expect(lines[nameEnd + 2]!.startsWith("        ")).toBe(true);
+    // Totais alinhados à direita; sem taxa nem desconto não há "Subtotal".
+    expect(lines.find((line) => line.trim().startsWith("TOTAL"))).toBe(
+      `${" ".repeat(columns - 17)}TOTAL R$ 1.234,56`,
     );
-    expect(lines.find((line) => line.startsWith("Pagamento"))?.endsWith("A receber - Pix")).toBe(
-      true,
-    );
+    expect(lines.some((line) => line.includes("Subtotal"))).toBe(false);
+    expect(lines).toContain("Pagamento: A receber - Pix");
     expect(lines.some((line) => line.startsWith("Troco para"))).toBe(false);
-    expect(lines.some((line) => line.startsWith("Taxa de entrega"))).toBe(false);
-    expect(lines.some((line) => line.startsWith("Desconto"))).toBe(false);
-    expect(lines).not.toContain("OBSERVAÇÃO");
-    expect(lines).toContain("Boa Vista - Recife/PE");
+    expect(lines.some((line) => line.includes("Entrega R$"))).toBe(false);
+    expect(lines.some((line) => line.includes("Desconto"))).toBe(false);
+    expect(lines.some((line) => line.startsWith("Obs.:"))).toBe(false);
+    // Endereço num bloco só, continuações alinhadas depois de "End.: ".
+    expect(lines.some((line) => line.startsWith("End.: Avenida Governador"))).toBe(true);
+    expect(lines.join(" ")).toContain("Recife/PE");
+    expect(lines.at(-1)).toMatch(/^\*+ Sistema Mesari \*+$/);
     // Nenhuma palavra do nome foi perdida.
     const words = lines.join(" ").split(/\s+/);
     for (const word of ["Parmegiana", "mignon", "grega,", "pessoas"]) expect(words).toContain(word);
@@ -347,7 +326,7 @@ describe("casos longos", () => {
     const ticket = sampleDeliveryTicket();
     ticket.external = { ...ticket.external!, origin: "retirada", deliveryFee: 0 };
     const text = renderText(comandaDelivery(ticket, SAMPLE_RESTAURANT), 42);
-    expect(text).toContain("PEDIDO #128 - RETIRADA");
+    expect(text).toContain("RETIRADA #128");
     expect(text).not.toContain("Rua das Acácias");
     expect(text).not.toContain("[LOGO]");
     expect(text.split("\n")[0]).toBe("       RESTAURANTE SABOR DO AGRESTE");
@@ -363,8 +342,11 @@ describe("casos longos", () => {
       contaMesa(receipt, { ...SAMPLE_RESTAURANT, receiptFooter: "Até a próxima!" }),
       42,
     );
-    expect(text).not.toContain("Taxa de serviço");
-    expect(text.split("\n").at(-1)).toBe("              Até a próxima!");
+    expect(text).not.toContain("Serviço");
+    expect(text).not.toContain("Subtotal");
+    const lines = text.split("\n");
+    expect(lines.at(-2)).toBe("              Até a próxima!");
+    expect(lines.at(-1)).toBe("************* Sistema Mesari *************");
   });
 
   it("nome do restaurante em altura dupla quebra por palavra em 32 colunas", () => {
@@ -454,9 +436,9 @@ describe("ESC/POS", () => {
     );
     expect(lines.find((line) => line.text.startsWith("MESA 05"))).toMatchObject({
       bold: true,
-      size: 0x11,
+      size: 0,
     });
-    expect(lines.find((line) => line.text.startsWith("TOTAL"))).toMatchObject({
+    expect(lines.find((line) => line.text.trim().startsWith("TOTAL"))).toMatchObject({
       bold: true,
       size: 0x01,
     });
@@ -480,9 +462,10 @@ describe("ESC/POS", () => {
 describe("HTML", () => {
   it("usa as mesmas linhas, com altura dupla e tamanho duplo", () => {
     const html = renderHtml(conta(), { ...defaultConfig(), columns: 42, fontSize: "medio" });
-    expect(html).toContain('<div class="l b big"><span>MESA 05</span></div>');
+    const entrega = renderHtml(delivery(), { ...defaultConfig(), columns: 42, fontSize: "medio" });
+    expect(entrega).toContain('<div class="l b big"><span>ENTREGA #128</span></div>');
     expect(html).toContain(
-      '<div class="l b tall"><span>TOTAL                            R$ 127,60</span></div>',
+      `<div class="l b tall"><span>${" ".repeat(27)}TOTAL R$ 127,60</span></div>`,
     );
     expect(html).toContain('<img class="logo"');
     expect(html).toContain("max-width:48mm");

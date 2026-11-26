@@ -12,6 +12,20 @@ import type { KitchenTicket, PrintReceipt, PrintRestaurant } from "./types";
 
 export const DEFAULT_FOOTER = "Obrigado pela preferência!\nVolte sempre";
 
+/** Versão do app impressa na última linha ("Sistema Mesari · v1.2.7"); vazia no navegador. */
+let appVersion = "";
+export function setPrintAppVersion(version: string | null | undefined) {
+  appVersion = (version ?? "").trim();
+}
+/** Última linha da conta e da comanda do entregador: a marca do sistema. */
+export function mesariSignature(): DocLine {
+  return {
+    kind: "banner",
+    text: appVersion ? `Sistema Mesari · v${appVersion}` : "Sistema Mesari",
+    fill: "*",
+  };
+}
+
 const EQ: DocLine = { kind: "rule", char: "=" };
 const DASH: DocLine = { kind: "rule", char: "-" };
 const BLANK: DocLine = { kind: "blank" };
@@ -138,20 +152,23 @@ function itemLines(
   const lines: DocLine[] = [];
   for (const entry of entries) {
     const known = typeof entry.unitPrice === "number" && Number.isFinite(entry.unitPrice);
-    lines.push(
-      item(
-        entry.quantity,
-        entry.name,
-        known ? amount(entry.quantity * entry.unitPrice!) : undefined,
-      ),
-    );
-    if (known && entry.quantity > 1) lines.push(indented("   ", `${money(entry.unitPrice!)} cada`));
+    // Uma linha por item: quantidade | descrição | valor (o nome longo continua embaixo).
+    lines.push({
+      kind: "entry",
+      prefix: `${entry.quantity}`.padEnd(3),
+      text: entry.name,
+      ...(known ? { value: amount(entry.quantity * entry.unitPrice!) } : {}),
+    });
     if (entry.note?.trim()) lines.push(indented("   obs: ", entry.note.trim()));
   }
   return lines;
 }
 
-const ITEMS_HEADER: DocLine[] = [DASH, pair("QTD ITEM", "TOTAL", { bold: true }), DASH];
+const ITEMS_HEADER: DocLine[] = [DASH, pair("QTD DESCRIÇÃO", "VALOR", { bold: true }), DASH];
+
+/** Linha de total alinhada à direita, como na nota de consumo ("Subtotal R$ 116,00"). */
+const total = (label: string, value: number, style: { bold?: boolean; size?: "tall" } = {}) =>
+  text(`${label} ${money(value)}`, { align: "right", ...style });
 
 function paymentLabel(forma: string | null, pago: boolean) {
   const method = forma ? (PAYMENT_LABEL[forma] ?? forma) : "Não informado";
@@ -171,26 +188,19 @@ export function comandaDelivery(
   const lines: DocLine[] = [...brand(restaurant, options.logo, "normal")];
   if (restaurant.phone.trim()) lines.push(center(phone(restaurant.phone)));
   lines.push(EQ);
-  lines.push(
-    center(`PEDIDO #${number} - ${delivery ? "ENTREGA" : "RETIRADA"}`, {
-      bold: true,
-      size: "tall",
-    }),
-  );
-  lines.push(EQ);
-  lines.push(pair(`Data: ${date(ticket.createdAt)}`, `Hora: ${time(ticket.createdAt)}`));
-  lines.push(text(`Origem: ${ticketOrigin(ticket)}`));
+  lines.push(text(`${delivery ? "ENTREGA" : "RETIRADA"} #${number}`, { bold: true, size: "big" }));
+  lines.push(pair(ticketOrigin(ticket), `${date(ticket.createdAt)} ${time(ticket.createdAt)}`));
   lines.push(DASH);
 
-  lines.push(text("CLIENTE", { bold: true }));
-  lines.push(text(external.customerName.trim() || "—"));
-  if (external.phone.trim()) lines.push(text(phone(external.phone)));
+  lines.push(indented("Cliente: ", external.customerName.trim() || "—"));
+  if (external.phone.trim()) lines.push(text(`Fone: ${phone(external.phone)}`));
   if (delivery) {
     const parsed = splitAddress(external.address);
     const addressLines = external.addressLines?.filter((line) => line.trim()) ?? parsed.lines;
     const reference = (external.reference ?? parsed.reference).trim();
-    for (const line of addressLines) lines.push(text(line.trim()));
-    if (reference) lines.push(text(`Ref.: ${reference}`));
+    const address = addressLines.map((line) => line.trim()).join(" - ");
+    if (address) lines.push(indented("End.: ", address));
+    if (reference) lines.push(indented("Ref.: ", reference));
   }
 
   lines.push(...ITEMS_HEADER);
@@ -206,27 +216,23 @@ export function comandaDelivery(
   );
   lines.push(DASH);
   const discount = external.discount ?? 0;
-  lines.push(pair("Subtotal", money(external.subtotal)));
-  if (external.deliveryFee > 0) lines.push(pair("Taxa de entrega", money(external.deliveryFee)));
-  if (discount > 0) lines.push(pair("Desconto", money(-discount)));
-  lines.push(EQ);
-  lines.push(pair("TOTAL", money(external.total), { bold: true, size: "tall" }));
-  lines.push(EQ);
+  if (external.deliveryFee > 0 || discount > 0) lines.push(total("Subtotal", external.subtotal));
+  if (external.deliveryFee > 0) lines.push(total("Entrega", external.deliveryFee));
+  if (discount > 0) lines.push(total("Desconto", -discount));
+  lines.push(total("TOTAL", external.total, { bold: true, size: "tall" }));
+  lines.push(DASH);
 
   const payment = external.payment;
-  lines.push(pair("Pagamento", paymentLabel(payment.forma, payment.pago)));
+  lines.push(indented("Pagamento: ", paymentLabel(payment.forma, payment.pago)));
   if (payment.forma === "dinheiro" && !payment.pago && payment.trocoPara !== null) {
     const change = Math.round((payment.trocoPara - external.total) * 100) / 100;
     if (payment.trocoPara > 0) lines.push(pair("Troco para", money(payment.trocoPara)));
-    if (change > 0) lines.push(pair("Levar de troco", money(change), { bold: true }));
+    if (change > 0) lines.push(pair("LEVAR DE TROCO", money(change), { bold: true }));
   }
-  if (external.observation.trim()) {
-    lines.push(DASH);
-    lines.push(text("OBSERVAÇÃO", { bold: true }));
-    lines.push(text(external.observation.trim()));
-  }
-  lines.push(DASH);
+  if (external.observation.trim()) lines.push(indented("Obs.: ", external.observation.trim()));
+  lines.push(EQ);
   lines.push(center("Não é documento fiscal"));
+  lines.push(mesariSignature());
   return { title: `Pedido #${number}`, lines };
 }
 
@@ -245,33 +251,35 @@ export function contaMesa(
     lines.push(center(`${cpfCnpjLabel(restaurant.cnpj)}: ${displayCpfCnpj(restaurant.cnpj)}`));
   }
   lines.push(EQ);
-  lines.push(center(receipt.partial ? "CONTA PARCIAL" : "CONTA DE CONSUMO", { bold: true }));
-  lines.push(center("Não é documento fiscal"));
+  if (receipt.partial) lines.push(center("CONTA PARCIAL", { bold: true }));
   if (receipt.reprint) lines.push(center("2ª VIA", { bold: true }));
-  lines.push(DASH);
 
   const delivery = receipt.origin === "entrega" || receipt.origin === "retirada";
-  if (delivery) {
+  const place = delivery
+    ? receipt.origin === "entrega"
+      ? "ENTREGA"
+      : "RETIRADA"
+    : tableLabel(receipt.table);
+  lines.push(pair(place, `${date(receipt.at)} ${time(receipt.at)}`, { bold: true }));
+  const waiters = [...new Set(receipt.lines.map((line) => line.waiter.trim()).filter(Boolean))];
+  const sale =
+    !receipt.preBill && receipt.saleNumber
+      ? `Venda ${String(receipt.saleNumber).padStart(4, "0")}`
+      : "";
+  if (waiters.length) {
     lines.push(
-      text(receipt.origin === "entrega" ? "ENTREGA" : "RETIRADA", { bold: true, size: "big" }),
+      sale ? pair(`Garçom: ${waiters.join(", ")}`, sale) : indented("Garçom: ", waiters.join(", ")),
     );
-  } else {
-    lines.push(text(tableLabel(receipt.table), { bold: true, size: "big" }));
-  }
-  lines.push(pair(`Data: ${date(receipt.at)}`, `Hora: ${time(receipt.at)}`));
+  } else if (sale) lines.push(text(sale));
   if (delivery) {
-    if (receipt.customerName?.trim()) lines.push(text(`Cliente: ${receipt.customerName.trim()}`));
-    if (receipt.customerPhone?.trim()) lines.push(text(phone(receipt.customerPhone)));
+    if (receipt.customerName?.trim())
+      lines.push(indented("Cliente: ", receipt.customerName.trim()));
+    if (receipt.customerPhone?.trim()) lines.push(text(`Fone: ${phone(receipt.customerPhone)}`));
     if (receipt.customerAddress?.trim()) {
       const address = splitAddress(receipt.customerAddress);
-      for (const line of address.lines) lines.push(text(line));
-      if (address.reference) lines.push(text(`Ref.: ${address.reference}`));
+      lines.push(indented("End.: ", address.lines.join(" - ")));
+      if (address.reference) lines.push(indented("Ref.: ", address.reference));
     }
-  }
-  const waiters = [...new Set(receipt.lines.map((line) => line.waiter.trim()).filter(Boolean))];
-  if (waiters.length) lines.push(text(`Atendido por: ${waiters.join(", ")}`));
-  if (!receipt.preBill && receipt.saleNumber) {
-    lines.push(text(`Venda: ${String(receipt.saleNumber).padStart(4, "0")}`));
   }
 
   lines.push(...ITEMS_HEADER);
@@ -281,24 +289,25 @@ export function contaMesa(
     ),
   );
   lines.push(DASH);
-  lines.push(pair("Subtotal", money(receipt.subtotal)));
+  const deliveryFee = receipt.origin === "entrega" ? (receipt.deliveryFee ?? 0) : 0;
+  const discount = receipt.discount ?? 0;
+  if (receipt.serviceCharge > 0 || deliveryFee > 0 || discount > 0) {
+    lines.push(total("Subtotal", receipt.subtotal));
+  }
   if (receipt.serviceCharge > 0) {
     const rate =
       receipt.serviceChargePercent ??
       restaurant.serviceChargePercent ??
       (receipt.subtotal > 0 ? (receipt.serviceCharge / receipt.subtotal) * 100 : 0);
-    lines.push(pair(`Taxa de serviço (${percent(rate)})`, money(receipt.serviceCharge)));
+    lines.push(total(`Serviço ${percent(rate)}`, receipt.serviceCharge));
   }
-  if (receipt.origin === "entrega" && (receipt.deliveryFee ?? 0) > 0) {
-    lines.push(pair("Taxa de entrega", money(receipt.deliveryFee ?? 0)));
-  }
-  if ((receipt.discount ?? 0) > 0) lines.push(pair("Desconto", money(-(receipt.discount ?? 0))));
-  lines.push(EQ);
-  lines.push(pair("TOTAL", money(receipt.total), { bold: true, size: "tall" }));
-  lines.push(EQ);
+  if (deliveryFee > 0) lines.push(total("Entrega", deliveryFee));
+  if (discount > 0) lines.push(total("Desconto", -discount));
+  lines.push(total("TOTAL", receipt.total, { bold: true, size: "tall" }));
 
   const payments = receipt.preBill ? [] : (receipt.payments ?? []);
   if (payments.length) {
+    lines.push(DASH);
     for (const payment of payments) {
       lines.push(pair(PAYMENT_LABEL[payment.forma] ?? payment.forma, money(payment.valor)));
       if (payment.forma === "dinheiro" && payment.recebido !== undefined) {
@@ -306,14 +315,15 @@ export function contaMesa(
         if ((payment.troco ?? 0) > 0) lines.push(pair("   Troco", money(payment.troco ?? 0)));
       }
     }
-    lines.push(DASH);
   }
-  lines.push(BLANK);
+  lines.push(EQ);
+  lines.push(center("Não é documento fiscal"));
   const footer = (restaurant.receiptFooter ?? DEFAULT_FOOTER).trim() || DEFAULT_FOOTER;
   for (const line of footer.split("\n")) {
     if (line.trim()) lines.push(center(line.trim()));
   }
   if (restaurant.instagram.trim()) lines.push(center(formatInstagram(restaurant.instagram)));
+  lines.push(mesariSignature());
   return { title: receipt.preBill ? "Conta" : "Nota", lines };
 }
 

@@ -22,6 +22,8 @@ export type DocLine =
   /** Texto como está, sem quebra (régua da página de teste). */
   | { kind: "raw"; text: string }
   | { kind: "rule"; char: "=" | "-" }
+  /** Texto centralizado preenchido dos dois lados até a largura toda ("**** Mesari ****"). */
+  | { kind: "banner"; text: string; fill: string }
   | { kind: "blank" }
   | { kind: "image"; logo: PrintLogo };
 
@@ -153,7 +155,12 @@ export function layoutDoc(doc: PrintDoc, columns: number): PhysicalLine[] {
       }
     } else if (line.kind === "raw") push(clean(line.text).slice(0, width));
     else if (line.kind === "rule") push(line.char.repeat(columns));
-    else push("");
+    else if (line.kind === "banner") {
+      const label = clean(` ${line.text.trim()} `).slice(0, columns);
+      const free = Math.max(0, columns - label.length);
+      const fill = clean(line.fill).slice(0, 1) || " ";
+      push(fill.repeat(Math.floor(free / 2)) + label + fill.repeat(Math.ceil(free / 2)));
+    } else push("");
   }
   return out;
 }

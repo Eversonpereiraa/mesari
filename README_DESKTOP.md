@@ -86,7 +86,7 @@ O instalador:
      ```
 
 3. Escreva as novidades na descrição do Release no GitHub (uma por linha, com "-"). Elas aparecem no botão **"Ver o que mudou"** do aviso.
-4. Nos computadores com o Mesari Desktop: ao abrir (15 s depois) e a cada 4 horas, o app verifica em segundo plano. Achou versão nova:
+4. Nos computadores com o Mesari Desktop: ao abrir (15 s depois), a cada 30 minutos e quando a janela volta ao foco (no máximo a cada 10 min), o app verifica em segundo plano. Também dá para forçar pelo menu da bandeja: **Verificar atualizações**. Achou versão nova:
    - aparece o cartão **"Nova atualização disponível"** (versão, tamanho e novidades);
    - **Atualizar agora** → tela com o progresso animado (porcentagem, MB baixados e velocidade) → "Atualização concluída!" → "Reiniciando o Mesari…" → o app fecha, instala em silêncio e abre de novo na versão nova;
    - **Depois** → baixa em segundo plano; quando termina, um cartão discreto oferece **Reiniciar agora** ou **Ao fechar o app**.
