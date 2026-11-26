@@ -13,7 +13,7 @@ export const Route = createFileRoute("/manifest.webmanifest")({
             start_url: "/",
             display: "standalone",
             background_color: "#ffffff",
-            theme_color: "#0e2a2b",
+            theme_color: "#1c1917",
             icons: [
               {
                 src: MESARI_BRAND.symbol,

@@ -2,7 +2,7 @@ import type { CSSProperties } from "react";
 import { brl, paymentMethodLabel } from "@/lib/store";
 import type { PrintReceipt, PrintRestaurant } from "@/lib/printing";
 import { cpfCnpjLabel, displayCpfCnpj, displayPhone, formatInstagram } from "@/lib/masks";
-import defaultReceiptLogo from "@/assets/branding/logo-mesari-preto.png?url";
+import defaultReceiptLogo from "@/assets/branding/logo-mesari-impressao.png?url";
 
 export function ReceiptContent({
   receipt,

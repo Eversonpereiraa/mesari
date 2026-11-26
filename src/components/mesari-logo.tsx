@@ -9,12 +9,6 @@ const logoAlt: Record<MesariLogoVariant, string> = {
   symbol: "Símbolo do Mesari",
 };
 
-const artworkScale: Record<MesariLogoVariant, string> = {
-  vertical: "scale-[1.9]",
-  horizontal: "scale-[2.05]",
-  symbol: "scale-[1.65]",
-};
-
 export function MesariLogo({
   variant,
   className,
@@ -28,7 +22,6 @@ export function MesariLogo({
       aria-label={logoAlt[variant]}
       className={cn(
         "relative inline-grid shrink-0 place-items-center overflow-hidden",
-        variant === "symbol" && "bg-white",
         className,
       )}
     >
@@ -38,7 +31,7 @@ export function MesariLogo({
         aria-hidden="true"
         className={cn(
           "h-full w-full",
-          variant === "symbol" ? cn("object-cover", artworkScale[variant]) : "object-contain",
+          variant === "symbol" ? "object-cover" : "object-contain",
         )}
       />
     </span>
